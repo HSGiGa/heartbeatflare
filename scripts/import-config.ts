@@ -51,6 +51,7 @@ function parseInterval(interval: string): number {
 
 function parseCondition(condition: string): { dbCondition: string; threshold: number } {
 	if (/status\s*!=\s*200/.test(condition)) return { dbCondition: 'eq', threshold: 0 };
+	if (/connect\s*!=\s*true/.test(condition) || /status\s*!=\s*up/.test(condition)) return { dbCondition: 'eq', threshold: 0 };
 	const latMatch = condition.match(/latency\s*(>=|<=|>|<)\s*(\d+)/);
 	if (latMatch) {
 		const opMap: Record<string, string> = { '>': 'gt', '<': 'lt', '>=': 'gte', '<=': 'lte' };
@@ -66,6 +67,18 @@ function parseCooldown(cooldown?: string): number {
 	const mMatch = cooldown.match(/^(\d+)m$/);
 	if (mMatch) return parseInt(mMatch[1]) * 60;
 	return 0;
+}
+
+function normalizeTarget(monitor: MonitorConfig): string {
+	if (monitor.type !== 'tcp') return monitor.target;
+
+	const normalized = monitor.target.startsWith('tcp://') ? monitor.target : `tcp://${monitor.target}`;
+	const url = new URL(normalized);
+	const port = Number(url.port);
+	if (!url.hostname || !Number.isInteger(port) || port <= 0 || port > 65535) {
+		throw new Error(`Invalid TCP target for monitor "${monitor.name}": ${monitor.target}. Use host:port or tcp://host:port.`);
+	}
+	return `${url.hostname}:${port}`;
 }
 
 async function d1Query<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
@@ -98,6 +111,7 @@ async function main() {
 	for (const monitor of config.monitors) {
 		const id = slug(monitor.name);
 		const intervalSeconds = parseInterval(monitor.interval);
+		const target = normalizeTarget(monitor);
 
 		console.log(`Importing monitor: ${monitor.name} (${id})`);
 
@@ -106,7 +120,7 @@ async function main() {
        VALUES (?, ?, ?, ?, ?, ?, ?, 1,
          COALESCE((SELECT created_at FROM monitors WHERE id = ?), datetime('now')),
          datetime('now'))`,
-			[id, monitor.name, monitor.type, monitor.mode, monitor.visibility ?? 'private', monitor.target, intervalSeconds, id],
+			[id, monitor.name, monitor.type, monitor.mode, monitor.visibility ?? 'private', target, intervalSeconds, id],
 		);
 
 		for (let i = 0; i < (monitor.alerts ?? []).length; i++) {
