@@ -11,11 +11,11 @@ monitors:
         failures: 2
         recovery: 2
         cooldown: 300s
-  - name: Cloudflare DNS TCP
+  - name: Gmail SMTP
     type: tcp
     mode: external
     visibility: public
-    target: 1.1.1.1:53
+    target: smtp.gmail.com:587
     interval: 60s
     alerts:
       - condition: "connect != true"

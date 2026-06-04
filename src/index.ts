@@ -293,6 +293,7 @@ export default {
 				        ms.active_incident_id
 				 FROM monitors m
 				 LEFT JOIN monitor_state ms ON ms.monitor_id = m.id
+				 WHERE m.enabled = 1
 				 ORDER BY m.name`,
 			).all<MonitorDbRow>(),
 			env.DB.prepare(
@@ -344,7 +345,7 @@ export default {
 					enabled: r.enabled === 1,
 				})),
 			})),
-		});
+		}, { headers: { 'Cache-Control': 'no-store' } });
 	},
 
 	async scheduled(event, env, ctx): Promise<void> {
