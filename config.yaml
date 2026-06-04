@@ -1,0 +1,13 @@
+monitors:
+  - name: Google
+    type: http
+    mode: external
+    visibility: public
+    target: https://www.google.com/generate_204
+    interval: 60s
+    alerts:
+      - condition: "status != 200"
+        severity: critical
+        failures: 2
+        recovery: 2
+        cooldown: 300s

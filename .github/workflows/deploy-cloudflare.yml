@@ -1,0 +1,55 @@
+name: Deploy to Cloudflare
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm run test
+
+      - name: Lint migrations
+        run: npm run migration:lint
+
+      - name: Apply D1 migrations
+        run: npm run d1:migrate:prod
+
+      - name: Import config
+        run: npm run config:import
+
+      - name: Deploy Worker
+        id: deploy
+        run: |
+          output=$(npm run deploy 2>&1)
+          echo "$output"
+          url=$(echo "$output" | grep -oE 'https://[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev[^ ]*' | head -1)
+          [ -z "$url" ] && echo "Could not parse Worker URL from deploy output" && exit 1
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test
+        run: |
+          url="${{ steps.deploy.outputs.url }}"
+          sleep 5
+          http_code=$(curl -sf -o /dev/null -w "%{http_code}" "$url")
+          [ "$http_code" = "200" ] || { echo "Smoke test failed: HTTP $http_code from $url"; exit 1; }
+          echo "Smoke test passed: $url returned HTTP 200"
