@@ -217,10 +217,13 @@ async function tcpCheck(target: string): Promise<ProbeResult> {
 	try {
 		const { hostname, port } = parseTcpTarget(target);
 		socket = connect({ hostname, port });
+		let timeoutId: ReturnType<typeof setTimeout> | undefined;
 		await Promise.race([
 			socket.opened,
-			new Promise<never>((_, reject) => setTimeout(() => reject(new Error('TCP connect timeout')), 10_000)),
-		]);
+			new Promise<never>((_, reject) => {
+				timeoutId = setTimeout(() => reject(new Error('TCP connect timeout')), 10_000);
+			}),
+		]).finally(() => clearTimeout(timeoutId));
 		const latency_ms = Date.now() - start;
 		return { status: 'up', latency_ms, tcp_connect_ms: latency_ms };
 	} catch (err) {
