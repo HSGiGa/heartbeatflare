@@ -1,3 +1,5 @@
+import { connect } from 'cloudflare:sockets';
+
 type MonitorDbRow = {
 	id: string;
 	name: string;
@@ -31,6 +33,7 @@ type AlertRuleDbRow = {
 
 type MonitorRow = {
 	id: string;
+	type: 'http' | 'tcp';
 	scrape_url: string;
 	interval_seconds: number;
 	current_status: string | null;
@@ -42,6 +45,7 @@ type MonitorRow = {
 type ProbeResult = {
 	status: 'up' | 'down';
 	latency_ms: number;
+	tcp_connect_ms?: number;
 	error?: string;
 };
 
@@ -197,6 +201,44 @@ async function httpCheck(url: string): Promise<ProbeResult> {
 	}
 }
 
+function parseTcpTarget(target: string): { hostname: string; port: number } {
+	const normalized = target.startsWith('tcp://') ? target : `tcp://${target}`;
+	const url = new URL(normalized);
+	const port = Number(url.port);
+	if (!url.hostname || !Number.isInteger(port) || port <= 0 || port > 65535) {
+		throw new Error(`Invalid TCP target: ${target}`);
+	}
+	return { hostname: url.hostname, port };
+}
+
+async function tcpCheck(target: string): Promise<ProbeResult> {
+	const start = Date.now();
+	let socket: Socket | undefined;
+	try {
+		const { hostname, port } = parseTcpTarget(target);
+		socket = connect({ hostname, port });
+		let timeoutId: ReturnType<typeof setTimeout> | undefined;
+		await Promise.race([
+			socket.opened,
+			new Promise<never>((_, reject) => {
+				timeoutId = setTimeout(() => reject(new Error('TCP connect timeout')), 10_000);
+			}),
+		]).finally(() => clearTimeout(timeoutId));
+		const latency_ms = Date.now() - start;
+		return { status: 'up', latency_ms, tcp_connect_ms: latency_ms };
+	} catch (err) {
+		const latency_ms = Date.now() - start;
+		return {
+			status: 'down',
+			latency_ms,
+			tcp_connect_ms: latency_ms,
+			error: err instanceof Error ? err.message : String(err),
+		};
+	} finally {
+		socket?.close();
+	}
+}
+
 async function storeResult(env: Env, monitor: MonitorRow, result: ProbeResult, executionId: string, now: string): Promise<void> {
 	const prevStatus = monitor.current_status ?? 'unknown';
 	const failures = result.status === 'down' ? monitor.consecutive_failures + 1 : 0;
@@ -216,10 +258,10 @@ async function storeResult(env: Env, monitor: MonitorRow, result: ProbeResult, e
 		.run();
 
 	await env.DB.prepare(
-		`INSERT INTO metric_series (id, monitor_id, recorded_at, availability, latency_ms)
-		 VALUES (?, ?, ?, ?, ?)`,
+		`INSERT INTO metric_series (id, monitor_id, recorded_at, availability, latency_ms, tcp_connect_ms)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
 	)
-		.bind(executionId, monitor.id, now, result.status === 'up' ? 1 : 0, result.latency_ms)
+		.bind(executionId, monitor.id, now, result.status === 'up' ? 1 : 0, result.latency_ms, result.tcp_connect_ms ?? null)
 		.run();
 
 	if (result.status !== prevStatus || result.status === 'down') {
@@ -309,13 +351,13 @@ export default {
 		const now = new Date().toISOString();
 
 		const { results } = await env.DB.prepare(
-			`SELECT m.id, m.scrape_url, m.interval_seconds,
+			`SELECT m.id, m.type, m.scrape_url, m.interval_seconds,
 			        ms.status AS current_status, ms.last_check_at,
 			        COALESCE(ms.consecutive_failures, 0) AS consecutive_failures,
 			        COALESCE(ms.consecutive_successes, 0) AS consecutive_successes
 			 FROM monitors m
 			 LEFT JOIN monitor_state ms ON ms.monitor_id = m.id
-			 WHERE m.enabled = 1 AND m.type = 'http' AND m.mode = 'external'
+			 WHERE m.enabled = 1 AND m.type IN ('http', 'tcp') AND m.mode = 'external'
 			   AND (ms.last_check_at IS NULL
 			        OR datetime(ms.last_check_at, '+' || m.interval_seconds || ' seconds') <= datetime('now'))`,
 		).all<MonitorRow>();
@@ -323,7 +365,7 @@ export default {
 		await Promise.allSettled(
 			results.map(async (monitor) => {
 				const executionId = crypto.randomUUID();
-				const result = await httpCheck(monitor.scrape_url);
+				const result = monitor.type === 'tcp' ? await tcpCheck(monitor.scrape_url) : await httpCheck(monitor.scrape_url);
 				await storeResult(env, monitor, result, executionId, now);
 			}),
 		);

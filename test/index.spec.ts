@@ -29,9 +29,21 @@ beforeAll(async () => {
 	for (const stmt of statements) {
 		await env.DB.prepare(stmt).run();
 	}
+	await env.DB.prepare(
+		`INSERT INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, enabled)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
+	)
+		.bind('tcp-example', 'TCP Example', 'tcp', 'external', 'public', '1.1.1.1:53', 60)
+		.run();
 });
 
 describe('GET /', () => {
+	it('includes TCP monitors from D1', async () => {
+		const response = await SELF.fetch('https://example.com/');
+		const body = (await response.json()) as { monitors: Array<{ id: string; type: string; target: string }> };
+		expect(body.monitors).toContainEqual(expect.objectContaining({ id: 'tcp-example', type: 'tcp', target: '1.1.1.1:53' }));
+	});
+
 	it('returns JSON monitors list (unit style)', async () => {
 		const request = new IncomingRequest('http://example.com/');
 		const ctx = createExecutionContext();

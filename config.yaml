@@ -11,3 +11,15 @@ monitors:
         failures: 2
         recovery: 2
         cooldown: 300s
+  - name: Cloudflare DNS TCP
+    type: tcp
+    mode: external
+    visibility: public
+    target: 1.1.1.1:53
+    interval: 60s
+    alerts:
+      - condition: "connect != true"
+        severity: critical
+        failures: 2
+        recovery: 2
+        cooldown: 300s
