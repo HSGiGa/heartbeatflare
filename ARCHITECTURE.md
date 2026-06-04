@@ -259,6 +259,7 @@ id
 name
 type                  -- http | tcp | ssl | ping | openmetrics
 mode                  -- external | internal
+visibility            -- public | private  (controls status page exposure)
 scrape_url
 interval_seconds
 enabled
@@ -326,6 +327,10 @@ started_at
 resolved_at
 reason
 ```
+
+Incident visibility is inherited from the monitor (`monitors.visibility`) — there is no separate column. The public status page shows incidents only for public monitors.
+
+Retention: resolved incidents are purged after 7 days by the cleanup Cron job. **Open incidents are never purged**, regardless of age.
 
 **notification_channels**
 ```
@@ -425,6 +430,89 @@ Examples of `degraded`:
 
 `degraded` generates a warning incident, not a down incident. Notification channels can be configured per severity.
 
+## Status Pages
+
+Two read-only views over the same monitoring data, served by a single **Status Page Worker** that routes by hostname.
+
+```
+                    +------------------------+
+                    |   Status Page Worker   |
+                    +-----------+------------+
+                                |
+              hostname routing  |
+              +-----------------+-----------------+
+              |                                   |
+   status.example.com                  monitoring.example.com
+   (public, no auth)                   (private, Cloudflare Access)
+              |                                   |
+   visibility = 'public' only          all monitors
+```
+
+### Single Worker, hostname routing
+
+One Worker handles both pages and selects behaviour from the request hostname:
+
+- `status.example.com` → public view, queries `WHERE visibility = 'public'`
+- `monitoring.example.com` → private view, queries all monitors
+
+Cloudflare Access is attached to the `monitoring.example.com` route in the Cloudflare dashboard (not in Worker code). The public route has no Access policy.
+
+**Defense in depth:** the public/private split is enforced in Worker code by hostname, not only by Access. The public hostname must *never* query private monitors even if the Access layer is misconfigured. Visibility filtering is the Worker's responsibility; Access is an additional gate, not the only one.
+
+### Rendering
+
+Server-rendered HTML inline in the Worker — a simple status table, no client JS, no build step, no Static Assets binding. Sufficient for the MVP scope (no charts, no history graphs).
+
+### Public Status Page
+
+- Accessible without authentication
+- Shows only monitors with `visibility = 'public'`
+- Current status + active incidents + recent incident history (resolved incidents within the 7-day retention window)
+
+Status vocabulary (mapped from internal `monitor_state.status`):
+
+```
+internal    public
+up        → Operational
+degraded  → Degraded
+down      → Outage
+unknown   → Operational   (transient pre-first-check state; see note)
+```
+
+**Note on `unknown`:** a public page should not show alarming or confusing states to external users. `unknown` only occurs in the ~1-minute window before a monitor's first check completes, so it is mapped to `Operational`. A monitor *stuck* in `unknown` (e.g. scheduler not running) is an operational fault surfaced on the private page, where operators see the real `Unknown` value.
+
+Per-monitor display: `Name`, `Status`.
+Per-incident display: `Title`, `Status`, `Started At`, `Resolved At`.
+
+### Private Status Page
+
+- Protected by Cloudflare Access
+- Shows all monitors (public and private)
+- Current status + active incidents
+
+Status vocabulary (internal values shown directly):
+
+```
+Up
+Degraded
+Down
+Unknown
+```
+
+Per-monitor display: `Name`, `Type`, `Status`, `Last Check`.
+
+### Free Plan considerations
+
+The public page is unauthenticated and may receive bursty traffic. Each render is a D1 read; uncached, high traffic could pressure the 100k requests/day and 5M reads/day budgets.
+
+**Mitigation:** the public response sets `Cache-Control: public, max-age=30`, so Cloudflare's edge serves repeat requests from cache without re-invoking the Worker or touching D1. At most one render per 30s per colo regardless of traffic. A 30-second-stale status page is acceptable for the MVP.
+
+The private page is low-traffic (operators behind Access) and is not cached, so it always reflects current state.
+
+### Out of scope (MVP)
+
+Component groups, dependencies, maintenance windows, subscriptions, email updates, status page API, SLA reporting, uptime charts, custom incident messages, multiple status pages.
+
 ## OpenMetrics Model
 
 Used exclusively by the Scraper Worker (internal monitors).
@@ -493,10 +581,11 @@ The platform is designed to run entirely within the Cloudflare Free Plan.
 
 | Product | Free Limit | Usage |
 |---|---|---|
-| Workers | 100k requests/day | Scheduler, Probe, Scraper, Notification Workers |
+| Workers | 100k requests/day | Scheduler, Probe, Scraper, Notification, Status Page Workers |
 | Workers | 10ms CPU/invocation | Bounds OpenMetrics parsing — filter, don't full-parse |
 | Workers | 50 subrequests/invocation | Bounds Scheduler fan-out to 50 monitors/tick |
 | Cron Triggers | 5 per account | Scheduler (1), cleanup (1) — 3 remaining |
+| Edge cache | Free | Public status page (`Cache-Control: max-age=30`) caps Worker + D1 load |
 | D1 | 5M reads/day, 100k writes/day, 5GB | All data; ~2 writes/check → ~30 monitors at 60s |
 | Service Bindings | Free, no daily cap | Hot-path fan-out and notifications (replaces Queues) |
 | R2 | 10GB, 1M ops/month | Optional, not required for MVP |
@@ -553,6 +642,7 @@ monitors:
   - name: public-api
     type: http
     mode: external
+    visibility: public                   # appears on both status pages
     target: https://api.example.com/health
     interval: 60s
 
@@ -574,6 +664,7 @@ monitors:
   - name: internal-db
     type: openmetrics
     mode: internal
+    visibility: private                  # private status page only
     target: https://tunnel.example.internal/metrics
     interval: 30s
 
@@ -633,13 +724,14 @@ The import step is idempotent and runs on every push to main via CI/CD.
 - Telegram notifications
 - Webhook notifications
 - D1 storage (state, executions, metric_series)
+- Status pages: public (no auth) + private (Cloudflare Access), single Worker
 
 ### Phase 2
 - Maintenance Windows
 - Tags
 - Monitor Groups
 - Monitor Dependencies
-- Public Status Pages
+- Status page enhancements (component groups, uptime charts, subscriptions, SLA reporting)
 - Multi-region probing
 - Migrate `metric_series` to Analytics Engine when monitor count nears the D1 write ceiling (~30 at 60s) — frees ~half of D1 writes, ~doubles capacity to ~60 monitors
 - Adopt Queues for durable fan-out and backpressure once monitor volume justifies the per-message operation cost
@@ -666,6 +758,7 @@ The import step is idempotent and runs on every push to main via CI/CD.
 - Alerting is incident-based, not check-based. Severity and thresholds are defined in `alert_rules`.
 - Notifications are asynchronous. Delivery state is tracked in `notification_deliveries`.
 - Notification routing: per-monitor channels take precedence; default channels are the fallback.
-- Queue payload carries `execution_id` from scheduling through to storage.
+- Invocation payload carries `execution_id` from scheduling through to storage.
 - Configuration is defined in YAML (version-controlled) and imported into D1 via CI/CD. Workers never read YAML.
 - Secrets live only in Cloudflare Secrets. D1 stores the secret *name*; Workers resolve the value from their environment at runtime. Secrets never touch `config.yaml` or D1.
+- Status pages are read-only views over the same data; one Worker routes by hostname. Monitor `visibility` is enforced in Worker code, not only by Cloudflare Access — the public page can never expose private monitors.
