@@ -1,0 +1,1 @@
+ALTER TABLE monitors ADD COLUMN ssl_check INTEGER NOT NULL DEFAULT 1 CHECK (ssl_check IN (0, 1));

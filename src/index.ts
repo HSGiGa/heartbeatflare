@@ -36,6 +36,7 @@ type MonitorRow = {
 	type: 'http' | 'tcp' | 'dns' | 'heartbeat';
 	scrape_url: string | null;
 	interval_seconds: number;
+	ssl_check: number;
 	current_status: string | null;
 	last_check_at: string | null;
 	consecutive_failures: number;
@@ -46,6 +47,7 @@ type ProbeResult = {
 	status: 'up' | 'down';
 	latency_ms: number;
 	tcp_connect_ms?: number;
+	ssl_error?: boolean;
 	error?: string;
 };
 
@@ -194,7 +196,7 @@ async function fetchD1Usage(env: RuntimeEnv): Promise<D1UsageSnapshot> {
 	return cachedUsage;
 }
 
-async function httpCheck(url: string): Promise<ProbeResult> {
+async function httpCheck(url: string, sslCheck: boolean): Promise<ProbeResult> {
 	const start = Date.now();
 	try {
 		const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
@@ -202,11 +204,10 @@ async function httpCheck(url: string): Promise<ProbeResult> {
 		if (res.ok) return { status: 'up', latency_ms };
 		return { status: 'down', latency_ms, error: `HTTP ${res.status}` };
 	} catch (err) {
-		return {
-			status: 'down',
-			latency_ms: Date.now() - start,
-			error: err instanceof Error ? err.message : String(err),
-		};
+		const latency_ms = Date.now() - start;
+		const msg = err instanceof Error ? err.message : String(err);
+		const isSsl = sslCheck && /ssl|certificate|tls/i.test(msg);
+		return { status: 'down', latency_ms, ssl_error: isSsl || undefined, error: msg };
 	}
 }
 
@@ -404,7 +405,7 @@ export default {
 		const now = new Date().toISOString();
 
 		const { results } = await env.DB.prepare(
-			`SELECT m.id, m.type, m.scrape_url, m.interval_seconds,
+			`SELECT m.id, m.type, m.scrape_url, m.interval_seconds, m.ssl_check,
 			        ms.status AS current_status, ms.last_check_at,
 			        COALESCE(ms.consecutive_failures, 0) AS consecutive_failures,
 			        COALESCE(ms.consecutive_successes, 0) AS consecutive_successes
@@ -421,7 +422,7 @@ export default {
 				const result =
 					monitor.type === 'tcp' ? await tcpCheck(monitor.scrape_url!) :
 					monitor.type === 'dns' ? await dnsCheck(monitor.scrape_url!) :
-					await httpCheck(monitor.scrape_url!);
+					await httpCheck(monitor.scrape_url!, monitor.ssl_check === 1);
 				await storeResult(env, monitor, result, executionId, now);
 			}),
 		);

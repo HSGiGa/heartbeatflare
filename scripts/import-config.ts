@@ -25,6 +25,7 @@ interface MonitorConfig {
 	type: 'http' | 'tcp' | 'dns' | 'heartbeat' | 'openmetrics';
 	mode: 'external' | 'internal';
 	visibility?: 'public' | 'private';
+	ssl?: boolean;
 	target: string;
 	interval: string;
 	alerts?: AlertConfig[];
@@ -116,11 +117,11 @@ async function main() {
 		console.log(`Importing monitor: ${monitor.name} (${id})`);
 
 		await d1Query(
-			`INSERT OR REPLACE INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, enabled, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1,
+			`INSERT OR REPLACE INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, ssl_check, enabled, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1,
          COALESCE((SELECT created_at FROM monitors WHERE id = ?), datetime('now')),
          datetime('now'))`,
-			[id, monitor.name, monitor.type, monitor.mode, monitor.visibility ?? 'private', target, intervalSeconds, id],
+			[id, monitor.name, monitor.type, monitor.mode, monitor.visibility ?? 'private', target, intervalSeconds, (monitor.ssl ?? true) ? 1 : 0, id],
 		);
 
 		for (let i = 0; i < (monitor.alerts ?? []).length; i++) {
