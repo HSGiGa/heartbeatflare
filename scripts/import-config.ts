@@ -31,8 +31,16 @@ interface MonitorConfig {
 	alerts?: AlertConfig[];
 }
 
+interface NotificationChannelConfig {
+	name: string;
+	type: 'webhook' | 'telegram' | 'slack' | 'email';
+	secret_name: string;
+	is_default?: boolean;
+}
+
 interface Config {
 	monitors: MonitorConfig[];
+	notification_channels?: NotificationChannelConfig[];
 }
 
 function slug(name: string): string {
@@ -144,7 +152,19 @@ async function main() {
 		await d1Query("UPDATE monitors SET enabled = 0, updated_at = datetime('now') WHERE id = ?", [id]);
 	}
 
-	console.log(`Import complete. ${config.monitors.length} monitor(s) imported, ${removed.length} soft-deleted.`);
+	for (const channel of config.notification_channels ?? []) {
+		const id = slug(channel.name);
+		console.log(`Importing channel: ${channel.name} (${id})`);
+		await d1Query(
+			`INSERT OR REPLACE INTO notification_channels (id, name, type, configuration, secret_name, is_default, enabled)
+       VALUES (?, ?, ?, '{}', ?, ?, 1)`,
+			[id, channel.name, channel.type, channel.secret_name, channel.is_default ? 1 : 0],
+		);
+	}
+
+	console.log(
+		`Import complete. ${config.monitors.length} monitor(s) imported, ${removed.length} soft-deleted, ${config.notification_channels?.length ?? 0} channel(s) imported.`,
+	);
 }
 
 main().catch((err) => {

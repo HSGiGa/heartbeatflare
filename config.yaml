@@ -1,3 +1,9 @@
+notification_channels:
+  - name: Mattermost
+    type: webhook
+    secret_name: MATTERMOST_WEBHOOK_URL
+    is_default: true
+
 monitors:
   - name: Google
     type: http

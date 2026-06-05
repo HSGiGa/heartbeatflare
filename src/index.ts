@@ -53,11 +53,26 @@ type ProbeResult = {
 	error?: string;
 };
 
+type NotificationMessage = {
+	incidentId: string;
+	monitorId: string;
+	monitorName: string;
+	eventType: 'down' | 'recovered';
+	count: number;
+	error?: string;
+};
+
+type NotificationChannelDbRow = {
+	id: string;
+	name: string;
+	type: string;
+	secret_name: string;
+};
+
 type RuntimeEnv = Env & {
 	CLOUDFLARE_ACCOUNT_ID?: string;
 	D1_DATABASE_ID?: string;
 	CLOUDFLARE_GRAPHQL_API_TOKEN?: string;
-	MATTERMOST_WEBHOOK_URL?: string;
 };
 
 type D1Usage = {
@@ -314,15 +329,41 @@ async function storeResult(env: Env, monitor: MonitorRow, result: ProbeResult, e
 	return { newFailures: failures, newSuccesses: successes };
 }
 
-async function sendMattermostAlert(webhookUrl: string, text: string): Promise<void> {
-	await fetch(webhookUrl, {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({ text }),
-	});
+async function fetchNotificationChannels(env: Env, monitorId: string): Promise<NotificationChannelDbRow[]> {
+	const { results: perMonitor } = await env.DB.prepare(
+		`SELECT nc.id, nc.name, nc.type, nc.secret_name
+		 FROM notification_channels nc
+		 JOIN monitor_notification_channels mnc ON mnc.channel_id = nc.id
+		 WHERE mnc.monitor_id = ? AND mnc.enabled = 1 AND nc.enabled = 1`,
+	).bind(monitorId).all<NotificationChannelDbRow>();
+	if (perMonitor.length > 0) return perMonitor;
+	const { results: defaults } = await env.DB.prepare(
+		`SELECT id, name, type, secret_name FROM notification_channels WHERE is_default = 1 AND enabled = 1`,
+	).all<NotificationChannelDbRow>();
+	return defaults;
 }
 
-async function evaluateAlerts(env: RuntimeEnv, monitor: MonitorRow, result: ProbeResult, newFailures: number, newSuccesses: number, now: string): Promise<void> {
+async function sendToChannel(env: Env, channel: NotificationChannelDbRow, incidentId: string, text: string, now: string): Promise<void> {
+	const url = (env as unknown as Record<string, string | undefined>)[channel.secret_name];
+	if (!url) return;
+	let error: string | null = null;
+	try {
+		const res = await fetch(url, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ text }),
+		});
+		if (!res.ok) error = `HTTP ${res.status}`;
+	} catch (e) {
+		error = e instanceof Error ? e.message : String(e);
+	}
+	await env.DB.prepare(
+		`INSERT INTO notification_deliveries (id, incident_id, channel_id, status, attempt_count, last_attempt_at, error)
+		 VALUES (?, ?, ?, ?, 1, ?, ?)`,
+	).bind(crypto.randomUUID(), incidentId, channel.id, error ? 'failed' : 'sent', now, error).run();
+}
+
+async function evaluateAlerts(env: Env, monitor: MonitorRow, result: ProbeResult, newFailures: number, newSuccesses: number, now: string): Promise<void> {
 	const { results: rules } = await env.DB.prepare(
 		`SELECT id, monitor_id, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled
 		 FROM alert_rules
@@ -332,6 +373,15 @@ async function evaluateAlerts(env: RuntimeEnv, monitor: MonitorRow, result: Prob
 
 	for (const rule of rules) {
 		if (result.status === 'down' && newFailures >= rule.failure_count && !monitor.active_incident_id) {
+			if (rule.cooldown_seconds > 0) {
+				const last = await env.DB.prepare(
+					`SELECT resolved_at FROM incidents WHERE monitor_id = ? AND status = 'resolved' ORDER BY resolved_at DESC LIMIT 1`,
+				).bind(monitor.id).first<{ resolved_at: string }>();
+				if (last?.resolved_at) {
+					const elapsed = (new Date(now).getTime() - new Date(last.resolved_at).getTime()) / 1000;
+					if (elapsed < rule.cooldown_seconds) break;
+				}
+			}
 			const incidentId = crypto.randomUUID();
 			await env.DB.prepare(
 				`INSERT INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, reason)
@@ -340,28 +390,32 @@ async function evaluateAlerts(env: RuntimeEnv, monitor: MonitorRow, result: Prob
 			await env.DB.prepare(
 				`UPDATE monitor_state SET active_incident_id = ? WHERE monitor_id = ?`,
 			).bind(incidentId, monitor.id).run();
-			if (env.MATTERMOST_WEBHOOK_URL) {
-				await sendMattermostAlert(
-					env.MATTERMOST_WEBHOOK_URL,
-					`🔴 **${monitor.name} is DOWN** — ${newFailures} consecutive failure${newFailures !== 1 ? 's' : ''}${result.error ? `: ${result.error}` : ''}`,
-				);
-			}
+			await (env.NOTIFICATION_QUEUE as Queue<NotificationMessage>).send({
+				incidentId,
+				monitorId: monitor.id,
+				monitorName: monitor.name,
+				eventType: 'down',
+				count: newFailures,
+				error: result.error,
+			});
 			break;
 		}
 
 		if (result.status === 'up' && newSuccesses >= rule.recovery_count && monitor.active_incident_id) {
+			const incidentId = monitor.active_incident_id;
 			await env.DB.prepare(
 				`UPDATE incidents SET status = 'resolved', resolved_at = ? WHERE id = ?`,
-			).bind(now, monitor.active_incident_id).run();
+			).bind(now, incidentId).run();
 			await env.DB.prepare(
 				`UPDATE monitor_state SET active_incident_id = NULL WHERE monitor_id = ?`,
 			).bind(monitor.id).run();
-			if (env.MATTERMOST_WEBHOOK_URL) {
-				await sendMattermostAlert(
-					env.MATTERMOST_WEBHOOK_URL,
-					`🟢 **${monitor.name} recovered** — back up after ${newSuccesses} successful check${newSuccesses !== 1 ? 's' : ''}`,
-				);
-			}
+			await (env.NOTIFICATION_QUEUE as Queue<NotificationMessage>).send({
+				incidentId,
+				monitorId: monitor.id,
+				monitorName: monitor.name,
+				eventType: 'recovered',
+				count: newSuccesses,
+			});
 			break;
 		}
 	}
@@ -375,17 +429,21 @@ export default {
 		if (request.method === 'POST' && pathname.startsWith('/beat/')) {
 			const monitorId = pathname.slice(6);
 			const monitor = await env.DB.prepare(
-				`SELECT m.id, m.type, m.scrape_url, m.interval_seconds,
+				`SELECT m.id, m.name, m.type, m.scrape_url, m.interval_seconds,
+				        COALESCE(m.ssl_check, 1) AS ssl_check,
 				        ms.status AS current_status, ms.last_check_at,
 				        COALESCE(ms.consecutive_failures, 0) AS consecutive_failures,
-				        COALESCE(ms.consecutive_successes, 0) AS consecutive_successes
+				        COALESCE(ms.consecutive_successes, 0) AS consecutive_successes,
+				        ms.active_incident_id
 				 FROM monitors m
 				 LEFT JOIN monitor_state ms ON ms.monitor_id = m.id
 				 WHERE m.id = ? AND m.type = 'heartbeat' AND m.enabled = 1`,
 			).bind(monitorId).first<MonitorRow>();
 			if (!monitor) return new Response(null, { status: 404 });
 			const now = new Date().toISOString();
-			await storeResult(env, monitor, { status: 'up', latency_ms: 0 }, crypto.randomUUID(), now);
+			const result = { status: 'up' as const, latency_ms: 0 };
+			const { newFailures, newSuccesses } = await storeResult(env, monitor, result, crypto.randomUUID(), now);
+			await evaluateAlerts(env, monitor, result, newFailures, newSuccesses, now);
 			return new Response(null, { status: 200 });
 		}
 
@@ -483,7 +541,7 @@ export default {
 					monitor.type === 'dns' ? await dnsCheck(monitor.scrape_url!) :
 					await httpCheck(monitor.scrape_url!, monitor.ssl_check === 1);
 				const { newFailures, newSuccesses } = await storeResult(env, monitor, result, executionId, now);
-				await evaluateAlerts(env as RuntimeEnv, monitor, result, newFailures, newSuccesses, now);
+				await evaluateAlerts(env, monitor, result, newFailures, newSuccesses, now);
 			}),
 		);
 
@@ -505,7 +563,22 @@ export default {
 			staleHeartbeats.map(async (monitor) => {
 				const result = { status: 'down' as const, latency_ms: 0, error: 'Heartbeat missed' };
 				const { newFailures, newSuccesses } = await storeResult(env, monitor, result, crypto.randomUUID(), now);
-				await evaluateAlerts(env as RuntimeEnv, monitor, result, newFailures, newSuccesses, now);
+				await evaluateAlerts(env, monitor, result, newFailures, newSuccesses, now);
+			}),
+		);
+	},
+	async queue(batch: MessageBatch<NotificationMessage>, env: Env): Promise<void> {
+		const now = new Date().toISOString();
+		await Promise.allSettled(
+			batch.messages.map(async (msg) => {
+				const { incidentId, monitorId, monitorName, eventType, count, error } = msg.body;
+				const channels = await fetchNotificationChannels(env, monitorId);
+				const text =
+					eventType === 'down'
+						? `🔴 **${monitorName} is DOWN** — ${count} consecutive failure${count !== 1 ? 's' : ''}${error ? `: ${error}` : ''}`
+						: `🟢 **${monitorName} recovered** — back up after ${count} successful check${count !== 1 ? 's' : ''}`;
+				await Promise.allSettled(channels.map((ch) => sendToChannel(env, ch, incidentId, text, now)));
+				msg.ack();
 			}),
 		);
 	},
