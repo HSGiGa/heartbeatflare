@@ -33,6 +33,7 @@ type AlertRuleDbRow = {
 
 type MonitorRow = {
 	id: string;
+	name: string;
 	type: 'http' | 'tcp' | 'dns' | 'heartbeat';
 	scrape_url: string | null;
 	interval_seconds: number;
@@ -41,6 +42,7 @@ type MonitorRow = {
 	last_check_at: string | null;
 	consecutive_failures: number;
 	consecutive_successes: number;
+	active_incident_id: string | null;
 };
 
 type ProbeResult = {
@@ -55,6 +57,7 @@ type RuntimeEnv = Env & {
 	CLOUDFLARE_ACCOUNT_ID?: string;
 	D1_DATABASE_ID?: string;
 	CLOUDFLARE_GRAPHQL_API_TOKEN?: string;
+	MATTERMOST_WEBHOOK_URL?: string;
 };
 
 type D1Usage = {
@@ -274,7 +277,7 @@ async function tcpCheck(target: string): Promise<ProbeResult> {
 	}
 }
 
-async function storeResult(env: Env, monitor: MonitorRow, result: ProbeResult, executionId: string, now: string): Promise<void> {
+async function storeResult(env: Env, monitor: MonitorRow, result: ProbeResult, executionId: string, now: string): Promise<{ newFailures: number; newSuccesses: number }> {
 	const prevStatus = monitor.current_status ?? 'unknown';
 	const failures = result.status === 'down' ? monitor.consecutive_failures + 1 : 0;
 	const successes = result.status === 'up' ? monitor.consecutive_successes + 1 : 0;
@@ -306,6 +309,61 @@ async function storeResult(env: Env, monitor: MonitorRow, result: ProbeResult, e
 		)
 			.bind(executionId, monitor.id, now, now, result.status, result.latency_ms, result.error ?? null)
 			.run();
+	}
+
+	return { newFailures: failures, newSuccesses: successes };
+}
+
+async function sendMattermostAlert(webhookUrl: string, text: string): Promise<void> {
+	await fetch(webhookUrl, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ text }),
+	});
+}
+
+async function evaluateAlerts(env: RuntimeEnv, monitor: MonitorRow, result: ProbeResult, newFailures: number, newSuccesses: number, now: string): Promise<void> {
+	const { results: rules } = await env.DB.prepare(
+		`SELECT id, monitor_id, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled
+		 FROM alert_rules
+		 WHERE monitor_id = ? AND enabled = 1
+		 ORDER BY failure_count ASC`,
+	).bind(monitor.id).all<AlertRuleDbRow>();
+
+	for (const rule of rules) {
+		if (result.status === 'down' && newFailures >= rule.failure_count && !monitor.active_incident_id) {
+			const incidentId = crypto.randomUUID();
+			await env.DB.prepare(
+				`INSERT INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, reason)
+				 VALUES (?, ?, ?, 'open', ?, ?, ?)`,
+			).bind(incidentId, monitor.id, rule.id, rule.severity, now, result.error ?? null).run();
+			await env.DB.prepare(
+				`UPDATE monitor_state SET active_incident_id = ? WHERE monitor_id = ?`,
+			).bind(incidentId, monitor.id).run();
+			if (env.MATTERMOST_WEBHOOK_URL) {
+				await sendMattermostAlert(
+					env.MATTERMOST_WEBHOOK_URL,
+					`🔴 **${monitor.name} is DOWN** — ${newFailures} consecutive failure${newFailures !== 1 ? 's' : ''}${result.error ? `: ${result.error}` : ''}`,
+				);
+			}
+			break;
+		}
+
+		if (result.status === 'up' && newSuccesses >= rule.recovery_count && monitor.active_incident_id) {
+			await env.DB.prepare(
+				`UPDATE incidents SET status = 'resolved', resolved_at = ? WHERE id = ?`,
+			).bind(now, monitor.active_incident_id).run();
+			await env.DB.prepare(
+				`UPDATE monitor_state SET active_incident_id = NULL WHERE monitor_id = ?`,
+			).bind(monitor.id).run();
+			if (env.MATTERMOST_WEBHOOK_URL) {
+				await sendMattermostAlert(
+					env.MATTERMOST_WEBHOOK_URL,
+					`🟢 **${monitor.name} recovered** — back up after ${newSuccesses} successful check${newSuccesses !== 1 ? 's' : ''}`,
+				);
+			}
+			break;
+		}
 	}
 }
 
@@ -405,10 +463,11 @@ export default {
 		const now = new Date().toISOString();
 
 		const { results } = await env.DB.prepare(
-			`SELECT m.id, m.type, m.scrape_url, m.interval_seconds, m.ssl_check,
+			`SELECT m.id, m.name, m.type, m.scrape_url, m.interval_seconds, m.ssl_check,
 			        ms.status AS current_status, ms.last_check_at,
 			        COALESCE(ms.consecutive_failures, 0) AS consecutive_failures,
-			        COALESCE(ms.consecutive_successes, 0) AS consecutive_successes
+			        COALESCE(ms.consecutive_successes, 0) AS consecutive_successes,
+			        ms.active_incident_id
 			 FROM monitors m
 			 LEFT JOIN monitor_state ms ON ms.monitor_id = m.id
 			 WHERE m.enabled = 1 AND m.type IN ('http', 'tcp', 'dns') AND m.mode = 'external'
@@ -423,15 +482,18 @@ export default {
 					monitor.type === 'tcp' ? await tcpCheck(monitor.scrape_url!) :
 					monitor.type === 'dns' ? await dnsCheck(monitor.scrape_url!) :
 					await httpCheck(monitor.scrape_url!, monitor.ssl_check === 1);
-				await storeResult(env, monitor, result, executionId, now);
+				const { newFailures, newSuccesses } = await storeResult(env, monitor, result, executionId, now);
+				await evaluateAlerts(env as RuntimeEnv, monitor, result, newFailures, newSuccesses, now);
 			}),
 		);
 
 		const { results: staleHeartbeats } = await env.DB.prepare(
-			`SELECT m.id, m.type, m.scrape_url, m.interval_seconds,
+			`SELECT m.id, m.name, m.type, m.scrape_url, m.interval_seconds,
+			        COALESCE(m.ssl_check, 1) AS ssl_check,
 			        ms.status AS current_status, ms.last_check_at,
 			        COALESCE(ms.consecutive_failures, 0) AS consecutive_failures,
-			        COALESCE(ms.consecutive_successes, 0) AS consecutive_successes
+			        COALESCE(ms.consecutive_successes, 0) AS consecutive_successes,
+			        ms.active_incident_id
 			 FROM monitors m
 			 LEFT JOIN monitor_state ms ON ms.monitor_id = m.id
 			 WHERE m.enabled = 1 AND m.type = 'heartbeat'
@@ -441,7 +503,9 @@ export default {
 
 		await Promise.allSettled(
 			staleHeartbeats.map(async (monitor) => {
-				await storeResult(env, monitor, { status: 'down', latency_ms: 0, error: 'Heartbeat missed' }, crypto.randomUUID(), now);
+				const result = { status: 'down' as const, latency_ms: 0, error: 'Heartbeat missed' };
+				const { newFailures, newSuccesses } = await storeResult(env, monitor, result, crypto.randomUUID(), now);
+				await evaluateAlerts(env as RuntimeEnv, monitor, result, newFailures, newSuccesses, now);
 			}),
 		);
 	},
