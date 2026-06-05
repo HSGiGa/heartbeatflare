@@ -24,10 +24,17 @@ function expectUsageFields(body: { usage: unknown; usagePercent: unknown }) {
 }
 
 async function applyMigration(sql: string) {
-	const statements = sql
+	const stripped = sql
+		.split('\n')
+		.map((line) => {
+			const i = line.indexOf('--');
+			return i >= 0 ? line.slice(0, i) : line;
+		})
+		.join('\n');
+	const statements = stripped
 		.split(';')
 		.map((s) => s.trim())
-		.filter((s) => s.length > 0 && !s.startsWith('--'));
+		.filter((s) => s.length > 0);
 	for (const stmt of statements) {
 		await env.DB.prepare(stmt).run();
 	}

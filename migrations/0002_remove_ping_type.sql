@@ -16,7 +16,7 @@ CREATE TABLE monitors_new (
 
 INSERT INTO monitors_new SELECT * FROM monitors;
 
-DROP TABLE monitors; -- lint-ok: SQLite table recreation — only way to update CHECK constraint
+DROP TABLE monitors; -- lint-ok: SQLite table recreation, only way to update a CHECK constraint
 
 ALTER TABLE monitors_new RENAME TO monitors;
 
