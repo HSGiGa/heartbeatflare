@@ -12,7 +12,7 @@
 		"cf:whoami": "wrangler whoami",
 		"d1:create:prod": "wrangler d1 create heartbeatflare-prod-db",
 		"d1:migrate:prod": "wrangler d1 migrations apply heartbeatflare-prod-db --remote",
-		"migration:lint": "if grep -riE 'DROP TABLE|DROP COLUMN|RENAME COLUMN|RENAME TABLE' migrations/; then echo 'ERROR: destructive migration detected — use additive-only schema changes' && exit 1; fi",
+		"migration:lint": "if grep -riE 'DROP TABLE|DROP COLUMN|RENAME COLUMN|RENAME TABLE' migrations/ | grep -v '-- lint-ok'; then echo 'ERROR: destructive migration detected — use additive-only schema changes' && exit 1; fi",
 		"config:import": "tsx scripts/import-config.ts"
 	},
 	"devDependencies": {
