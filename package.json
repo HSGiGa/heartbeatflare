@@ -16,11 +16,11 @@
 		"config:import": "tsx scripts/import-config.ts"
 	},
 	"devDependencies": {
-		"@cloudflare/vitest-pool-workers": "^0.8.19",
+		"@cloudflare/vitest-pool-workers": "^0.16.13",
 		"tsx": "^4.22.4",
-		"typescript": "^5.5.2",
-		"vitest": "~3.0.7",
-		"wrangler": "^4.19.1",
+		"typescript": "^6.0.3",
+		"vitest": "~4.1.8",
+		"wrangler": "^4.98.0",
 		"yaml": "^2.9.0"
 	}
 }
