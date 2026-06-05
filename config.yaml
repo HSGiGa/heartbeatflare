@@ -11,6 +11,18 @@ monitors:
         failures: 2
         recovery: 2
         cooldown: 300s
+  - name: Google DNS
+    type: dns
+    mode: external
+    visibility: public
+    target: google.com
+    interval: 60s
+    alerts:
+      - condition: "status != up"
+        severity: critical
+        failures: 2
+        recovery: 2
+        cooldown: 300s
   - name: Gmail SMTP
     type: tcp
     mode: external

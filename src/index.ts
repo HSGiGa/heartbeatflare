@@ -33,8 +33,8 @@ type AlertRuleDbRow = {
 
 type MonitorRow = {
 	id: string;
-	type: 'http' | 'tcp';
-	scrape_url: string;
+	type: 'http' | 'tcp' | 'dns' | 'heartbeat';
+	scrape_url: string | null;
 	interval_seconds: number;
 	current_status: string | null;
 	last_check_at: string | null;
@@ -211,6 +211,31 @@ function parseTcpTarget(target: string): { hostname: string; port: number } {
 	return { hostname: url.hostname, port };
 }
 
+function parseDnsTarget(target: string): { hostname: string; recordType: string } {
+	const [hostname, recordType = 'A'] = target.split('/');
+	if (!hostname) throw new Error(`Invalid DNS target: ${target}`);
+	return { hostname, recordType: recordType.toUpperCase() };
+}
+
+async function dnsCheck(target: string): Promise<ProbeResult> {
+	const start = Date.now();
+	try {
+		const { hostname, recordType } = parseDnsTarget(target);
+		const url = `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(hostname)}&type=${recordType}`;
+		const res = await fetch(url, {
+			headers: { Accept: 'application/dns-json' },
+			signal: AbortSignal.timeout(10_000),
+		});
+		const latency_ms = Date.now() - start;
+		if (!res.ok) return { status: 'down', latency_ms, error: `DoH HTTP ${res.status}` };
+		const body = (await res.json()) as { Status: number; Answer?: unknown[] };
+		if (body.Status === 0 && body.Answer?.length) return { status: 'up', latency_ms };
+		return { status: 'down', latency_ms, error: `DNS status ${body.Status}` };
+	} catch (err) {
+		return { status: 'down', latency_ms: Date.now() - start, error: err instanceof Error ? err.message : String(err) };
+	}
+}
+
 async function tcpCheck(target: string): Promise<ProbeResult> {
 	const start = Date.now();
 	let socket: Socket | undefined;
@@ -223,7 +248,7 @@ async function tcpCheck(target: string): Promise<ProbeResult> {
 			new Promise<never>((_, reject) => {
 				timeoutId = setTimeout(() => reject(new Error('TCP connect timeout')), 10_000);
 			}),
-		]).finally(() => clearTimeout(timeoutId));
+		]).finally(() => clearTimeout(timeoutId ?? null));
 		const latency_ms = Date.now() - start;
 		return { status: 'up', latency_ms, tcp_connect_ms: latency_ms };
 	} catch (err) {
@@ -278,6 +303,23 @@ export default {
 	async fetch(request, env, ctx): Promise<Response> {
 		const { pathname } = new URL(request.url);
 		const runtimeEnv = env as RuntimeEnv;
+
+		if (request.method === 'POST' && pathname.startsWith('/beat/')) {
+			const monitorId = pathname.slice(6);
+			const monitor = await env.DB.prepare(
+				`SELECT m.id, m.type, m.scrape_url, m.interval_seconds,
+				        ms.status AS current_status, ms.last_check_at,
+				        COALESCE(ms.consecutive_failures, 0) AS consecutive_failures,
+				        COALESCE(ms.consecutive_successes, 0) AS consecutive_successes
+				 FROM monitors m
+				 LEFT JOIN monitor_state ms ON ms.monitor_id = m.id
+				 WHERE m.id = ? AND m.type = 'heartbeat' AND m.enabled = 1`,
+			).bind(monitorId).first<MonitorRow>();
+			if (!monitor) return new Response(null, { status: 404 });
+			const now = new Date().toISOString();
+			await storeResult(env, monitor, { status: 'up', latency_ms: 0 }, crypto.randomUUID(), now);
+			return new Response(null, { status: 200 });
+		}
 
 		if (request.method !== 'GET' || pathname !== '/') {
 			return new Response(null, { status: 404 });
@@ -358,7 +400,7 @@ export default {
 			        COALESCE(ms.consecutive_successes, 0) AS consecutive_successes
 			 FROM monitors m
 			 LEFT JOIN monitor_state ms ON ms.monitor_id = m.id
-			 WHERE m.enabled = 1 AND m.type IN ('http', 'tcp') AND m.mode = 'external'
+			 WHERE m.enabled = 1 AND m.type IN ('http', 'tcp', 'dns') AND m.mode = 'external'
 			   AND (ms.last_check_at IS NULL
 			        OR datetime(ms.last_check_at, '+' || m.interval_seconds || ' seconds') <= datetime('now'))`,
 		).all<MonitorRow>();
@@ -366,8 +408,29 @@ export default {
 		await Promise.allSettled(
 			results.map(async (monitor) => {
 				const executionId = crypto.randomUUID();
-				const result = monitor.type === 'tcp' ? await tcpCheck(monitor.scrape_url) : await httpCheck(monitor.scrape_url);
+				const result =
+					monitor.type === 'tcp' ? await tcpCheck(monitor.scrape_url!) :
+					monitor.type === 'dns' ? await dnsCheck(monitor.scrape_url!) :
+					await httpCheck(monitor.scrape_url!);
 				await storeResult(env, monitor, result, executionId, now);
+			}),
+		);
+
+		const { results: staleHeartbeats } = await env.DB.prepare(
+			`SELECT m.id, m.type, m.scrape_url, m.interval_seconds,
+			        ms.status AS current_status, ms.last_check_at,
+			        COALESCE(ms.consecutive_failures, 0) AS consecutive_failures,
+			        COALESCE(ms.consecutive_successes, 0) AS consecutive_successes
+			 FROM monitors m
+			 LEFT JOIN monitor_state ms ON ms.monitor_id = m.id
+			 WHERE m.enabled = 1 AND m.type = 'heartbeat'
+			   AND (ms.last_success_at IS NULL
+			        OR datetime(ms.last_success_at, '+' || m.interval_seconds || ' seconds') <= datetime('now'))`,
+		).all<MonitorRow>();
+
+		await Promise.allSettled(
+			staleHeartbeats.map(async (monitor) => {
+				await storeResult(env, monitor, { status: 'down', latency_ms: 0, error: 'Heartbeat missed' }, crypto.randomUUID(), now);
 			}),
 		);
 	},
