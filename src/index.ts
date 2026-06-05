@@ -125,6 +125,15 @@ function utcDateString(date: Date): string {
 	return date.toISOString().slice(0, 10);
 }
 
+function usageResetsIn(nowMs: number): string {
+	const now = new Date(nowMs);
+	const resetAt = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+	const diffMs = resetAt - nowMs;
+	const hours = Math.floor(diffMs / 3_600_000);
+	const minutes = Math.floor((diffMs % 3_600_000) / 60_000);
+	return `${hours}h ${minutes}m`;
+}
+
 async function fetchD1Usage(env: RuntimeEnv): Promise<D1UsageSnapshot> {
 	const nowMs = Date.now();
 	if (nowMs < cachedUsageUntil) return cachedUsage;
@@ -357,6 +366,7 @@ export default {
 		return Response.json({
 			usage: d1Usage.usage,
 			usagePercent: d1Usage.usagePercent,
+			usageResetsIn: usageResetsIn(Date.now()),
 			monitors: monitors.map((m) => ({
 				id: m.id,
 				name: m.name,
