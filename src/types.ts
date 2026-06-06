@@ -1,0 +1,132 @@
+export type MonitorDbRow = {
+	id: string;
+	name: string;
+	type: string;
+	mode: string;
+	visibility: string;
+	scrape_url: string | null;
+	interval_seconds: number;
+	enabled: number;
+	created_at: string;
+	updated_at: string;
+	status: string | null;
+	last_check_at: string | null;
+	last_success_at: string | null;
+	consecutive_failures: number | null;
+	consecutive_successes: number | null;
+	active_incident_id: string | null;
+};
+
+export type AlertRuleDbRow = {
+	id: string;
+	monitor_id: string;
+	condition: string;
+	threshold: number;
+	severity: string;
+	failure_count: number;
+	recovery_count: number;
+	cooldown_seconds: number;
+	enabled: number;
+};
+
+export type MonitorRow = {
+	id: string;
+	name: string;
+	type: 'http' | 'tcp' | 'dns' | 'heartbeat';
+	scrape_url: string | null;
+	interval_seconds: number;
+	ssl_check: number;
+	current_status: string | null;
+	last_check_at: string | null;
+	consecutive_failures: number;
+	consecutive_successes: number;
+	active_incident_id: string | null;
+};
+
+export type ProbeResult = {
+	status: 'up' | 'down';
+	latency_ms: number;
+	tcp_connect_ms?: number;
+	ssl_error?: boolean;
+	error?: string;
+};
+
+export type NotificationMessage = {
+	incidentId: string;
+	monitorId: string;
+	monitorName: string;
+	eventType: 'down' | 'recovered';
+	count: number;
+	error?: string;
+};
+
+export type NotificationChannelDbRow = {
+	id: string;
+	name: string;
+	type: string;
+	configuration: string;
+};
+
+export type UptimeDayRow = { monitor_id: string; day: string; avg_up: number };
+export type LatencyRow = { monitor_id: string; latency_ms: number };
+export type IncidentRow = {
+	id: string;
+	monitor_id: string;
+	severity: string;
+	started_at: string;
+	resolved_at: string | null;
+	reason: string | null;
+	monitor_name?: string;
+};
+
+export type RuntimeEnv = Env & {
+	CLOUDFLARE_ACCOUNT_ID?: string;
+	D1_DATABASE_ID?: string;
+	CLOUDFLARE_GRAPHQL_API_TOKEN?: string;
+};
+
+export type D1Usage = {
+	readQueries: number;
+	writeQueries: number;
+	rowsRead: number;
+	rowsWritten: number;
+	databaseSizeBytes: number;
+};
+
+export type D1UsagePercent = {
+	rowsRead: number;
+	rowsWritten: number;
+	storage: number;
+};
+
+export type WorkersUsage = {
+	requests: number;
+	errors: number;
+	subrequests: number;
+};
+
+export type UsageSnapshot = {
+	d1: D1Usage;
+	d1Percent: D1UsagePercent;
+	workers: WorkersUsage | null;
+	fetchedAt: string | null;
+};
+
+export type UsageGraphQLResponse = {
+	data?: {
+		viewer?: {
+			accounts?: Array<{
+				d1AnalyticsAdaptiveGroups?: Array<{
+					sum?: Partial<Omit<D1Usage, 'databaseSizeBytes'> & { queryBatchResponseBytes: number }>;
+				}>;
+				d1StorageAdaptiveGroups?: Array<{
+					max?: Partial<Pick<D1Usage, 'databaseSizeBytes'>>;
+				}>;
+				workersInvocationsAdaptive?: Array<{
+					sum?: Partial<WorkersUsage>;
+				}>;
+			}>;
+		};
+	};
+	errors?: unknown[];
+};
