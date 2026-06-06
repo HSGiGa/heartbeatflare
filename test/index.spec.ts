@@ -10,15 +10,15 @@ import migration3Sql from '../migrations/0003_add_ssl_check.sql?raw';
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 
-function expectUsageFields(body: { usage: unknown; usagePercent: unknown }) {
-	expect(body.usage).toEqual({
+function expectUsageFields(body: { d1: unknown; d1Percent: unknown }) {
+	expect(body.d1).toEqual({
 		readQueries: expect.any(Number),
 		writeQueries: expect.any(Number),
 		rowsRead: expect.any(Number),
 		rowsWritten: expect.any(Number),
 		databaseSizeBytes: expect.any(Number),
 	});
-	expect(body.usagePercent).toEqual({
+	expect(body.d1Percent).toEqual({
 		rowsRead: expect.any(Number),
 		rowsWritten: expect.any(Number),
 		storage: expect.any(Number),
@@ -103,7 +103,7 @@ describe('GET /api/status', () => {
 		await waitOnExecutionContext(ctx);
 		expect(response.status).toBe(200);
 		expect(response.headers.get('Content-Type')).toContain('application/json');
-		const body = (await response.json()) as { monitors: unknown[]; usage: unknown; usagePercent: unknown };
+		const body = (await response.json()) as { monitors: unknown[]; d1: unknown; d1Percent: unknown };
 		expect(Array.isArray(body.monitors)).toBe(true);
 		expectUsageFields(body);
 	});
@@ -112,7 +112,7 @@ describe('GET /api/status', () => {
 		const response = await SELF.fetch('https://example.com/api/status');
 		expect(response.status).toBe(200);
 		expect(response.headers.get('Content-Type')).toContain('application/json');
-		const body = (await response.json()) as { monitors: unknown[]; usage: unknown; usagePercent: unknown };
+		const body = (await response.json()) as { monitors: unknown[]; d1: unknown; d1Percent: unknown };
 		expect(Array.isArray(body.monitors)).toBe(true);
 		expectUsageFields(body);
 	});

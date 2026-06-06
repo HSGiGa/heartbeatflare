@@ -101,13 +101,20 @@ type D1UsagePercent = {
 	storage: number;
 };
 
-type D1UsageSnapshot = {
-	usage: D1Usage;
-	usagePercent: D1UsagePercent;
+type WorkersUsage = {
+	requests: number;
+	errors: number;
+	subrequests: number;
+};
+
+type UsageSnapshot = {
+	d1: D1Usage;
+	d1Percent: D1UsagePercent;
+	workers: WorkersUsage | null;
 	fetchedAt: string | null;
 };
 
-type D1GraphQLResponse = {
+type UsageGraphQLResponse = {
 	data?: {
 		viewer?: {
 			accounts?: Array<{
@@ -116,6 +123,9 @@ type D1GraphQLResponse = {
 				}>;
 				d1StorageAdaptiveGroups?: Array<{
 					max?: Partial<Pick<D1Usage, 'databaseSizeBytes'>>;
+				}>;
+				workersInvocationsAdaptive?: Array<{
+					sum?: Partial<WorkersUsage>;
 				}>;
 			}>;
 		};
@@ -129,6 +139,10 @@ const freePlanLimits = {
 	storageBytes: 5_000_000_000,
 };
 
+const workersFreeLimit = {
+	requestsPerDay: 100_000,
+};
+
 const fallbackUsage: D1Usage = {
 	readQueries: 59,
 	writeQueries: 81,
@@ -137,9 +151,10 @@ const fallbackUsage: D1Usage = {
 	databaseSizeBytes: 159744,
 };
 
-let cachedUsage: D1UsageSnapshot = {
-	usage: fallbackUsage,
-	usagePercent: calculateUsagePercent(fallbackUsage),
+let cachedUsage: UsageSnapshot = {
+	d1: fallbackUsage,
+	d1Percent: calculateUsagePercent(fallbackUsage),
+	workers: null,
 	fetchedAt: null,
 };
 
@@ -166,7 +181,7 @@ function usageResetsIn(nowMs: number): string {
 	return `${hours}h ${minutes}m`;
 }
 
-async function fetchD1Usage(env: RuntimeEnv): Promise<D1UsageSnapshot> {
+async function fetchUsage(env: RuntimeEnv): Promise<UsageSnapshot> {
 	const nowMs = Date.now();
 	if (nowMs < cachedUsageUntil) return cachedUsage;
 
@@ -186,11 +201,12 @@ async function fetchD1Usage(env: RuntimeEnv): Promise<D1UsageSnapshot> {
 		},
 		body: JSON.stringify({
 			query:
-				'query D1Usage($accountTag: string!, $date: Date, $databaseId: string) { viewer { accounts(filter: { accountTag: $accountTag }) { d1AnalyticsAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date, databaseId: $databaseId }) { sum { readQueries writeQueries rowsRead rowsWritten queryBatchResponseBytes } } d1StorageAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date, databaseId: $databaseId }) { max { databaseSizeBytes } } } } }',
+				'query Usage($accountTag: string!, $date: Date, $databaseId: string, $scriptName: string) { viewer { accounts(filter: { accountTag: $accountTag }) { d1AnalyticsAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date, databaseId: $databaseId }) { sum { readQueries writeQueries rowsRead rowsWritten queryBatchResponseBytes } } d1StorageAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date, databaseId: $databaseId }) { max { databaseSizeBytes } } workersInvocationsAdaptive(limit: 10000, filter: { date_geq: $date, date_leq: $date, scriptName: $scriptName }) { sum { requests errors subrequests } } } } }',
 			variables: {
 				accountTag: accountId,
 				date: today,
 				databaseId,
+				scriptName: 'heartbeatflare',
 			},
 		}),
 	});
@@ -200,7 +216,7 @@ async function fetchD1Usage(env: RuntimeEnv): Promise<D1UsageSnapshot> {
 		return cachedUsage;
 	}
 
-	const body = (await response.json()) as D1GraphQLResponse;
+	const body = (await response.json()) as UsageGraphQLResponse;
 	if (body.errors?.length) {
 		cachedUsageUntil = nowMs + 30_000;
 		return cachedUsage;
@@ -209,17 +225,20 @@ async function fetchD1Usage(env: RuntimeEnv): Promise<D1UsageSnapshot> {
 	const account = body.data?.viewer?.accounts?.[0];
 	const analytics = account?.d1AnalyticsAdaptiveGroups?.[0]?.sum ?? {};
 	const storage = account?.d1StorageAdaptiveGroups?.[0]?.max ?? {};
-	const usage: D1Usage = {
+	const workersSum = account?.workersInvocationsAdaptive?.[0]?.sum;
+
+	const d1: D1Usage = {
 		readQueries: analytics.readQueries ?? 0,
 		writeQueries: analytics.writeQueries ?? 0,
 		rowsRead: analytics.rowsRead ?? 0,
 		rowsWritten: analytics.rowsWritten ?? 0,
-		databaseSizeBytes: storage.databaseSizeBytes ?? cachedUsage.usage.databaseSizeBytes,
+		databaseSizeBytes: storage.databaseSizeBytes ?? cachedUsage.d1.databaseSizeBytes,
 	};
 
 	cachedUsage = {
-		usage,
-		usagePercent: calculateUsagePercent(usage),
+		d1,
+		d1Percent: calculateUsagePercent(d1),
+		workers: workersSum ? { requests: workersSum.requests ?? 0, errors: workersSum.errors ?? 0, subrequests: workersSum.subrequests ?? 0 } : null,
 		fetchedAt: new Date(nowMs).toISOString(),
 	};
 	cachedUsageUntil = nowMs + 60_000;
@@ -515,7 +534,7 @@ function buildStatusPage({
 	latencyPoints: LatencyRow[];
 	activeIncidents: IncidentRow[];
 	recentIncidents: IncidentRow[];
-	d1Usage: D1UsageSnapshot;
+	d1Usage: UsageSnapshot;
 }): string {
 	// Build lookup maps
 	const uptimeByMonitor = new Map<string, Map<string, number>>();
@@ -690,17 +709,38 @@ function buildStatusPage({
 		</div>`;
 	}
 
-	const { usage, usagePercent } = d1Usage;
+	function infoCard(label: string, value: string, valueColor: string, sub?: string): string {
+		return `<div class="usage-card">
+			<div class="usage-label">${label}</div>
+			<div style="font-size:20px;font-weight:700;color:${valueColor};line-height:1.2">${value}</div>
+			${sub ? `<div style="font-size:12px;color:#a1a1aa;margin-top:3px">${sub}</div>` : ''}
+		</div>`;
+	}
+
+	const { d1, d1Percent, workers } = d1Usage;
+	const workersReqPct = workers ? (workers.requests / workersFreeLimit.requestsPerDay) * 100 : 0;
+
 	const usageHtml = `
-	<section class="section usage-section">
-		<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+	<section class="section">
+		<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
 			<h2 class="section-title" style="margin:0">Infrastructure Usage</h2>
-			<span class="meta-text">D1 Free Plan · resets in ${usageResetsIn(nowMs)}</span>
+			<span class="meta-text">resets in ${usageResetsIn(nowMs)}</span>
 		</div>
+		<div class="usage-sublabel">D1 Database · Free Plan · 5M reads / 100K writes / 5 GB / day</div>
 		<div class="usage-grid">
-			${progressBar('Rows Read', formatNumber(usage.rowsRead), '5M / day', usagePercent.rowsRead)}
-			${progressBar('Rows Written', formatNumber(usage.rowsWritten), '100K / day', usagePercent.rowsWritten)}
-			${progressBar('Storage', formatBytes(usage.databaseSizeBytes), '5 GB', usagePercent.storage)}
+			${progressBar('Rows Read', formatNumber(d1.rowsRead), '5M / day', d1Percent.rowsRead)}
+			${progressBar('Rows Written', formatNumber(d1.rowsWritten), '100K / day', d1Percent.rowsWritten)}
+			${progressBar('Storage', formatBytes(d1.databaseSizeBytes), '5 GB', d1Percent.storage)}
+		</div>
+		<div class="usage-sublabel" style="margin-top:16px">Workers · Free Plan · 100K requests / day</div>
+		<div class="usage-grid">
+			${workers
+				? progressBar('Requests', formatNumber(workers.requests), '100K / day', workersReqPct)
+				: infoCard('Requests', '—', '#a1a1aa', 'no API data')}
+			${infoCard('Errors', workers ? String(workers.errors) : '—', workers && workers.errors > 0 ? '#dc2626' : '#16a34a', workers ? (workers.errors > 0 ? 'today' : 'clean') : '')}
+			${infoCard('Subrequests', workers ? formatNumber(workers.subrequests) : '—', '#18181b', workers ? 'fetch calls today' : '')}
+			${infoCard('Queue', 'heartbeatflare-notifications', '#18181b', '1M ops / month free')}
+			${infoCard('Cron', '* * * * *', '#18181b', '~1,440 calls / day')}
 		</div>
 	</section>`;
 
@@ -736,8 +776,8 @@ header{background:${bannerBg};border-bottom:1px solid ${bannerBorder};padding:28
 .stats-row{display:flex;align-items:center;gap:14px;font-size:12px;color:#71717a;flex-wrap:wrap}
 .stats-row b{color:#18181b;font-weight:600}
 .sparkline-wrap{display:flex;align-items:center}
-.usage-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
-@media(max-width:520px){.usage-grid{grid-template-columns:1fr}}
+.usage-sublabel{font-size:11px;color:#a1a1aa;margin-bottom:8px}
+.usage-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px}
 .usage-card{background:#fff;border:1px solid #e4e4e7;border-radius:8px;padding:14px 16px}
 .usage-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#a1a1aa;margin-bottom:8px}
 footer{border-top:1px solid #e4e4e7;padding:20px 0;margin-top:8px}
@@ -826,7 +866,7 @@ export default {
 					 ORDER BY monitor_id`,
 				).all<AlertRuleDbRow>(),
 			]);
-			const d1Usage = await fetchD1Usage(runtimeEnv);
+			const snapshot = await fetchUsage(runtimeEnv);
 			const rulesByMonitor = new Map<string, AlertRuleDbRow[]>();
 			for (const rule of rules) {
 				const list = rulesByMonitor.get(rule.monitor_id) ?? [];
@@ -834,8 +874,9 @@ export default {
 				rulesByMonitor.set(rule.monitor_id, list);
 			}
 			return Response.json({
-				usage: d1Usage.usage,
-				usagePercent: d1Usage.usagePercent,
+				d1: snapshot.d1,
+				d1Percent: snapshot.d1Percent,
+				workers: snapshot.workers,
 				usageResetsIn: usageResetsIn(Date.now()),
 				monitors: monitors.map((m) => ({
 					id: m.id,
@@ -919,7 +960,7 @@ export default {
 				 WHERE i.status = 'resolved'
 				 ORDER BY i.resolved_at DESC LIMIT 5`,
 			).all<IncidentRow>(),
-			fetchD1Usage(runtimeEnv),
+			fetchUsage(runtimeEnv),
 		]);
 
 		return new Response(
