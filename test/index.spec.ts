@@ -67,26 +67,37 @@ beforeAll(async () => {
 });
 
 describe('GET /', () => {
-	it('includes TCP monitors from D1', async () => {
+	it('returns HTML status page', async () => {
 		const response = await SELF.fetch('https://example.com/');
+		expect(response.status).toBe(200);
+		expect(response.headers.get('Content-Type')).toContain('text/html');
+		const html = await response.text();
+		expect(html).toContain('<!DOCTYPE html>');
+		expect(html).toContain('HeartbeatFlare');
+	});
+});
+
+describe('GET /api/status', () => {
+	it('includes TCP monitors from D1', async () => {
+		const response = await SELF.fetch('https://example.com/api/status');
 		const body = (await response.json()) as { monitors: Array<{ id: string; type: string; target: string }> };
 		expect(body.monitors).toContainEqual(expect.objectContaining({ id: 'tcp-example', type: 'tcp', target: '1.1.1.1:53' }));
 	});
 
 	it('includes DNS monitors from D1', async () => {
-		const response = await SELF.fetch('https://example.com/');
+		const response = await SELF.fetch('https://example.com/api/status');
 		const body = (await response.json()) as { monitors: Array<{ id: string; type: string; target: string }> };
 		expect(body.monitors).toContainEqual(expect.objectContaining({ id: 'dns-example', type: 'dns', target: 'example.com' }));
 	});
 
 	it('includes heartbeat monitors from D1', async () => {
-		const response = await SELF.fetch('https://example.com/');
+		const response = await SELF.fetch('https://example.com/api/status');
 		const body = (await response.json()) as { monitors: Array<{ id: string; type: string }> };
 		expect(body.monitors).toContainEqual(expect.objectContaining({ id: 'hb-example', type: 'heartbeat' }));
 	});
 
 	it('returns JSON monitors list (unit style)', async () => {
-		const request = new IncomingRequest('http://example.com/');
+		const request = new IncomingRequest('http://example.com/api/status');
 		const ctx = createExecutionContext();
 		const response = await worker.fetch(request, env, ctx);
 		await waitOnExecutionContext(ctx);
@@ -98,7 +109,7 @@ describe('GET /', () => {
 	});
 
 	it('returns JSON monitors list (integration style)', async () => {
-		const response = await SELF.fetch('https://example.com/');
+		const response = await SELF.fetch('https://example.com/api/status');
 		expect(response.status).toBe(200);
 		expect(response.headers.get('Content-Type')).toContain('application/json');
 		const body = (await response.json()) as { monitors: unknown[]; usage: unknown; usagePercent: unknown };
