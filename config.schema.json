@@ -102,9 +102,9 @@
         "target": { "type": "string", "description": "URL, host:port, or domain to monitor." },
         "interval": {
           "type": "string",
-          "pattern": "^[1-9][0-9]*[sm]$",
+          "pattern": "^((6[0-9]|[7-9][0-9]|[1-9][0-9]{2,})s|[1-9][0-9]*m)$",
           "default": "5m",
-          "description": "Check interval, e.g. \"60s\" or \"5m\". Defaults to 5m for non-critical monitors."
+          "description": "Check interval, minimum 60s. Examples: \"60s\", \"5m\", \"300s\". Defaults to 5m."
         },
         "alerts": {
           "type": "array",
