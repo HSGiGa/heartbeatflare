@@ -1,8 +1,22 @@
+# yaml-language-server: $schema=./config.schema.json
+
 notification_channels:
   - name: Mattermost
-    type: webhook
-    secret_name: MATTERMOST_WEBHOOK_URL
+    type: slack
+    url: ${MATTERMOST_WEBHOOK_URL}
+    channel: "#alerts"
     is_default: true
+  - name: Email
+    type: email
+    server: smtp.example.com
+    port: 587
+    from: alerts@example.com
+    to: admin@example.com
+    username: alerts@example.com
+    password: ${EMAIL_PASSWORD}
+  - name: Webhook
+    type: webhook
+    url: https://example.com/${PAGERDUTY_API_KEY}/alerts
 
 monitors:
   - name: Google

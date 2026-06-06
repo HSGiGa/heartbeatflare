@@ -31,12 +31,43 @@ interface MonitorConfig {
 	alerts?: AlertConfig[];
 }
 
-interface NotificationChannelConfig {
+interface SlackChannelConfig {
 	name: string;
-	type: 'webhook' | 'telegram' | 'slack' | 'email';
-	secret_name: string;
+	type: 'slack';
+	url: string;
+	channel?: string;
 	is_default?: boolean;
 }
+
+interface WebhookChannelConfig {
+	name: string;
+	type: 'webhook';
+	url: string;
+	headers?: Record<string, string>;
+	is_default?: boolean;
+}
+
+interface EmailChannelConfig {
+	name: string;
+	type: 'email';
+	server: string;
+	port: number;
+	from: string;
+	to: string | string[];
+	username?: string;
+	password?: string;
+	is_default?: boolean;
+}
+
+interface TelegramChannelConfig {
+	name: string;
+	type: 'telegram';
+	bot_token: string;
+	chat_id: string;
+	is_default?: boolean;
+}
+
+type NotificationChannelConfig = SlackChannelConfig | WebhookChannelConfig | EmailChannelConfig | TelegramChannelConfig;
 
 interface Config {
 	monitors: MonitorConfig[];
@@ -155,10 +186,12 @@ async function main() {
 	for (const channel of config.notification_channels ?? []) {
 		const id = slug(channel.name);
 		console.log(`Importing channel: ${channel.name} (${id})`);
+		const { name: _n, type: _t, is_default: _d, ...rest } = channel as Record<string, unknown>;
+		const configuration = JSON.stringify(rest);
 		await d1Query(
 			`INSERT OR REPLACE INTO notification_channels (id, name, type, configuration, secret_name, is_default, enabled)
-       VALUES (?, ?, ?, '{}', ?, ?, 1)`,
-			[id, channel.name, channel.type, channel.secret_name, channel.is_default ? 1 : 0],
+       VALUES (?, ?, ?, ?, '', ?, 1)`,
+			[id, channel.name, channel.type, configuration, channel.is_default ? 1 : 0],
 		);
 	}
 

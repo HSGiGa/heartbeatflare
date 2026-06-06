@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "config.schema.json",
+  "title": "HeartbeatFlare Config",
+  "type": "object",
+  "required": ["monitors"],
+  "additionalProperties": false,
+  "properties": {
+    "notification_channels": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/slack_channel" },
+          { "$ref": "#/$defs/webhook_channel" },
+          { "$ref": "#/$defs/email_channel" },
+          { "$ref": "#/$defs/telegram_channel" }
+        ]
+      }
+    },
+    "monitors": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/monitor" }
+    }
+  },
+  "$defs": {
+    "slack_channel": {
+      "type": "object",
+      "required": ["name", "type", "url"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "const": "slack" },
+        "url": { "type": "string", "description": "Incoming webhook URL. Supports ${VAR} substitution." },
+        "channel": { "type": "string", "description": "Channel name for display purposes, e.g. \"#alerts\"." },
+        "is_default": { "type": "boolean", "default": false }
+      }
+    },
+    "webhook_channel": {
+      "type": "object",
+      "required": ["name", "type", "url"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "const": "webhook" },
+        "url": { "type": "string", "description": "Webhook endpoint URL. Supports ${VAR} substitution." },
+        "headers": {
+          "type": "object",
+          "description": "Additional HTTP headers. Values support ${VAR} substitution.",
+          "additionalProperties": { "type": "string" }
+        },
+        "is_default": { "type": "boolean", "default": false }
+      }
+    },
+    "email_channel": {
+      "type": "object",
+      "required": ["name", "type", "server", "port", "from", "to"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "const": "email" },
+        "server": { "type": "string", "description": "SMTP server hostname." },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "from": { "type": "string", "description": "Sender email address." },
+        "to": {
+          "oneOf": [
+            { "type": "string" },
+            { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+          ],
+          "description": "Recipient email address or list of addresses."
+        },
+        "username": { "type": "string" },
+        "password": { "type": "string", "description": "SMTP password. Supports ${VAR} substitution." },
+        "is_default": { "type": "boolean", "default": false }
+      }
+    },
+    "telegram_channel": {
+      "type": "object",
+      "required": ["name", "type", "bot_token", "chat_id"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "const": "telegram" },
+        "bot_token": { "type": "string", "description": "Telegram Bot API token. Supports ${VAR} substitution." },
+        "chat_id": { "type": "string", "description": "Telegram chat or channel ID. Supports ${VAR} substitution." },
+        "is_default": { "type": "boolean", "default": false }
+      }
+    },
+    "monitor": {
+      "type": "object",
+      "required": ["name", "type", "mode", "target", "interval"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "type": {
+          "type": "string",
+          "enum": ["http", "tcp", "dns", "heartbeat", "openmetrics"]
+        },
+        "mode": { "type": "string", "enum": ["external", "internal"] },
+        "visibility": { "type": "string", "enum": ["public", "private"], "default": "private" },
+        "ssl": { "type": "boolean", "default": true },
+        "target": { "type": "string", "description": "URL, host:port, or domain to monitor." },
+        "interval": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*[sm]$",
+          "description": "Check interval, e.g. \"60s\" or \"5m\"."
+        },
+        "alerts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/alert" }
+        }
+      }
+    },
+    "alert": {
+      "type": "object",
+      "required": ["condition", "severity", "failures", "recovery"],
+      "additionalProperties": false,
+      "properties": {
+        "condition": {
+          "type": "string",
+          "description": "Alert condition, e.g. \"status != 200\", \"connect != true\", \"latency >= 1000\"."
+        },
+        "severity": { "type": "string", "enum": ["warning", "critical"] },
+        "failures": { "type": "integer", "minimum": 1, "description": "Consecutive failures before alerting." },
+        "recovery": { "type": "integer", "minimum": 1, "description": "Consecutive successes before resolving." },
+        "cooldown": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*[sm]$",
+          "description": "Minimum time between repeated alerts, e.g. \"300s\" or \"5m\"."
+        }
+      }
+    }
+  }
+}
