@@ -88,7 +88,7 @@
     },
     "monitor": {
       "type": "object",
-      "required": ["name", "type", "mode", "target", "interval"],
+      "required": ["name", "type", "mode", "target"],
       "additionalProperties": false,
       "properties": {
         "name": { "type": "string" },
@@ -103,7 +103,8 @@
         "interval": {
           "type": "string",
           "pattern": "^[1-9][0-9]*[sm]$",
-          "description": "Check interval, e.g. \"60s\" or \"5m\"."
+          "default": "5m",
+          "description": "Check interval, e.g. \"60s\" or \"5m\". Defaults to 5m for non-critical monitors."
         },
         "alerts": {
           "type": "array",

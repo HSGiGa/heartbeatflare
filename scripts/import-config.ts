@@ -27,7 +27,7 @@ interface MonitorConfig {
 	visibility?: 'public' | 'private';
 	ssl?: boolean;
 	target: string;
-	interval: string;
+	interval?: string;
 	alerts?: AlertConfig[];
 }
 
@@ -150,7 +150,7 @@ async function main() {
 
 	for (const monitor of config.monitors) {
 		const id = slug(monitor.name);
-		const intervalSeconds = parseInterval(monitor.interval);
+		const intervalSeconds = parseInterval(monitor.interval ?? '5m');
 		const target = normalizeTarget(monitor);
 
 		console.log(`Importing monitor: ${monitor.name} (${id})`);
