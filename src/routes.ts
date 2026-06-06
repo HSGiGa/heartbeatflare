@@ -3,6 +3,9 @@ import { buildStatusPage } from './status-page';
 import type { AlertRuleDbRow, IncidentRow, LatencyRow, MonitorDbRow, MonitorRow, RuntimeEnv, UptimeDayRow } from './types';
 import { fetchUsage, usageResetsIn } from './usage';
 
+let cachedPage = '';
+let cachedPageUntil = 0;
+
 async function fetchMonitorRows(env: Env): Promise<MonitorDbRow[]> {
 	const { results } = await env.DB.prepare(
 		`SELECT m.id, m.name, m.type, m.mode, m.visibility,
@@ -99,6 +102,10 @@ async function handleStatusApi(env: Env, runtimeEnv: RuntimeEnv): Promise<Respon
 }
 
 async function handleStatusPage(env: Env, runtimeEnv: RuntimeEnv): Promise<Response> {
+	if (Date.now() < cachedPageUntil) {
+		return new Response(cachedPage, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
+	}
+
 	const nowMs = Date.now();
 	const [
 		monitors,
@@ -110,17 +117,17 @@ async function handleStatusPage(env: Env, runtimeEnv: RuntimeEnv): Promise<Respo
 	] = await Promise.all([
 		fetchMonitorRows(env),
 		env.DB.prepare(
-			`SELECT monitor_id, date(recorded_at) AS day, AVG(availability) AS avg_up
-			 FROM metric_series
-			 WHERE recorded_at >= date('now', '-90 days')
-			 GROUP BY monitor_id, day
+			`SELECT monitor_id, day, CAST(up_checks AS REAL) / total_checks AS avg_up
+			 FROM uptime_daily
+			 WHERE day >= date('now', '-90 days')
 			 ORDER BY monitor_id, day`,
 		).all<UptimeDayRow>(),
 		env.DB.prepare(
-			`SELECT monitor_id, latency_ms
-			 FROM metric_series
-			 WHERE recorded_at >= datetime('now', '-24 hours') AND latency_ms IS NOT NULL
-			 ORDER BY monitor_id, recorded_at`,
+			`SELECT monitor_id, avg_latency_ms AS latency_ms
+			 FROM uptime_hourly
+			 WHERE hour >= strftime('%Y-%m-%dT%H', datetime('now', '-24 hours'))
+			   AND avg_latency_ms IS NOT NULL
+			 ORDER BY monitor_id, hour`,
 		).all<LatencyRow>(),
 		env.DB.prepare(
 			`SELECT id, monitor_id, severity, started_at, reason
@@ -136,10 +143,10 @@ async function handleStatusPage(env: Env, runtimeEnv: RuntimeEnv): Promise<Respo
 		fetchUsage(runtimeEnv),
 	]);
 
-	return new Response(
-		buildStatusPage({ nowMs, monitors, uptimeDays, latencyPoints, activeIncidents, recentIncidents, d1Usage }),
-		{ headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } },
-	);
+	cachedPage = buildStatusPage({ nowMs, monitors, uptimeDays, latencyPoints, activeIncidents, recentIncidents, d1Usage });
+	cachedPageUntil = Date.now() + 60_000;
+
+	return new Response(cachedPage, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
 }
 
 export async function handleFetch(request: Request, env: Env): Promise<Response> {

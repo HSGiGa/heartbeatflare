@@ -1,5 +1,27 @@
 import type { MonitorRow, ProbeResult, AlertRuleDbRow, NotificationMessage } from './types';
 
+const upsertDailySql = `
+	INSERT INTO uptime_daily (monitor_id, day, total_checks, up_checks, avg_latency_ms)
+	VALUES (?, ?, 1, ?, ?)
+	ON CONFLICT(monitor_id, day) DO UPDATE SET
+	  total_checks   = total_checks + 1,
+	  up_checks      = up_checks + excluded.up_checks,
+	  avg_latency_ms = CASE WHEN excluded.avg_latency_ms IS NULL THEN avg_latency_ms
+	                        WHEN avg_latency_ms IS NULL THEN excluded.avg_latency_ms
+	                        ELSE (avg_latency_ms * total_checks + excluded.avg_latency_ms) / (total_checks + 1)
+	                   END`;
+
+const upsertHourlySql = `
+	INSERT INTO uptime_hourly (monitor_id, hour, total_checks, up_checks, avg_latency_ms)
+	VALUES (?, ?, 1, ?, ?)
+	ON CONFLICT(monitor_id, hour) DO UPDATE SET
+	  total_checks   = total_checks + 1,
+	  up_checks      = up_checks + excluded.up_checks,
+	  avg_latency_ms = CASE WHEN excluded.avg_latency_ms IS NULL THEN avg_latency_ms
+	                        WHEN avg_latency_ms IS NULL THEN excluded.avg_latency_ms
+	                        ELSE (avg_latency_ms * total_checks + excluded.avg_latency_ms) / (total_checks + 1)
+	                   END`;
+
 export async function storeResult(
 	env: Env,
 	monitor: MonitorRow,
@@ -10,35 +32,40 @@ export async function storeResult(
 	const prevStatus = monitor.current_status ?? 'unknown';
 	const failures = result.status === 'down' ? monitor.consecutive_failures + 1 : 0;
 	const successes = result.status === 'up' ? monitor.consecutive_successes + 1 : 0;
+	const upVal = result.status === 'up' ? 1 : 0;
+	const lat = result.latency_ms > 0 ? result.latency_ms : null;
+	const day = now.slice(0, 10);   // YYYY-MM-DD
+	const hour = now.slice(0, 13);  // YYYY-MM-DDTHH
 
-	await env.DB.prepare(
-		`INSERT INTO monitor_state (monitor_id, status, last_check_at, last_success_at, consecutive_failures, consecutive_successes)
-		 VALUES (?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(monitor_id) DO UPDATE SET
-		   status = excluded.status,
-		   last_check_at = excluded.last_check_at,
-		   last_success_at = CASE WHEN excluded.status = 'up' THEN excluded.last_check_at ELSE last_success_at END,
-		   consecutive_failures = excluded.consecutive_failures,
-		   consecutive_successes = excluded.consecutive_successes`,
-	)
-		.bind(monitor.id, result.status, now, result.status === 'up' ? now : null, failures, successes)
-		.run();
-
-	await env.DB.prepare(
-		`INSERT INTO metric_series (id, monitor_id, recorded_at, availability, latency_ms, tcp_connect_ms)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-	)
-		.bind(executionId, monitor.id, now, result.status === 'up' ? 1 : 0, result.latency_ms, result.tcp_connect_ms ?? null)
-		.run();
+	const statements: D1PreparedStatement[] = [
+		env.DB.prepare(
+			`INSERT INTO monitor_state (monitor_id, status, last_check_at, last_success_at, consecutive_failures, consecutive_successes)
+			 VALUES (?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(monitor_id) DO UPDATE SET
+			   status = excluded.status,
+			   last_check_at = excluded.last_check_at,
+			   last_success_at = CASE WHEN excluded.status = 'up' THEN excluded.last_check_at ELSE last_success_at END,
+			   consecutive_failures = excluded.consecutive_failures,
+			   consecutive_successes = excluded.consecutive_successes`,
+		).bind(monitor.id, result.status, now, result.status === 'up' ? now : null, failures, successes),
+		env.DB.prepare(
+			`INSERT INTO metric_series (id, monitor_id, recorded_at, availability, latency_ms, tcp_connect_ms)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+		).bind(executionId, monitor.id, now, upVal, result.latency_ms, result.tcp_connect_ms ?? null),
+		env.DB.prepare(upsertDailySql).bind(monitor.id, day, upVal, lat),
+		env.DB.prepare(upsertHourlySql).bind(monitor.id, hour, upVal, lat),
+	];
 
 	if (result.status !== prevStatus || result.status === 'down') {
-		await env.DB.prepare(
-			`INSERT INTO monitor_executions (id, monitor_id, started_at, completed_at, status, latency_ms, error)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		)
-			.bind(executionId, monitor.id, now, now, result.status, result.latency_ms, result.error ?? null)
-			.run();
+		statements.push(
+			env.DB.prepare(
+				`INSERT INTO monitor_executions (id, monitor_id, started_at, completed_at, status, latency_ms, error)
+				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			).bind(executionId, monitor.id, now, now, result.status, result.latency_ms, result.error ?? null),
+		);
 	}
+
+	await env.DB.batch(statements);
 
 	return { newFailures: failures, newSuccesses: successes };
 }
@@ -50,13 +77,14 @@ export async function evaluateAlerts(
 	newFailures: number,
 	newSuccesses: number,
 	now: string,
+	preloadedRules?: AlertRuleDbRow[],
 ): Promise<void> {
-	const { results: rules } = await env.DB.prepare(
+	const rules = preloadedRules ?? (await env.DB.prepare(
 		`SELECT id, monitor_id, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled
 		 FROM alert_rules
 		 WHERE monitor_id = ? AND enabled = 1
 		 ORDER BY failure_count ASC`,
-	).bind(monitor.id).all<AlertRuleDbRow>();
+	).bind(monitor.id).all<AlertRuleDbRow>()).results;
 
 	for (const rule of rules) {
 		if (result.status === 'down' && newFailures >= rule.failure_count && !monitor.active_incident_id) {

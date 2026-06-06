@@ -7,6 +7,8 @@ import migrationSql from '../migrations/0001_initial_schema.sql?raw';
 import migration2Sql from '../migrations/0002_remove_ping_type.sql?raw';
 // @ts-expect-error vite ?raw import
 import migration3Sql from '../migrations/0003_add_ssl_check.sql?raw';
+// @ts-expect-error vite ?raw import
+import migration4Sql from '../migrations/0004_uptime_aggregates.sql?raw';
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 
@@ -46,6 +48,7 @@ beforeAll(async () => {
 	await applyMigration(migrationSql as string);
 	await applyMigration(migration2Sql as string);
 	await applyMigration(migration3Sql as string);
+	await applyMigration(migration4Sql as string);
 	await env.DB.prepare(
 		`INSERT INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, enabled)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
