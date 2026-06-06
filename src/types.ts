@@ -73,6 +73,7 @@ export type IncidentRow = {
 	id: string;
 	monitor_id: string;
 	severity: string;
+	status?: string;
 	started_at: string;
 	resolved_at: string | null;
 	reason: string | null;

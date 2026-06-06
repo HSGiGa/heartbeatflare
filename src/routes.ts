@@ -101,6 +101,26 @@ async function handleStatusApi(env: Env, runtimeEnv: RuntimeEnv): Promise<Respon
 	}, { headers: { 'Cache-Control': 'no-store' } });
 }
 
+async function handleHistoryApi(env: Env, searchParams: URLSearchParams): Promise<Response> {
+	const page = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10) || 1);
+	const limit = 10;
+	const offset = (page - 1) * limit;
+
+	const [{ results: incidents }, countRow] = await Promise.all([
+		env.DB.prepare(
+			`SELECT i.id, i.monitor_id, i.severity, i.status, i.started_at, i.resolved_at, i.reason, m.name AS monitor_name
+			 FROM incidents i JOIN monitors m ON m.id = i.monitor_id
+			 ORDER BY i.started_at DESC LIMIT ? OFFSET ?`,
+		).bind(limit, offset).all<IncidentRow>(),
+		env.DB.prepare(`SELECT COUNT(*) AS total FROM incidents`).first<{ total: number }>(),
+	]);
+
+	const total = countRow?.total ?? 0;
+	const pages = Math.max(1, Math.ceil(total / limit));
+
+	return Response.json({ incidents, total, page, pages }, { headers: { 'Cache-Control': 'no-store' } });
+}
+
 async function handleStatusPage(env: Env, runtimeEnv: RuntimeEnv): Promise<Response> {
 	if (Date.now() < cachedPageUntil) {
 		return new Response(cachedPage, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
@@ -112,7 +132,6 @@ async function handleStatusPage(env: Env, runtimeEnv: RuntimeEnv): Promise<Respo
 		{ results: uptimeDays },
 		{ results: latencyPoints },
 		{ results: activeIncidents },
-		{ results: recentIncidents },
 		d1Usage,
 	] = await Promise.all([
 		fetchMonitorRows(env),
@@ -134,16 +153,10 @@ async function handleStatusPage(env: Env, runtimeEnv: RuntimeEnv): Promise<Respo
 			 FROM incidents WHERE status = 'open'
 			 ORDER BY started_at DESC`,
 		).all<IncidentRow>(),
-		env.DB.prepare(
-			`SELECT i.id, i.monitor_id, i.severity, i.started_at, i.resolved_at, i.reason, m.name AS monitor_name
-			 FROM incidents i JOIN monitors m ON m.id = i.monitor_id
-			 WHERE i.status = 'resolved'
-			 ORDER BY i.resolved_at DESC LIMIT 5`,
-		).all<IncidentRow>(),
 		fetchUsage(runtimeEnv),
 	]);
 
-	cachedPage = buildStatusPage({ nowMs, monitors, uptimeDays, latencyPoints, activeIncidents, recentIncidents, d1Usage });
+	cachedPage = buildStatusPage({ nowMs, monitors, uptimeDays, latencyPoints, activeIncidents, d1Usage });
 	cachedPageUntil = Date.now() + 60_000;
 
 	return new Response(cachedPage, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
@@ -159,6 +172,10 @@ export async function handleFetch(request: Request, env: Env): Promise<Response>
 
 	if (request.method === 'GET' && pathname === '/api/status') {
 		return handleStatusApi(env, runtimeEnv);
+	}
+
+	if (request.method === 'GET' && pathname === '/api/history') {
+		return handleHistoryApi(env, new URL(request.url).searchParams);
 	}
 
 	if (request.method === 'GET' && pathname === '/') {

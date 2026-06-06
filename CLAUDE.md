@@ -90,6 +90,22 @@ The current handler is request-agnostic. To add routing:
 - Secrets: Define in Cloudflare dashboard (not in code), access via `env.MY_SECRET`
 - Run `npm run cf-typegen` after adding to regenerate types
 
+### Writing D1 Migrations
+
+- Migrations live in `migrations/` and run via `npx wrangler d1 migrations apply heartbeatflare-prod-db --remote`
+- Each migration file runs exactly once; there is no rollback — design schemas to be additive
+- **Always include a backfill when adding a derived/aggregate table.** If the new table is computed from existing data, add `INSERT INTO … SELECT …` in the same migration file so existing rows are populated immediately and no historical data is silently lost:
+
+```sql
+-- Example: new aggregate table with backfill
+CREATE TABLE uptime_daily ( … );
+
+INSERT INTO uptime_daily (monitor_id, day, total_checks, up_checks, avg_latency_ms)
+SELECT monitor_id, DATE(recorded_at), COUNT(*), SUM(availability), AVG(NULLIF(latency_ms, 0))
+FROM metric_series
+GROUP BY monitor_id, DATE(recorded_at);
+```
+
 ### Deploying to Production
 - Ensure all tests pass: `npm run test`
 - Run `npm run deploy` (requires `wrangler login`)

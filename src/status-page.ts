@@ -61,7 +61,6 @@ export function buildStatusPage({
 	uptimeDays,
 	latencyPoints,
 	activeIncidents,
-	recentIncidents,
 	d1Usage,
 }: {
 	nowMs: number;
@@ -69,7 +68,6 @@ export function buildStatusPage({
 	uptimeDays: UptimeDayRow[];
 	latencyPoints: LatencyRow[];
 	activeIncidents: IncidentRow[];
-	recentIncidents: IncidentRow[];
 	d1Usage: UsageSnapshot;
 }): string {
 	const uptimeByMonitor = new Map<string, Map<string, number>>();
@@ -205,24 +203,6 @@ export function buildStatusPage({
 		}).join('\n')}
 	</section>` : '';
 
-	const historyHtml = recentIncidents.length > 0 ? `
-	<section class="section">
-		<h2 class="section-title">Incident History</h2>
-		<div style="background:#fff;border:1px solid #e4e4e7;border-radius:10px;overflow:hidden">
-			${recentIncidents.map((inc, i) => {
-				const isLast = i === recentIncidents.length - 1;
-				const isCrit = inc.severity === 'critical';
-				return `<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;${isLast ? '' : 'border-bottom:1px solid #f4f4f5;'}gap:12px;flex-wrap:wrap">
-					<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-						<span style="font-size:14px;font-weight:500">${escHtml(inc.monitor_name ?? inc.monitor_id)}</span>
-						<span style="font-size:11px;font-weight:600;padding:1px 6px;border-radius:4px;text-transform:uppercase;background:${isCrit ? '#fee2e2' : '#fef9c3'};color:${isCrit ? '#b91c1c' : '#92400e'}">${escHtml(inc.severity)}</span>
-						${inc.reason ? `<span class="meta-text">· ${escHtml(inc.reason)}</span>` : ''}
-					</div>
-					<span class="meta-text">${timeAgo(inc.started_at)} · ${formatDuration(inc.started_at, inc.resolved_at)}</span>
-				</div>`;
-			}).join('\n')}
-		</div>
-	</section>` : '';
 
 	function progressBar(label: string, value: string, limit: string, pct: number): string {
 		const fill = Math.min(pct, 100);
@@ -308,6 +288,7 @@ header{background:${bannerBg};border-bottom:1px solid ${bannerBorder};padding:28
 .range-btn{font-size:11px;font-weight:600;padding:3px 9px;border-radius:5px;border:1px solid #e4e4e7;background:#fff;color:#71717a;cursor:pointer;transition:all .12s;line-height:1.6}
 .range-btn:hover{border-color:#a1a1aa;color:#18181b}
 .range-btn.active{background:#18181b;color:#fff;border-color:#18181b}
+.range-btn:disabled{opacity:.4;cursor:not-allowed}
 .stats-row{display:flex;align-items:center;gap:14px;font-size:12px;color:#71717a;flex-wrap:wrap}
 .stats-row b{color:#18181b;font-weight:600}
 .sparkline-wrap{display:flex;align-items:center}
@@ -335,16 +316,24 @@ footer{border-top:1px solid #e4e4e7;padding:20px 0;margin-top:8px}
 ${activeIncidentsHtml}
 <section class="section">
 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-<h2 class="section-title" style="margin:0">Monitors (${monitors.length})</h2>
+<div class="range-picker">
+<button class="range-btn tab-btn active" data-tab="monitors">Monitors (${monitors.length})</button>
+<button class="range-btn tab-btn" data-tab="history">History</button>
+</div>
 <div class="range-picker" id="range-picker">
 <button class="range-btn" data-days="7">7d</button>
 <button class="range-btn" data-days="30">30d</button>
 <button class="range-btn active" data-days="90">90d</button>
 </div>
 </div>
+<div id="tab-monitors">
 ${monitorsHtml}
+</div>
+<div id="tab-history" hidden>
+<div id="history-list"></div>
+<div id="history-pagination" style="display:flex;align-items:center;justify-content:center;gap:12px;padding:12px 0"></div>
+</div>
 </section>
-${historyHtml}
 ${usageHtml}
 </main>
 <footer>
@@ -358,6 +347,12 @@ ${usageHtml}
 <script>
 (function(){
   var picker=document.getElementById('range-picker');
+  var tabMonitors=document.getElementById('tab-monitors');
+  var tabHistory=document.getElementById('tab-history');
+  var histList=document.getElementById('history-list');
+  var histPager=document.getElementById('history-pagination');
+  var histPage=1,histPages=1,histLoaded=false;
+
   function setRange(d){
     picker.querySelectorAll('.range-btn').forEach(function(b){b.classList.toggle('active',+b.dataset.days===d);});
     document.querySelectorAll('.bar').forEach(function(b){b.style.display=+b.dataset.age<d?'':'none';});
@@ -365,6 +360,58 @@ ${usageHtml}
   }
   picker.querySelectorAll('.range-btn').forEach(function(btn){
     btn.addEventListener('click',function(){setRange(+btn.dataset.days);});
+  });
+
+  function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+  function fmtDate(s){var d=new Date(s);return d.toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'})+' · '+d.toUTCString().slice(17,22)+' UTC';}
+  function fmtDur(s,e){if(!e)return'ongoing';var m=Math.floor((new Date(e)-new Date(s))/60000);if(m<60)return m+'m';var h=Math.floor(m/60);if(h<24)return h+'h '+(m%60)+'m';return Math.floor(h/24)+'d '+(h%24)+'h';}
+
+  function renderRows(rows){
+    if(!rows.length)return'<div class="meta-text" style="padding:24px 0;text-align:center">No incidents recorded.</div>';
+    var h='<div style="background:#fff;border:1px solid #e4e4e7;border-radius:10px;overflow:hidden">';
+    rows.forEach(function(inc,i){
+      var crit=inc.severity==='critical';
+      h+='<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;'+(i<rows.length-1?'border-bottom:1px solid #f4f4f5;':'')+'gap:12px;flex-wrap:wrap">'+
+        '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'+
+          '<span style="font-size:14px;font-weight:500">'+esc(inc.monitor_name||inc.monitor_id)+'</span>'+
+          '<span style="font-size:11px;font-weight:600;padding:1px 6px;border-radius:4px;text-transform:uppercase;background:'+(crit?'#fee2e2':'#fef9c3')+';color:'+(crit?'#b91c1c':'#92400e')+'">'+esc(inc.severity)+'</span>'+
+          (inc.reason?'<span class="meta-text">· '+esc(inc.reason)+'</span>':'')+
+        '</div>'+
+        '<span class="meta-text">'+fmtDate(inc.started_at)+' · '+fmtDur(inc.started_at,inc.resolved_at)+'</span>'+
+      '</div>';
+    });
+    return h+'</div>';
+  }
+
+  function renderPager(){
+    if(histPages<=1){histPager.innerHTML='';return;}
+    histPager.innerHTML=
+      '<button class="range-btn" id="hist-prev"'+(histPage<=1?' disabled':'')+'>&#8592; Prev</button>'+
+      '<span class="meta-text">Page '+histPage+' of '+histPages+'</span>'+
+      '<button class="range-btn" id="hist-next"'+(histPage>=histPages?' disabled':'')+'>Next &#8594;</button>';
+    var p=document.getElementById('hist-prev'),n=document.getElementById('hist-next');
+    if(p)p.addEventListener('click',function(){if(histPage>1)loadHistory(histPage-1);});
+    if(n)n.addEventListener('click',function(){if(histPage<histPages)loadHistory(histPage+1);});
+  }
+
+  function loadHistory(page){
+    histList.innerHTML='<div class="meta-text" style="padding:24px 0;text-align:center">Loading…</div>';
+    histPager.innerHTML='';
+    fetch('/api/history?page='+page)
+      .then(function(r){return r.json();})
+      .then(function(data){histPage=data.page;histPages=data.pages;histLoaded=true;histList.innerHTML=renderRows(data.incidents);renderPager();})
+      .catch(function(){histList.innerHTML='<div class="meta-text" style="padding:24px 0;text-align:center">Failed to load.</div>';});
+  }
+
+  document.querySelectorAll('.tab-btn').forEach(function(btn){
+    btn.addEventListener('click',function(){
+      var isHist=btn.dataset.tab==='history';
+      document.querySelectorAll('.tab-btn').forEach(function(b){b.classList.toggle('active',b===btn);});
+      tabMonitors.hidden=isHist;
+      tabHistory.hidden=!isHist;
+      picker.style.display=isHist?'none':'';
+      if(isHist&&!histLoaded)loadHistory(1);
+    });
   });
 })();
 </script>
