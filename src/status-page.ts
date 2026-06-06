@@ -114,7 +114,7 @@ export function buildStatusPage({
 			} else {
 				color = '#f87171'; tip = `${(avg * 100).toFixed(1)}% uptime`;
 			}
-			bars += `<span class="bar" style="background:${color}" title="${day}: ${tip}"></span>`;
+			bars += `<span class="bar" data-age="${i}" style="background:${color}" title="${day}: ${tip}"></span>`;
 		}
 		return bars;
 	}
@@ -178,6 +178,7 @@ export function buildStatusPage({
 			</div>
 			${inc ? `<div class="incident-inline">⚠ Incident ongoing · started ${timeAgo(inc.started_at)}${inc.reason ? ` · ${escHtml(inc.reason)}` : ''}</div>` : ''}
 			<div class="bars-row">${renderBars(m.id)}</div>
+			<div class="bars-labels"><span class="bars-range-label">90 days ago</span><span>today</span></div>
 			<div class="stats-row">
 				<span>24h <b>${uptimeStat(m.id, 1)}</b></span>
 				<span>7d <b>${uptimeStat(m.id, 7)}</b></span>
@@ -299,9 +300,14 @@ header{background:${bannerBg};border-bottom:1px solid ${bannerBorder};padding:28
 .monitor-name{font-size:15px;font-weight:600}
 .incident-inline{font-size:12px;color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:6px 10px;margin-bottom:10px}
 .incident-reason{font-size:12px;color:#71717a;margin-top:5px;font-family:"SF Mono",ui-monospace,monospace;word-break:break-all}
-.bars-row{display:flex;gap:2px;margin-bottom:8px;overflow:hidden}
-.bar{flex-shrink:0;width:7px;height:26px;border-radius:2px;cursor:default;transition:opacity .12s}
+.bars-row{display:flex;gap:2px;margin-bottom:3px;overflow:hidden}
+.bar{flex:1;min-width:4px;max-width:20px;height:26px;border-radius:2px;cursor:default;transition:opacity .12s}
 .bar:hover{opacity:.7}
+.bars-labels{display:flex;justify-content:space-between;font-size:11px;color:#a1a1aa;margin-bottom:6px}
+.range-picker{display:flex;gap:3px}
+.range-btn{font-size:11px;font-weight:600;padding:3px 9px;border-radius:5px;border:1px solid #e4e4e7;background:#fff;color:#71717a;cursor:pointer;transition:all .12s;line-height:1.6}
+.range-btn:hover{border-color:#a1a1aa;color:#18181b}
+.range-btn.active{background:#18181b;color:#fff;border-color:#18181b}
 .stats-row{display:flex;align-items:center;gap:14px;font-size:12px;color:#71717a;flex-wrap:wrap}
 .stats-row b{color:#18181b;font-weight:600}
 .sparkline-wrap{display:flex;align-items:center}
@@ -328,7 +334,14 @@ footer{border-top:1px solid #e4e4e7;padding:20px 0;margin-top:8px}
 <main class="container">
 ${activeIncidentsHtml}
 <section class="section">
-<h2 class="section-title">Monitors (${monitors.length})</h2>
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+<h2 class="section-title" style="margin:0">Monitors (${monitors.length})</h2>
+<div class="range-picker" id="range-picker">
+<button class="range-btn" data-days="7">7d</button>
+<button class="range-btn" data-days="30">30d</button>
+<button class="range-btn active" data-days="90">90d</button>
+</div>
+</div>
 ${monitorsHtml}
 </section>
 ${historyHtml}
@@ -342,6 +355,19 @@ ${usageHtml}
 </div>
 </div>
 </footer>
+<script>
+(function(){
+  var picker=document.getElementById('range-picker');
+  function setRange(d){
+    picker.querySelectorAll('.range-btn').forEach(function(b){b.classList.toggle('active',+b.dataset.days===d);});
+    document.querySelectorAll('.bar').forEach(function(b){b.style.display=+b.dataset.age<d?'':'none';});
+    document.querySelectorAll('.bars-range-label').forEach(function(el){el.textContent=d+' days ago';});
+  }
+  picker.querySelectorAll('.range-btn').forEach(function(btn){
+    btn.addEventListener('click',function(){setRange(+btn.dataset.days);});
+  });
+})();
+</script>
 </body>
 </html>`;
 }
