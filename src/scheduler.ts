@@ -2,8 +2,30 @@ import { evaluateAlerts, storeResult } from './alerts';
 import { dnsCheck, httpCheck, tcpCheck } from './probes';
 import type { AlertRuleDbRow, MonitorRow } from './types';
 
+const PER_UNIT_MS = 20_000;
+
+function wait(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function runExternalCheck(
+	monitor: MonitorRow & { mode: string; last_success_at: string | null },
+	env: Env,
+	now: string,
+	rules: AlertRuleDbRow[] | undefined,
+): Promise<void> {
+	const executionId = crypto.randomUUID();
+	const result =
+		monitor.type === 'tcp' ? await tcpCheck(monitor.scrape_url!) :
+		monitor.type === 'dns' ? await dnsCheck(monitor.scrape_url!) :
+		await httpCheck(monitor.scrape_url!, monitor.ssl_check === 1);
+	const { newFailures, newSuccesses } = await storeResult(env, monitor, result, executionId, now);
+	await evaluateAlerts(env, monitor, result, newFailures, newSuccesses, now, rules);
+}
+
 export async function handleScheduled(env: Env): Promise<void> {
 	const now = new Date().toISOString();
+	const t0 = Date.now();
 
 	// Single query for all monitors + preload all alert rules — avoids N+2 DB round-trips per cron run
 	const [{ results: allMonitors }, { results: allRules }] = await Promise.all([
@@ -48,24 +70,32 @@ export async function handleScheduled(env: Env): Promise<void> {
 	);
 
 	await Promise.allSettled(
-		dueExternal.map(async (monitor) => {
-			const executionId = crypto.randomUUID();
-			const result =
-				monitor.type === 'tcp' ? await tcpCheck(monitor.scrape_url!) :
-				monitor.type === 'dns' ? await dnsCheck(monitor.scrape_url!) :
-				await httpCheck(monitor.scrape_url!, monitor.ssl_check === 1);
-			const { newFailures, newSuccesses } = await storeResult(env, monitor, result, executionId, now);
-			await evaluateAlerts(env, monitor, result, newFailures, newSuccesses, now, rulesByMonitor.get(monitor.id));
-		}),
+		dueExternal.map((monitor) =>
+			Promise.race([
+				runExternalCheck(monitor, env, now, rulesByMonitor.get(monitor.id)),
+				wait(PER_UNIT_MS).then(() => Promise.reject(new Error(`timed out after ${PER_UNIT_MS / 1000}s`))),
+			]).catch((err: unknown) =>
+				console.error(`[scheduler] ${monitor.id}: ${err instanceof Error ? err.message : String(err)}`),
+			),
+		),
 	);
 
 	await Promise.allSettled(
-		staleHeartbeats.map(async (monitor) => {
-			const result = { status: 'down' as const, latency_ms: 0, error: 'Heartbeat missed' };
-			const { newFailures, newSuccesses } = await storeResult(env, monitor, result, crypto.randomUUID(), now);
-			await evaluateAlerts(env, monitor, result, newFailures, newSuccesses, now, rulesByMonitor.get(monitor.id));
-		}),
+		staleHeartbeats.map((monitor) =>
+			Promise.race([
+				(async () => {
+					const result = { status: 'down' as const, latency_ms: 0, error: 'Heartbeat missed' };
+					const { newFailures, newSuccesses } = await storeResult(env, monitor, result, crypto.randomUUID(), now);
+					await evaluateAlerts(env, monitor, result, newFailures, newSuccesses, now, rulesByMonitor.get(monitor.id));
+				})(),
+				wait(PER_UNIT_MS).then(() => Promise.reject(new Error(`timed out after ${PER_UNIT_MS / 1000}s`))),
+			]).catch((err: unknown) =>
+				console.error(`[scheduler] ${monitor.id}: ${err instanceof Error ? err.message : String(err)}`),
+			),
+		),
 	);
+
+	console.log(`[scheduler] done in ${Date.now() - t0}ms — ${dueExternal.length} checks, ${staleHeartbeats.length} stale heartbeats`);
 
 	// Weekly cleanup: keep metric_series 7 days, uptime_hourly 48 hours
 	const minuteOfWeek = Math.floor(Date.now() / 60_000) % (7 * 24 * 60);
