@@ -69,9 +69,16 @@ interface TelegramChannelConfig {
 
 type NotificationChannelConfig = SlackChannelConfig | WebhookChannelConfig | EmailChannelConfig | TelegramChannelConfig;
 
+interface AuthConfig {
+	provider: 'cloudflare_access';
+	team_domain: string;
+	aud: string;
+}
+
 interface Config {
 	monitors: MonitorConfig[];
 	notification_channels?: NotificationChannelConfig[];
+	auth?: AuthConfig;
 }
 
 function slug(name: string): string {
@@ -193,6 +200,18 @@ async function main() {
        VALUES (?, ?, ?, ?, '', ?, 1)`,
 			[id, channel.name, channel.type, configuration, channel.is_default ? 1 : 0],
 		);
+	}
+
+	if (config.auth) {
+		console.log('Importing auth config...');
+		await d1Query(
+			`INSERT OR REPLACE INTO auth_config (id, provider, team_domain, aud, enabled, updated_at)
+       VALUES ('default', ?, ?, ?, 1, datetime('now'))`,
+			[config.auth.provider, config.auth.team_domain, config.auth.aud],
+		);
+		console.log('Auth config imported.');
+	} else {
+		await d1Query(`UPDATE auth_config SET enabled = 0, updated_at = datetime('now') WHERE id = 'default'`);
 	}
 
 	console.log(

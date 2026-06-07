@@ -113,6 +113,25 @@ export type UsageSnapshot = {
 	fetchedAt: string | null;
 };
 
+export type AuthConfigDbRow = {
+	id: string;
+	provider: string;
+	team_domain: string;
+	aud: string;
+	enabled: number;
+};
+
+export type ResolvedAuthConfig = {
+	provider: 'cloudflare_access';
+	team_domain: string;
+	aud: string;
+};
+
+export type Session = {
+	email: string;
+	name: string;
+};
+
 export type UsageGraphQLResponse = {
 	data?: {
 		viewer?: {

@@ -6,6 +6,7 @@
   "required": ["monitors"],
   "additionalProperties": false,
   "properties": {
+    "auth": { "$ref": "#/$defs/auth_config" },
     "notification_channels": {
       "type": "array",
       "items": {
@@ -24,6 +25,23 @@
     }
   },
   "$defs": {
+    "auth_config": {
+      "type": "object",
+      "required": ["provider", "team_domain", "aud"],
+      "additionalProperties": false,
+      "description": "Optional Cloudflare Access authentication. When present, unauthenticated users see only public monitors.",
+      "properties": {
+        "provider": { "const": "cloudflare_access" },
+        "team_domain": {
+          "type": "string",
+          "description": "Your Cloudflare Zero Trust team subdomain (the part before .cloudflareaccess.com)."
+        },
+        "aud": {
+          "type": "string",
+          "description": "Application AUD tag from CF Access dashboard. Supports ${VAR} substitution."
+        }
+      }
+    },
     "slack_channel": {
       "type": "object",
       "required": ["name", "type", "url"],

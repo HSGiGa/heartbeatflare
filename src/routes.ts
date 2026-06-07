@@ -1,12 +1,14 @@
 import { evaluateAlerts, storeResult } from './alerts';
+import { getAuth, handleLogout, resolveAuthConfig } from './auth';
 import { buildStatusPage } from './status-page';
-import type { AlertRuleDbRow, IncidentRow, LatencyRow, MonitorDbRow, MonitorRow, RuntimeEnv, UptimeDayRow } from './types';
+import type { AlertRuleDbRow, IncidentRow, LatencyRow, MonitorDbRow, MonitorRow, RuntimeEnv, Session, UptimeDayRow } from './types';
 import { fetchUsage, usageResetsIn } from './usage';
 
 let cachedPage = '';
 let cachedPageUntil = 0;
 
-async function fetchMonitorRows(env: Env): Promise<MonitorDbRow[]> {
+async function fetchMonitorRows(env: Env, showAll: boolean): Promise<MonitorDbRow[]> {
+	const visFilter = showAll ? '' : `AND m.visibility = 'public'`;
 	const { results } = await env.DB.prepare(
 		`SELECT m.id, m.name, m.type, m.mode, m.visibility,
 		        m.scrape_url, m.interval_seconds, m.enabled,
@@ -16,7 +18,7 @@ async function fetchMonitorRows(env: Env): Promise<MonitorDbRow[]> {
 		        ms.active_incident_id
 		 FROM monitors m
 		 LEFT JOIN monitor_state ms ON ms.monitor_id = m.id
-		 WHERE m.enabled = 1
+		 WHERE m.enabled = 1 ${visFilter}
 		 ORDER BY m.name`,
 	).all<MonitorDbRow>();
 	return results;
@@ -44,9 +46,9 @@ async function handleHeartbeat(requestPath: string, env: Env): Promise<Response>
 	return new Response(null, { status: 200 });
 }
 
-async function handleStatusApi(env: Env, runtimeEnv: RuntimeEnv): Promise<Response> {
+async function handleStatusApi(env: Env, runtimeEnv: RuntimeEnv, showAll: boolean): Promise<Response> {
 	const [monitors, { results: rules }, snapshot] = await Promise.all([
-		fetchMonitorRows(env),
+		fetchMonitorRows(env, showAll),
 		env.DB.prepare(
 			`SELECT id, monitor_id, condition, threshold, severity,
 			        failure_count, recovery_count, cooldown_seconds, enabled
@@ -74,7 +76,7 @@ async function handleStatusApi(env: Env, runtimeEnv: RuntimeEnv): Promise<Respon
 			type: m.type,
 			mode: m.mode,
 			visibility: m.visibility,
-			target: m.scrape_url,
+			target: showAll ? m.scrape_url : null,
 			interval_seconds: m.interval_seconds,
 			enabled: m.enabled === 1,
 			created_at: m.created_at,
@@ -87,32 +89,40 @@ async function handleStatusApi(env: Env, runtimeEnv: RuntimeEnv): Promise<Respon
 				consecutive_successes: m.consecutive_successes ?? 0,
 				active_incident_id: m.active_incident_id,
 			},
-			alert_rules: (rulesByMonitor.get(m.id) ?? []).map((r) => ({
-				id: r.id,
-				condition: r.condition,
-				threshold: r.threshold,
-				severity: r.severity,
-				failure_count: r.failure_count,
-				recovery_count: r.recovery_count,
-				cooldown_seconds: r.cooldown_seconds,
-				enabled: r.enabled === 1,
-			})),
+			alert_rules: showAll
+				? (rulesByMonitor.get(m.id) ?? []).map((r) => ({
+						id: r.id,
+						condition: r.condition,
+						threshold: r.threshold,
+						severity: r.severity,
+						failure_count: r.failure_count,
+						recovery_count: r.recovery_count,
+						cooldown_seconds: r.cooldown_seconds,
+						enabled: r.enabled === 1,
+					}))
+				: [],
 		})),
 	}, { headers: { 'Cache-Control': 'no-store' } });
 }
 
-async function handleHistoryApi(env: Env, searchParams: URLSearchParams): Promise<Response> {
+async function handleHistoryApi(env: Env, searchParams: URLSearchParams, showAll: boolean): Promise<Response> {
 	const page = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10) || 1);
 	const limit = 10;
 	const offset = (page - 1) * limit;
+	const visWhere = showAll ? '' : `AND m.visibility = 'public'`;
 
 	const [{ results: incidents }, countRow] = await Promise.all([
 		env.DB.prepare(
 			`SELECT i.id, i.monitor_id, i.severity, i.status, i.started_at, i.resolved_at, i.reason, m.name AS monitor_name
 			 FROM incidents i JOIN monitors m ON m.id = i.monitor_id
+			 WHERE 1=1 ${visWhere}
 			 ORDER BY i.started_at DESC LIMIT ? OFFSET ?`,
 		).bind(limit, offset).all<IncidentRow>(),
-		env.DB.prepare(`SELECT COUNT(*) AS total FROM incidents`).first<{ total: number }>(),
+		env.DB.prepare(
+			showAll
+				? `SELECT COUNT(*) AS total FROM incidents`
+				: `SELECT COUNT(*) AS total FROM incidents i JOIN monitors m ON m.id = i.monitor_id WHERE m.visibility = 'public'`,
+		).first<{ total: number }>(),
 	]);
 
 	const total = countRow?.total ?? 0;
@@ -121,12 +131,19 @@ async function handleHistoryApi(env: Env, searchParams: URLSearchParams): Promis
 	return Response.json({ incidents, total, page, pages }, { headers: { 'Cache-Control': 'no-store' } });
 }
 
-async function handleStatusPage(env: Env, runtimeEnv: RuntimeEnv): Promise<Response> {
-	if (Date.now() < cachedPageUntil) {
+async function handleStatusPage(
+	env: Env,
+	runtimeEnv: RuntimeEnv,
+	showAll: boolean,
+	session: Session | null,
+	authEnabled: boolean,
+): Promise<Response> {
+	if (!authEnabled && Date.now() < cachedPageUntil) {
 		return new Response(cachedPage, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
 	}
 
 	const nowMs = Date.now();
+	const visWhere = showAll ? '' : `AND m.visibility = 'public'`;
 	const [
 		monitors,
 		{ results: uptimeDays },
@@ -134,7 +151,7 @@ async function handleStatusPage(env: Env, runtimeEnv: RuntimeEnv): Promise<Respo
 		{ results: activeIncidents },
 		d1Usage,
 	] = await Promise.all([
-		fetchMonitorRows(env),
+		fetchMonitorRows(env, showAll),
 		env.DB.prepare(
 			`SELECT monitor_id, day, CAST(up_checks AS REAL) / total_checks AS avg_up
 			 FROM uptime_daily
@@ -149,17 +166,22 @@ async function handleStatusPage(env: Env, runtimeEnv: RuntimeEnv): Promise<Respo
 			 ORDER BY monitor_id, hour`,
 		).all<LatencyRow>(),
 		env.DB.prepare(
-			`SELECT id, monitor_id, severity, started_at, reason
-			 FROM incidents WHERE status = 'open'
-			 ORDER BY started_at DESC`,
+			`SELECT i.id, i.monitor_id, i.severity, i.started_at, i.reason
+			 FROM incidents i JOIN monitors m ON m.id = i.monitor_id
+			 WHERE i.status = 'open' ${visWhere}
+			 ORDER BY i.started_at DESC`,
 		).all<IncidentRow>(),
 		fetchUsage(runtimeEnv),
 	]);
 
-	cachedPage = buildStatusPage({ nowMs, monitors, uptimeDays, latencyPoints, activeIncidents, d1Usage });
-	cachedPageUntil = Date.now() + 60_000;
+	const html = buildStatusPage({ nowMs, monitors, uptimeDays, latencyPoints, activeIncidents, d1Usage, session, authEnabled });
 
-	return new Response(cachedPage, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
+	if (!authEnabled) {
+		cachedPage = html;
+		cachedPageUntil = Date.now() + 60_000;
+	}
+
+	return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
 }
 
 export async function handleFetch(request: Request, env: Env): Promise<Response> {
@@ -170,16 +192,24 @@ export async function handleFetch(request: Request, env: Env): Promise<Response>
 		return handleHeartbeat(pathname, env);
 	}
 
+	if (pathname === '/auth/logout') {
+		const authConfig = await resolveAuthConfig(env);
+		return authConfig ? handleLogout(request, authConfig) : Response.redirect('/', 302);
+	}
+
+	const { session, authEnabled } = await getAuth(request, env);
+	const showAll = !authEnabled || session !== null;
+
 	if (request.method === 'GET' && pathname === '/api/status') {
-		return handleStatusApi(env, runtimeEnv);
+		return handleStatusApi(env, runtimeEnv, showAll);
 	}
 
 	if (request.method === 'GET' && pathname === '/api/history') {
-		return handleHistoryApi(env, new URL(request.url).searchParams);
+		return handleHistoryApi(env, new URL(request.url).searchParams, showAll);
 	}
 
 	if (request.method === 'GET' && pathname === '/') {
-		return handleStatusPage(env, runtimeEnv);
+		return handleStatusPage(env, runtimeEnv, showAll, session, authEnabled);
 	}
 
 	return new Response(null, { status: 404 });

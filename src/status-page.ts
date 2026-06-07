@@ -1,4 +1,4 @@
-import type { MonitorDbRow, UptimeDayRow, LatencyRow, IncidentRow, UsageSnapshot } from './types';
+import type { MonitorDbRow, UptimeDayRow, LatencyRow, IncidentRow, Session, UsageSnapshot } from './types';
 import { usageResetsIn, workersFreeLimit } from './usage';
 
 function escHtml(s: string): string {
@@ -62,6 +62,8 @@ export function buildStatusPage({
 	latencyPoints,
 	activeIncidents,
 	d1Usage,
+	session,
+	authEnabled,
 }: {
 	nowMs: number;
 	monitors: MonitorDbRow[];
@@ -69,6 +71,8 @@ export function buildStatusPage({
 	latencyPoints: LatencyRow[];
 	activeIncidents: IncidentRow[];
 	d1Usage: UsageSnapshot;
+	session: Session | null;
+	authEnabled: boolean;
 }): string {
 	const uptimeByMonitor = new Map<string, Map<string, number>>();
 	for (const row of uptimeDays) {
@@ -309,6 +313,11 @@ footer{border-top:1px solid #e4e4e7;padding:20px 0;margin-top:8px}
 <div class="logo">💓 HeartbeatFlare</div>
 <div class="overall-badge"><span class="overall-dot"></span>${overallText}</div>
 <span class="meta-text">Updated ${nowDisplay}</span>
+${authEnabled
+	? session
+		? `<div style="display:flex;align-items:center;gap:10px"><span class="meta-text" title="${escHtml(session.email)}">${escHtml(session.name)}</span><a href="/auth/logout" style="font-size:12px;font-weight:600;padding:5px 12px;border-radius:5px;border:1px solid #e4e4e7;background:#fff;color:#18181b;text-decoration:none">Sign out</a></div>`
+		: `<a href="/auth/login" style="font-size:12px;font-weight:600;padding:5px 12px;border-radius:5px;border:1px solid #18181b;background:#18181b;color:#fff;text-decoration:none">Sign in</a>`
+	: ''}
 </div>
 </div>
 </header>

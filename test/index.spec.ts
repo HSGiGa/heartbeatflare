@@ -1,6 +1,7 @@
 import { env, createExecutionContext, waitOnExecutionContext, SELF } from 'cloudflare:test';
 import { describe, it, expect, beforeAll } from 'vitest';
 import worker from '../src/index';
+import { _invalidateAuthCache } from '../src/auth';
 // @ts-expect-error vite ?raw import
 import migrationSql from '../migrations/0001_initial_schema.sql?raw';
 // @ts-expect-error vite ?raw import
@@ -9,6 +10,8 @@ import migration2Sql from '../migrations/0002_remove_ping_type.sql?raw';
 import migration3Sql from '../migrations/0003_add_ssl_check.sql?raw';
 // @ts-expect-error vite ?raw import
 import migration4Sql from '../migrations/0004_uptime_aggregates.sql?raw';
+// @ts-expect-error vite ?raw import
+import migration5Sql from '../migrations/0005_auth_config.sql?raw';
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 
@@ -49,6 +52,7 @@ beforeAll(async () => {
 	await applyMigration(migration2Sql as string);
 	await applyMigration(migration3Sql as string);
 	await applyMigration(migration4Sql as string);
+	await applyMigration(migration5Sql as string);
 	await env.DB.prepare(
 		`INSERT INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, enabled)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
@@ -151,5 +155,50 @@ describe('other routes', () => {
 	it('POST / returns 404', async () => {
 		const response = await SELF.fetch('https://example.com/', { method: 'POST' });
 		expect(response.status).toBe(404);
+	});
+});
+
+describe('auth visibility filtering', () => {
+	beforeAll(async () => {
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, enabled)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
+		)
+			.bind('private-test', 'Private Monitor', 'http', 'external', 'private', 'https://internal.example.com', 60)
+			.run();
+
+		await env.DB.prepare(
+			`INSERT OR REPLACE INTO auth_config (id, provider, team_domain, aud, enabled)
+			 VALUES ('default', 'cloudflare_access', 'test-team', 'test-aud-123', 1)`,
+		).run();
+
+		_invalidateAuthCache();
+	});
+
+	it('hides private monitors when no JWT header', async () => {
+		const req = new IncomingRequest('http://example.com/api/status');
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(req, env, ctx);
+		await waitOnExecutionContext(ctx);
+		const body = (await res.json()) as { monitors: Array<{ id: string }> };
+		expect(body.monitors.some((m) => m.id === 'private-test')).toBe(false);
+	});
+
+	it('hides target URLs when no JWT header', async () => {
+		const req = new IncomingRequest('http://example.com/api/status');
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(req, env, ctx);
+		await waitOnExecutionContext(ctx);
+		const body = (await res.json()) as { monitors: Array<{ target: unknown }> };
+		expect(body.monitors.every((m) => m.target === null)).toBe(true);
+	});
+
+	it('returns 302 for /auth/logout when auth configured', async () => {
+		const req = new IncomingRequest('http://example.com/auth/logout');
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(req, env, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(res.status).toBe(302);
+		expect(res.headers.get('Location')).toContain('cloudflareaccess.com');
 	});
 });
