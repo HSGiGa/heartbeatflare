@@ -194,7 +194,7 @@ export async function handleFetch(request: Request, env: Env): Promise<Response>
 
 	if (pathname === '/auth/logout') {
 		const authConfig = await resolveAuthConfig(env);
-		return authConfig ? handleLogout(request, authConfig) : Response.redirect('/', 302);
+		return authConfig ? handleLogout(request, authConfig) : new Response(null, { status: 302, headers: { Location: '/' } });
 	}
 
 	const { session, authEnabled } = await getAuth(request, env);
