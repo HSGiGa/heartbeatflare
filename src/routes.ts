@@ -192,6 +192,10 @@ export async function handleFetch(request: Request, env: Env): Promise<Response>
 		return handleHeartbeat(pathname, env);
 	}
 
+	if (pathname === '/auth/login') {
+		return new Response(null, { status: 302, headers: { Location: '/' } });
+	}
+
 	if (pathname === '/auth/logout') {
 		const authConfig = await resolveAuthConfig(env);
 		return authConfig ? handleLogout(request, authConfig) : new Response(null, { status: 302, headers: { Location: '/' } });
