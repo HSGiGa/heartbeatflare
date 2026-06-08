@@ -50,7 +50,7 @@ async function handleStatusApi(env: Env, runtimeEnv: RuntimeEnv, showAll: boolea
 	const [monitors, { results: rules }, snapshot] = await Promise.all([
 		fetchMonitorRows(env, showAll),
 		env.DB.prepare(
-			`SELECT id, monitor_id, condition, threshold, severity,
+			`SELECT id, monitor_id, metric_name, condition, threshold, severity,
 			        failure_count, recovery_count, cooldown_seconds, enabled
 			 FROM alert_rules
 			 ORDER BY monitor_id`,

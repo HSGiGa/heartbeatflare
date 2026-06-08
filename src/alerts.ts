@@ -82,13 +82,15 @@ export async function evaluateAlerts(
 	preloadedRules?: AlertRuleDbRow[],
 ): Promise<void> {
 	const rules = preloadedRules ?? (await env.DB.prepare(
-		`SELECT id, monitor_id, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled
+		`SELECT id, monitor_id, metric_name, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled
 		 FROM alert_rules
 		 WHERE monitor_id = ? AND enabled = 1
 		 ORDER BY failure_count ASC`,
 	).bind(monitor.id).all<AlertRuleDbRow>()).results;
 
 	for (const rule of rules) {
+		if (rule.metric_name) continue; // metric-specific rules evaluated separately below
+
 		if (result.status === 'down' && newFailures >= rule.failure_count && !monitor.active_incident_id) {
 			if (rule.cooldown_seconds > 0) {
 				const last = await env.DB.prepare(
@@ -139,7 +141,7 @@ export async function evaluateAlerts(
 
 	if (result.ssl_days_left !== undefined && !monitor.active_incident_id) {
 		for (const rule of rules) {
-			if (rule.condition === 'ssl_expiry' && result.ssl_days_left < rule.threshold) {
+			if (rule.metric_name === 'ssl_expiry' && rule.condition === 'lt' && result.ssl_days_left < rule.threshold) {
 				const incidentId = crypto.randomUUID();
 				await env.DB.prepare(
 					`INSERT INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, reason)

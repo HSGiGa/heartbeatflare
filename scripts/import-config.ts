@@ -96,7 +96,7 @@ function parseInterval(interval: string): number {
 	throw new Error(`Unknown interval format: ${interval}`);
 }
 
-function parseCondition(condition: string): { dbCondition: string; threshold: number } {
+function parseCondition(condition: string): { dbCondition: string; threshold: number; metricName?: string } {
 	if (/status\s*!=\s*200/.test(condition)) return { dbCondition: 'eq', threshold: 0 };
 	if (/connect\s*!=\s*true/.test(condition) || /status\s*!=\s*up/.test(condition)) return { dbCondition: 'eq', threshold: 0 };
 	const latMatch = condition.match(/latency\s*(>=|<=|>|<)\s*(\d+)/);
@@ -105,7 +105,7 @@ function parseCondition(condition: string): { dbCondition: string; threshold: nu
 		return { dbCondition: opMap[latMatch[1]], threshold: parseFloat(latMatch[2]) };
 	}
 	const sslMatch = condition.match(/ssl_expiry(?:_days)?\s*<\s*(\d+)/i);
-	if (sslMatch) return { dbCondition: 'ssl_expiry', threshold: parseInt(sslMatch[1]) };
+	if (sslMatch) return { dbCondition: 'lt', threshold: parseInt(sslMatch[1]), metricName: 'ssl_expiry' };
 	throw new Error(`Cannot parse condition: ${condition}`);
 }
 
@@ -175,13 +175,13 @@ async function main() {
 		for (let i = 0; i < (monitor.alerts ?? []).length; i++) {
 			const alert = monitor.alerts![i];
 			const alertId = `${id}-alert-${i}`;
-			const { dbCondition, threshold } = parseCondition(alert.condition);
+			const { dbCondition, threshold, metricName } = parseCondition(alert.condition);
 			const cooldownSeconds = parseCooldown(alert.cooldown);
 
 			await d1Query(
-				`INSERT OR REPLACE INTO alert_rules (id, monitor_id, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
-				[alertId, id, dbCondition, threshold, alert.severity, alert.failures, alert.recovery, cooldownSeconds],
+				`INSERT OR REPLACE INTO alert_rules (id, monitor_id, metric_name, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+				[alertId, id, metricName ?? null, dbCondition, threshold, alert.severity, alert.failures, alert.recovery, cooldownSeconds],
 			);
 		}
 	}

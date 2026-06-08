@@ -16,13 +16,16 @@ export async function httpCheck(url: string, sslCheck: boolean): Promise<ProbeRe
 	}
 }
 
-// Queries crt.sh (Certificate Transparency) to get the latest non-expired cert for the hostname.
-// Cached in Workers Cache API for 6h to avoid hammering crt.sh on every probe.
-// Caveat: reflects the most-recently-issued cert, not necessarily the currently deployed one.
-// For Let's Encrypt with auto-renewal this is always in sync.
+// Checks the live TLS certificate via ssl-checker.io (port 443 by default).
+// Falls back to crt.sh CT logs if ssl-checker.io fails.
+// Both are cached in Workers Cache API for 6h.
 export async function sslProbe(hostname: string): Promise<{ daysLeft: number; notAfter: string; issuer: string } | null> {
+	return (await sslCheckerIo(hostname)) ?? (await crtSh(hostname));
+}
+
+async function sslCheckerIo(hostname: string): Promise<{ daysLeft: number; notAfter: string; issuer: string } | null> {
 	try {
-		const url = `https://crt.sh/?q=${encodeURIComponent(hostname)}&output=json`;
+		const url = `https://ssl-checker.io/api/v1/check/${encodeURIComponent(hostname)}`;
 		const cache = caches.default;
 		let res = await cache.match(url);
 		if (!res) {
@@ -32,22 +35,47 @@ export async function sslProbe(hostname: string): Promise<{ daysLeft: number; no
 			res.headers.set('Cache-Control', 'public, max-age=21600');
 			await cache.put(url, res.clone());
 		}
+		const data = (await res.json()) as {
+			status: string;
+			result?: { days_left: number; valid_till: string; issuer_o: string | null; issuer_cn: string };
+		};
+		if (data.status !== 'ok' || !data.result) return null;
+		const { days_left, valid_till, issuer_o, issuer_cn } = data.result;
+		return {
+			daysLeft: days_left,
+			notAfter: new Date(valid_till).toISOString(),
+			issuer: issuer_o ?? issuer_cn ?? 'Unknown',
+		};
+	} catch {
+		return null;
+	}
+}
 
+async function crtSh(hostname: string): Promise<{ daysLeft: number; notAfter: string; issuer: string } | null> {
+	try {
+		const url = `https://crt.sh/?q=${encodeURIComponent(hostname)}&output=json`;
+		const cache = caches.default;
+		let res = await cache.match(url);
+		if (!res) {
+			const fresh = await fetch(url, { signal: AbortSignal.timeout(8_000) });
+			if (!fresh.ok) return null;
+			const body = await fresh.text();
+			if (!body.trim().startsWith('[')) return null;
+			res = new Response(body, fresh);
+			res.headers.set('Cache-Control', 'public, max-age=21600');
+			await cache.put(url, res.clone());
+		}
 		const certs = (await res.json()) as Array<{ not_after: string; issuer_name: string; common_name: string }>;
 		if (!Array.isArray(certs) || certs.length === 0) return null;
-
 		const now = Date.now();
 		const best = certs
 			.filter((c) => new Date(c.not_after + 'Z').getTime() > now)
 			.sort((a, b) => new Date(b.not_after + 'Z').getTime() - new Date(a.not_after + 'Z').getTime())[0];
 		if (!best) return null;
-
 		const notAfterMs = new Date(best.not_after + 'Z').getTime();
 		const daysLeft = Math.floor((notAfterMs - now) / 86_400_000);
 		const issuerMatch = best.issuer_name.match(/O=([^,]+)/);
-		const issuer = issuerMatch?.[1]?.trim() ?? best.common_name ?? 'Unknown';
-
-		return { daysLeft, notAfter: new Date(best.not_after + 'Z').toISOString(), issuer };
+		return { daysLeft, notAfter: new Date(best.not_after + 'Z').toISOString(), issuer: issuerMatch?.[1]?.trim() ?? 'Unknown' };
 	} catch {
 		return null;
 	}

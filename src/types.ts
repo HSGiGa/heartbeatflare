@@ -22,6 +22,7 @@ export type MonitorDbRow = {
 export type AlertRuleDbRow = {
 	id: string;
 	monitor_id: string;
+	metric_name: string | null;
 	condition: string;
 	threshold: number;
 	severity: string;

@@ -43,6 +43,23 @@ monitors:
         failures: 2
         recovery: 2
         cooldown: 300s
+  - name: VPN modem.by
+    type: tcp
+    mode: external
+    visibility: private
+    ssl: true
+    target: vpn.modem.by:443
+    interval: 5m
+    alerts:
+      - condition: "connect != true"
+        severity: critical
+        failures: 2
+        recovery: 2
+        cooldown: 300s
+      - condition: ssl_expiry < 14
+        severity: warning
+        failures: 1
+        recovery: 1
   - name: Gmail SMTP
     type: tcp
     mode: external

@@ -15,12 +15,20 @@ async function runExternalCheck(
 	rules: AlertRuleDbRow[] | undefined,
 ): Promise<void> {
 	const executionId = crypto.randomUUID();
-	const doSslProbe = monitor.ssl_check === 1 && monitor.scrape_url?.startsWith('https://');
+	let sslHostname: string | null = null;
+	if (monitor.ssl_check === 1 && monitor.scrape_url) {
+		if (monitor.scrape_url.startsWith('https://')) {
+			sslHostname = new URL(monitor.scrape_url).hostname;
+		} else if (monitor.type === 'tcp') {
+			sslHostname = monitor.scrape_url.split(':')[0] ?? null;
+		}
+	}
+	const doSslProbe = sslHostname !== null;
 	const [result, sslInfo] = await Promise.all([
 		monitor.type === 'tcp' ? tcpCheck(monitor.scrape_url!) :
 		monitor.type === 'dns' ? dnsCheck(monitor.scrape_url!) :
 		httpCheck(monitor.scrape_url!, monitor.ssl_check === 1),
-		doSslProbe ? sslProbe(new URL(monitor.scrape_url!).hostname) : Promise.resolve(null),
+		doSslProbe ? sslProbe(sslHostname!) : Promise.resolve(null),
 	]);
 	if (sslInfo) {
 		result.ssl_days_left = sslInfo.daysLeft;
@@ -49,7 +57,7 @@ export async function handleScheduled(env: Env): Promise<void> {
 			 WHERE m.enabled = 1`,
 		).all<MonitorRow & { mode: string; last_success_at: string | null }>(),
 		env.DB.prepare(
-			`SELECT id, monitor_id, condition, threshold, severity,
+			`SELECT id, monitor_id, metric_name, condition, threshold, severity,
 			        failure_count, recovery_count, cooldown_seconds, enabled
 			 FROM alert_rules WHERE enabled = 1 ORDER BY monitor_id, failure_count ASC`,
 		).all<AlertRuleDbRow>(),
