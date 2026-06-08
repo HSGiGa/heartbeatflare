@@ -16,11 +16,41 @@ export async function httpCheck(url: string, sslCheck: boolean): Promise<ProbeRe
 	}
 }
 
-// CF Workers node:tls does not yet implement rejectUnauthorized or getPeerCertificate.
-// sslProbe is a no-op until the Workers runtime adds support.
-// The DB schema (ssl_not_after, ssl_issuer) and status page badge are ready for when it does.
-export function sslProbe(_hostname: string, _port = 443): Promise<{ daysLeft: number; notAfter: string; issuer: string } | null> {
-	return Promise.resolve(null);
+// Queries crt.sh (Certificate Transparency) to get the latest non-expired cert for the hostname.
+// Cached in Workers Cache API for 6h to avoid hammering crt.sh on every probe.
+// Caveat: reflects the most-recently-issued cert, not necessarily the currently deployed one.
+// For Let's Encrypt with auto-renewal this is always in sync.
+export async function sslProbe(hostname: string): Promise<{ daysLeft: number; notAfter: string; issuer: string } | null> {
+	try {
+		const url = `https://crt.sh/?q=${encodeURIComponent(hostname)}&output=json`;
+		const cache = caches.default;
+		let res = await cache.match(url);
+		if (!res) {
+			const fresh = await fetch(url, { signal: AbortSignal.timeout(8_000) });
+			if (!fresh.ok) return null;
+			res = new Response(fresh.clone().body, fresh);
+			res.headers.set('Cache-Control', 'public, max-age=21600');
+			await cache.put(url, res.clone());
+		}
+
+		const certs = (await res.json()) as Array<{ not_after: string; issuer_name: string; common_name: string }>;
+		if (!Array.isArray(certs) || certs.length === 0) return null;
+
+		const now = Date.now();
+		const best = certs
+			.filter((c) => new Date(c.not_after + 'Z').getTime() > now)
+			.sort((a, b) => new Date(b.not_after + 'Z').getTime() - new Date(a.not_after + 'Z').getTime())[0];
+		if (!best) return null;
+
+		const notAfterMs = new Date(best.not_after + 'Z').getTime();
+		const daysLeft = Math.floor((notAfterMs - now) / 86_400_000);
+		const issuerMatch = best.issuer_name.match(/O=([^,]+)/);
+		const issuer = issuerMatch?.[1]?.trim() ?? best.common_name ?? 'Unknown';
+
+		return { daysLeft, notAfter: new Date(best.not_after + 'Z').toISOString(), issuer };
+	} catch {
+		return null;
+	}
 }
 
 function parseTcpTarget(target: string): { hostname: string; port: number } {
