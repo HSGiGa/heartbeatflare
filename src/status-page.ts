@@ -159,6 +159,15 @@ export function buildStatusPage({
 		return `<span style="font-size:11px;font-weight:600;padding:2px 6px;border-radius:4px;background:#f4f4f5;color:#71717a;text-transform:uppercase;letter-spacing:0.04em">${escHtml(type)}</span>`;
 	}
 
+	function sslBadge(notAfter: string | null, issuer: string | null): string {
+		if (!notAfter) return '';
+		const days = Math.floor((new Date(notAfter).getTime() - Date.now()) / 86_400_000);
+		const color = days < 7 ? '#dc2626' : days < 30 ? '#d97706' : '#16a34a';
+		const label = days < 0 ? 'cert expired' : `cert ${days}d`;
+		const title = issuer ? `Issuer: ${issuer} · Expires: ${new Date(notAfter).toLocaleDateString()}` : `Expires: ${new Date(notAfter).toLocaleDateString()}`;
+		return `<span title="${escHtml(title)}" style="font-size:11px;padding:2px 6px;border-radius:4px;background:${color}1a;color:${color};font-weight:600;cursor:default">🔒 ${label}</span>`;
+	}
+
 	const monitorsHtml = monitors.map((m) => {
 		const pts = latencyByMonitor.get(m.id) ?? [];
 		const inc = activeByMonitor.get(m.id);
@@ -171,6 +180,7 @@ export function buildStatusPage({
 					<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
 						<span class="monitor-name">${escHtml(m.name)}</span>
 						${typeBadge(m.type)}
+						${sslBadge(m.ssl_not_after, m.ssl_issuer)}
 					</div>
 				</div>
 				<div style="display:flex;align-items:center;gap:14px">

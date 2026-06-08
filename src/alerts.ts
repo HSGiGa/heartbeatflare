@@ -39,19 +39,21 @@ export async function storeResult(
 
 	const statements: D1PreparedStatement[] = [
 		env.DB.prepare(
-			`INSERT INTO monitor_state (monitor_id, status, last_check_at, last_success_at, consecutive_failures, consecutive_successes)
-			 VALUES (?, ?, ?, ?, ?, ?)
+			`INSERT INTO monitor_state (monitor_id, status, last_check_at, last_success_at, consecutive_failures, consecutive_successes, ssl_not_after, ssl_issuer)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			 ON CONFLICT(monitor_id) DO UPDATE SET
 			   status = excluded.status,
 			   last_check_at = excluded.last_check_at,
 			   last_success_at = CASE WHEN excluded.status = 'up' THEN excluded.last_check_at ELSE last_success_at END,
 			   consecutive_failures = excluded.consecutive_failures,
-			   consecutive_successes = excluded.consecutive_successes`,
-		).bind(monitor.id, result.status, now, result.status === 'up' ? now : null, failures, successes),
+			   consecutive_successes = excluded.consecutive_successes,
+			   ssl_not_after = COALESCE(excluded.ssl_not_after, ssl_not_after),
+			   ssl_issuer    = COALESCE(excluded.ssl_issuer, ssl_issuer)`,
+		).bind(monitor.id, result.status, now, result.status === 'up' ? now : null, failures, successes, result.ssl_not_after ?? null, result.ssl_issuer ?? null),
 		env.DB.prepare(
-			`INSERT INTO metric_series (id, monitor_id, recorded_at, availability, latency_ms, tcp_connect_ms)
-			 VALUES (?, ?, ?, ?, ?, ?)`,
-		).bind(executionId, monitor.id, now, upVal, result.latency_ms, result.tcp_connect_ms ?? null),
+			`INSERT INTO metric_series (id, monitor_id, recorded_at, availability, latency_ms, tcp_connect_ms, ssl_expiry_seconds)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		).bind(executionId, monitor.id, now, upVal, result.latency_ms, result.tcp_connect_ms ?? null, result.ssl_days_left != null ? result.ssl_days_left * 86_400 : null),
 		env.DB.prepare(upsertDailySql).bind(monitor.id, day, upVal, lat),
 		env.DB.prepare(upsertHourlySql).bind(monitor.id, hour, upVal, lat),
 	];
@@ -132,6 +134,30 @@ export async function evaluateAlerts(
 				count: newSuccesses,
 			});
 			break;
+		}
+	}
+
+	if (result.ssl_days_left !== undefined && !monitor.active_incident_id) {
+		for (const rule of rules) {
+			if (rule.condition === 'ssl_expiry' && result.ssl_days_left < rule.threshold) {
+				const incidentId = crypto.randomUUID();
+				await env.DB.prepare(
+					`INSERT INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, reason)
+					 VALUES (?, ?, ?, 'open', ?, ?, ?)`,
+				).bind(incidentId, monitor.id, rule.id, rule.severity, now, `SSL cert expires in ${result.ssl_days_left} day(s)`).run();
+				await env.DB.prepare(
+					`UPDATE monitor_state SET active_incident_id = ? WHERE monitor_id = ?`,
+				).bind(incidentId, monitor.id).run();
+				await (env.NOTIFICATION_QUEUE as Queue<NotificationMessage>).send({
+					incidentId,
+					monitorId: monitor.id,
+					monitorName: monitor.name,
+					eventType: 'down',
+					count: 1,
+					error: `SSL cert expires in ${result.ssl_days_left} day(s)`,
+				});
+				break;
+			}
 		}
 	}
 }

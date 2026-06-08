@@ -12,6 +12,8 @@ import migration3Sql from '../migrations/0003_add_ssl_check.sql?raw';
 import migration4Sql from '../migrations/0004_uptime_aggregates.sql?raw';
 // @ts-expect-error vite ?raw import
 import migration5Sql from '../migrations/0005_auth_config.sql?raw';
+// @ts-expect-error vite ?raw import
+import migration6Sql from '../migrations/0006_ssl_cert_state.sql?raw';
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 
@@ -53,6 +55,7 @@ beforeAll(async () => {
 	await applyMigration(migration3Sql as string);
 	await applyMigration(migration4Sql as string);
 	await applyMigration(migration5Sql as string);
+	await applyMigration(migration6Sql as string);
 	await env.DB.prepare(
 		`INSERT INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, enabled)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
@@ -155,6 +158,15 @@ describe('other routes', () => {
 	it('POST / returns 404', async () => {
 		const response = await SELF.fetch('https://example.com/', { method: 'POST' });
 		expect(response.status).toBe(404);
+	});
+});
+
+describe('SSL cert fields', () => {
+	it('/api/status includes ssl_not_after: null for monitors without cert data', async () => {
+		const response = await SELF.fetch('https://example.com/api/status');
+		const body = (await response.json()) as { monitors: Array<{ state: { ssl_not_after: unknown; ssl_issuer: unknown } }> };
+		expect(body.monitors.every((m) => m.state.ssl_not_after === null)).toBe(true);
+		expect(body.monitors.every((m) => m.state.ssl_issuer === null)).toBe(true);
 	});
 });
 

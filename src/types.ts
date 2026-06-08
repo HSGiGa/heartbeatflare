@@ -15,6 +15,8 @@ export type MonitorDbRow = {
 	consecutive_failures: number | null;
 	consecutive_successes: number | null;
 	active_incident_id: string | null;
+	ssl_not_after: string | null;
+	ssl_issuer: string | null;
 };
 
 export type AlertRuleDbRow = {
@@ -48,6 +50,9 @@ export type ProbeResult = {
 	latency_ms: number;
 	tcp_connect_ms?: number;
 	ssl_error?: boolean;
+	ssl_days_left?: number;
+	ssl_not_after?: string;
+	ssl_issuer?: string;
 	error?: string;
 };
 

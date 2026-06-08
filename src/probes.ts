@@ -16,6 +16,13 @@ export async function httpCheck(url: string, sslCheck: boolean): Promise<ProbeRe
 	}
 }
 
+// CF Workers node:tls does not yet implement rejectUnauthorized or getPeerCertificate.
+// sslProbe is a no-op until the Workers runtime adds support.
+// The DB schema (ssl_not_after, ssl_issuer) and status page badge are ready for when it does.
+export function sslProbe(_hostname: string, _port = 443): Promise<{ daysLeft: number; notAfter: string; issuer: string } | null> {
+	return Promise.resolve(null);
+}
+
 function parseTcpTarget(target: string): { hostname: string; port: number } {
 	const normalized = target.startsWith('tcp://') ? target : `tcp://${target}`;
 	const url = new URL(normalized);

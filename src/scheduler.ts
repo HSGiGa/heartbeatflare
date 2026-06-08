@@ -1,5 +1,5 @@
 import { evaluateAlerts, storeResult } from './alerts';
-import { dnsCheck, httpCheck, tcpCheck } from './probes';
+import { dnsCheck, httpCheck, sslProbe, tcpCheck } from './probes';
 import type { AlertRuleDbRow, MonitorRow } from './types';
 
 const PER_UNIT_MS = 20_000;
@@ -15,10 +15,18 @@ async function runExternalCheck(
 	rules: AlertRuleDbRow[] | undefined,
 ): Promise<void> {
 	const executionId = crypto.randomUUID();
-	const result =
-		monitor.type === 'tcp' ? await tcpCheck(monitor.scrape_url!) :
-		monitor.type === 'dns' ? await dnsCheck(monitor.scrape_url!) :
-		await httpCheck(monitor.scrape_url!, monitor.ssl_check === 1);
+	const doSslProbe = monitor.ssl_check === 1 && monitor.scrape_url?.startsWith('https://');
+	const [result, sslInfo] = await Promise.all([
+		monitor.type === 'tcp' ? tcpCheck(monitor.scrape_url!) :
+		monitor.type === 'dns' ? dnsCheck(monitor.scrape_url!) :
+		httpCheck(monitor.scrape_url!, monitor.ssl_check === 1),
+		doSslProbe ? sslProbe(new URL(monitor.scrape_url!).hostname) : Promise.resolve(null),
+	]);
+	if (sslInfo) {
+		result.ssl_days_left = sslInfo.daysLeft;
+		result.ssl_not_after = sslInfo.notAfter;
+		result.ssl_issuer = sslInfo.issuer;
+	}
 	const { newFailures, newSuccesses } = await storeResult(env, monitor, result, executionId, now);
 	await evaluateAlerts(env, monitor, result, newFailures, newSuccesses, now, rules);
 }

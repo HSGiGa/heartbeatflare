@@ -15,7 +15,7 @@ async function fetchMonitorRows(env: Env, showAll: boolean): Promise<MonitorDbRo
 		        m.created_at, m.updated_at,
 		        ms.status, ms.last_check_at, ms.last_success_at,
 		        ms.consecutive_failures, ms.consecutive_successes,
-		        ms.active_incident_id
+		        ms.active_incident_id, ms.ssl_not_after, ms.ssl_issuer
 		 FROM monitors m
 		 LEFT JOIN monitor_state ms ON ms.monitor_id = m.id
 		 WHERE m.enabled = 1 ${visFilter}
@@ -88,6 +88,8 @@ async function handleStatusApi(env: Env, runtimeEnv: RuntimeEnv, showAll: boolea
 				consecutive_failures: m.consecutive_failures ?? 0,
 				consecutive_successes: m.consecutive_successes ?? 0,
 				active_incident_id: m.active_incident_id,
+				ssl_not_after: m.ssl_not_after ?? null,
+				ssl_issuer: m.ssl_issuer ?? null,
 			},
 			alert_rules: showAll
 				? (rulesByMonitor.get(m.id) ?? []).map((r) => ({

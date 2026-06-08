@@ -104,6 +104,8 @@ function parseCondition(condition: string): { dbCondition: string; threshold: nu
 		const opMap: Record<string, string> = { '>': 'gt', '<': 'lt', '>=': 'gte', '<=': 'lte' };
 		return { dbCondition: opMap[latMatch[1]], threshold: parseFloat(latMatch[2]) };
 	}
+	const sslMatch = condition.match(/ssl_expiry(?:_days)?\s*<\s*(\d+)/i);
+	if (sslMatch) return { dbCondition: 'ssl_expiry', threshold: parseInt(sslMatch[1]) };
 	throw new Error(`Cannot parse condition: ${condition}`);
 }
 
