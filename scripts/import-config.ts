@@ -172,8 +172,9 @@ async function main() {
 			[id, monitor.name, monitor.type, monitor.mode, monitor.visibility ?? 'private', target, intervalSeconds, (monitor.ssl ?? true) ? 1 : 0, id],
 		);
 
-		for (let i = 0; i < (monitor.alerts ?? []).length; i++) {
-			const alert = monitor.alerts![i];
+		const alerts = monitor.alerts ?? [];
+		for (let i = 0; i < alerts.length; i++) {
+			const alert = alerts[i];
 			const alertId = `${id}-alert-${i}`;
 			const { dbCondition, threshold, metricName } = parseCondition(alert.condition);
 			const cooldownSeconds = parseCooldown(alert.cooldown);
@@ -182,6 +183,22 @@ async function main() {
 				`INSERT OR REPLACE INTO alert_rules (id, monitor_id, metric_name, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
 				[alertId, id, metricName ?? null, dbCondition, threshold, alert.severity, alert.failures, alert.recovery, cooldownSeconds],
+			);
+		}
+
+		// Add default SSL expiry rules if no ssl_expiry alerts are explicitly configured
+		const hasSslRule = alerts.some((a) => /ssl_expiry/i.test(a.condition));
+		const sslEnabled = monitor.ssl ?? true;
+		if (!hasSslRule && sslEnabled && ['http', 'tcp'].includes(monitor.type)) {
+			await d1Query(
+				`INSERT OR IGNORE INTO alert_rules (id, monitor_id, metric_name, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled)
+         VALUES (?, ?, 'ssl_expiry', 'lt', 7, 'warning', 1, 1, 0, 1)`,
+				[`${id}-ssl-warn`, id],
+			);
+			await d1Query(
+				`INSERT OR IGNORE INTO alert_rules (id, monitor_id, metric_name, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled)
+         VALUES (?, ?, 'ssl_expiry', 'lt', 1, 'critical', 1, 1, 0, 1)`,
+				[`${id}-ssl-crit`, id],
 			);
 		}
 	}

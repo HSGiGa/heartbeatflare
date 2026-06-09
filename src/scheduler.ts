@@ -51,7 +51,8 @@ export async function handleScheduled(env: Env): Promise<void> {
 			        ms.status AS current_status, ms.last_check_at, ms.last_success_at,
 			        COALESCE(ms.consecutive_failures, 0) AS consecutive_failures,
 			        COALESCE(ms.consecutive_successes, 0) AS consecutive_successes,
-			        ms.active_incident_id
+			        ms.active_incident_id,
+			        ms.ssl_not_after, ms.ssl_issuer
 			 FROM monitors m
 			 LEFT JOIN monitor_state ms ON ms.monitor_id = m.id
 			 WHERE m.enabled = 1`,

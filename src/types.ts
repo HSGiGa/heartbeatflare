@@ -44,6 +44,8 @@ export type MonitorRow = {
 	consecutive_failures: number;
 	consecutive_successes: number;
 	active_incident_id: string | null;
+	ssl_not_after: string | null;
+	ssl_issuer: string | null;
 };
 
 export type ProbeResult = {

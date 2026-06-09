@@ -37,6 +37,20 @@ export async function storeResult(
 	const day = now.slice(0, 10);   // YYYY-MM-DD
 	const hour = now.slice(0, 13);  // YYYY-MM-DDTHH
 
+	// Only update SSL columns when values actually changed — certs renew a few times per year at most
+	const bindSslNotAfter = result.ssl_not_after != null && result.ssl_not_after !== monitor.ssl_not_after
+		? result.ssl_not_after
+		: null;
+	const bindSslIssuer = result.ssl_issuer != null && result.ssl_issuer !== monitor.ssl_issuer
+		? result.ssl_issuer
+		: null;
+
+	// Only write a raw metric_series row when actionable: failure, transition, or first sample of the hour
+	const writeMetric =
+		result.status === 'down' ||
+		result.status !== prevStatus ||
+		now.slice(0, 13) !== (monitor.last_check_at ?? '').slice(0, 13);
+
 	const statements: D1PreparedStatement[] = [
 		env.DB.prepare(
 			`INSERT INTO monitor_state (monitor_id, status, last_check_at, last_success_at, consecutive_failures, consecutive_successes, ssl_not_after, ssl_issuer)
@@ -49,14 +63,19 @@ export async function storeResult(
 			   consecutive_successes = excluded.consecutive_successes,
 			   ssl_not_after = COALESCE(excluded.ssl_not_after, ssl_not_after),
 			   ssl_issuer    = COALESCE(excluded.ssl_issuer, ssl_issuer)`,
-		).bind(monitor.id, result.status, now, result.status === 'up' ? now : null, failures, successes, result.ssl_not_after ?? null, result.ssl_issuer ?? null),
-		env.DB.prepare(
-			`INSERT INTO metric_series (id, monitor_id, recorded_at, availability, latency_ms, tcp_connect_ms, ssl_expiry_seconds)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		).bind(executionId, monitor.id, now, upVal, result.latency_ms, result.tcp_connect_ms ?? null, result.ssl_days_left != null ? result.ssl_days_left * 86_400 : null),
+		).bind(monitor.id, result.status, now, result.status === 'up' ? now : null, failures, successes, bindSslNotAfter, bindSslIssuer),
 		env.DB.prepare(upsertDailySql).bind(monitor.id, day, upVal, lat),
 		env.DB.prepare(upsertHourlySql).bind(monitor.id, hour, upVal, lat),
 	];
+
+	if (writeMetric) {
+		statements.push(
+			env.DB.prepare(
+				`INSERT INTO metric_series (id, monitor_id, recorded_at, availability, latency_ms, tcp_connect_ms)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+			).bind(executionId, monitor.id, now, upVal, result.latency_ms, result.tcp_connect_ms ?? null),
+		);
+	}
 
 	if (result.status !== prevStatus || result.status === 'down') {
 		statements.push(
@@ -140,13 +159,22 @@ export async function evaluateAlerts(
 	}
 
 	if (result.ssl_days_left !== undefined && !monitor.active_incident_id) {
-		for (const rule of rules) {
-			if (rule.metric_name === 'ssl_expiry' && rule.condition === 'lt' && result.ssl_days_left < rule.threshold) {
+		// Sort by threshold ASC so critical (lower threshold) is evaluated before warning
+		const sslRules = rules
+			.filter((r) => r.metric_name === 'ssl_expiry' && r.condition === 'lt')
+			.sort((a, b) => a.threshold - b.threshold);
+
+		for (const rule of sslRules) {
+			if (result.ssl_days_left < rule.threshold) {
+				const reason =
+					result.ssl_days_left <= 0
+						? 'SSL certificate has expired'
+						: `SSL cert expires in ${result.ssl_days_left} day(s)`;
 				const incidentId = crypto.randomUUID();
 				await env.DB.prepare(
 					`INSERT INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, reason)
 					 VALUES (?, ?, ?, 'open', ?, ?, ?)`,
-				).bind(incidentId, monitor.id, rule.id, rule.severity, now, `SSL cert expires in ${result.ssl_days_left} day(s)`).run();
+				).bind(incidentId, monitor.id, rule.id, rule.severity, now, reason).run();
 				await env.DB.prepare(
 					`UPDATE monitor_state SET active_incident_id = ? WHERE monitor_id = ?`,
 				).bind(incidentId, monitor.id).run();
@@ -156,7 +184,7 @@ export async function evaluateAlerts(
 					monitorName: monitor.name,
 					eventType: 'down',
 					count: 1,
-					error: `SSL cert expires in ${result.ssl_days_left} day(s)`,
+					error: reason,
 				});
 				break;
 			}
