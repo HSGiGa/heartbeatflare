@@ -3,35 +3,122 @@
   "$id": "config.schema.json",
   "title": "HeartbeatFlare Config",
   "type": "object",
-  "required": ["monitors"],
+  "required": [
+    "monitors"
+  ],
   "additionalProperties": false,
   "properties": {
-    "auth": { "$ref": "#/$defs/auth_config" },
+    "auth": {
+      "$ref": "#/$defs/auth_config"
+    },
+    "access": {
+      "$ref": "#/$defs/access_config"
+    },
     "notification_channels": {
       "type": "array",
       "items": {
         "oneOf": [
-          { "$ref": "#/$defs/slack_channel" },
-          { "$ref": "#/$defs/webhook_channel" },
-          { "$ref": "#/$defs/email_channel" },
-          { "$ref": "#/$defs/telegram_channel" }
+          {
+            "$ref": "#/$defs/slack_channel"
+          },
+          {
+            "$ref": "#/$defs/webhook_channel"
+          },
+          {
+            "$ref": "#/$defs/email_channel"
+          },
+          {
+            "$ref": "#/$defs/telegram_channel"
+          }
         ]
       }
     },
     "monitors": {
       "type": "array",
       "minItems": 1,
-      "items": { "$ref": "#/$defs/monitor" }
+      "items": {
+        "$ref": "#/$defs/monitor"
+      }
     }
   },
   "$defs": {
+    "access_config": {
+      "type": "object",
+      "required": [
+        "app_name",
+        "domain",
+        "identity_provider",
+        "policy"
+      ],
+      "additionalProperties": false,
+      "description": "Cloudflare Access Application config. Used by deploy:access to create/update the Access Application.",
+      "properties": {
+        "app_name": {
+          "type": "string",
+          "description": "Name of the Cloudflare Access Application."
+        },
+        "domain": {
+          "type": "string",
+          "description": "Hostname secured by Access, e.g. status.modem.by."
+        },
+        "session_duration": {
+          "type": "string",
+          "default": "24h",
+          "description": "Session duration, e.g. 24h."
+        },
+        "identity_provider": {
+          "type": "string",
+          "description": "Name of the OIDC identity provider in Zero Trust (must match exactly)."
+        },
+        "policy": {
+          "type": "object",
+          "required": [
+            "name",
+            "emails"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Name of the reusable Access Policy."
+            },
+            "emails": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "description": "Allowed email addresses."
+            }
+          }
+        },
+        "bypass_policy": {
+          "type": "object",
+          "required": ["name"],
+          "additionalProperties": false,
+          "description": "Bypass policy for public unauthenticated access. Everyone can reach the page; authenticated users still get JWT injected.",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Name of the reusable bypass Access Policy."
+            }
+          }
+        }
+      }
+    },
     "auth_config": {
       "type": "object",
-      "required": ["provider", "team_domain", "aud"],
+      "required": [
+        "provider",
+        "team_domain",
+        "aud"
+      ],
       "additionalProperties": false,
       "description": "Optional Cloudflare Access authentication. When present, unauthenticated users see only public monitors.",
       "properties": {
-        "provider": { "const": "cloudflare_access" },
+        "provider": {
+          "const": "cloudflare_access"
+        },
         "team_domain": {
           "type": "string",
           "description": "Your Cloudflare Zero Trust team subdomain (the part before .cloudflareaccess.com)."
@@ -44,80 +131,200 @@
     },
     "slack_channel": {
       "type": "object",
-      "required": ["name", "type", "url"],
+      "required": [
+        "name",
+        "type",
+        "url"
+      ],
       "additionalProperties": false,
       "properties": {
-        "name": { "type": "string" },
-        "type": { "const": "slack" },
-        "url": { "type": "string", "description": "Incoming webhook URL. Supports ${VAR} substitution." },
-        "channel": { "type": "string", "description": "Channel name for display purposes, e.g. \"#alerts\"." },
-        "is_default": { "type": "boolean", "default": false }
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "const": "slack"
+        },
+        "url": {
+          "type": "string",
+          "description": "Incoming webhook URL. Supports ${VAR} substitution."
+        },
+        "channel": {
+          "type": "string",
+          "description": "Channel name for display purposes, e.g. \"#alerts\"."
+        },
+        "is_default": {
+          "type": "boolean",
+          "default": false
+        }
       }
     },
     "webhook_channel": {
       "type": "object",
-      "required": ["name", "type", "url"],
+      "required": [
+        "name",
+        "type",
+        "url"
+      ],
       "additionalProperties": false,
       "properties": {
-        "name": { "type": "string" },
-        "type": { "const": "webhook" },
-        "url": { "type": "string", "description": "Webhook endpoint URL. Supports ${VAR} substitution." },
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "const": "webhook"
+        },
+        "url": {
+          "type": "string",
+          "description": "Webhook endpoint URL. Supports ${VAR} substitution."
+        },
         "headers": {
           "type": "object",
           "description": "Additional HTTP headers. Values support ${VAR} substitution.",
-          "additionalProperties": { "type": "string" }
+          "additionalProperties": {
+            "type": "string"
+          }
         },
-        "is_default": { "type": "boolean", "default": false }
+        "is_default": {
+          "type": "boolean",
+          "default": false
+        }
       }
     },
     "email_channel": {
       "type": "object",
-      "required": ["name", "type", "server", "port", "from", "to"],
+      "required": [
+        "name",
+        "type",
+        "server",
+        "port",
+        "from",
+        "to"
+      ],
       "additionalProperties": false,
       "properties": {
-        "name": { "type": "string" },
-        "type": { "const": "email" },
-        "server": { "type": "string", "description": "SMTP server hostname." },
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-        "from": { "type": "string", "description": "Sender email address." },
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "const": "email"
+        },
+        "server": {
+          "type": "string",
+          "description": "SMTP server hostname."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "from": {
+          "type": "string",
+          "description": "Sender email address."
+        },
         "to": {
           "oneOf": [
-            { "type": "string" },
-            { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            }
           ],
           "description": "Recipient email address or list of addresses."
         },
-        "username": { "type": "string" },
-        "password": { "type": "string", "description": "SMTP password. Supports ${VAR} substitution." },
-        "is_default": { "type": "boolean", "default": false }
+        "username": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string",
+          "description": "SMTP password. Supports ${VAR} substitution."
+        },
+        "is_default": {
+          "type": "boolean",
+          "default": false
+        }
       }
     },
     "telegram_channel": {
       "type": "object",
-      "required": ["name", "type", "bot_token", "chat_id"],
+      "required": [
+        "name",
+        "type",
+        "bot_token",
+        "chat_id"
+      ],
       "additionalProperties": false,
       "properties": {
-        "name": { "type": "string" },
-        "type": { "const": "telegram" },
-        "bot_token": { "type": "string", "description": "Telegram Bot API token. Supports ${VAR} substitution." },
-        "chat_id": { "type": "string", "description": "Telegram chat or channel ID. Supports ${VAR} substitution." },
-        "is_default": { "type": "boolean", "default": false }
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "const": "telegram"
+        },
+        "bot_token": {
+          "type": "string",
+          "description": "Telegram Bot API token. Supports ${VAR} substitution."
+        },
+        "chat_id": {
+          "type": "string",
+          "description": "Telegram chat or channel ID. Supports ${VAR} substitution."
+        },
+        "is_default": {
+          "type": "boolean",
+          "default": false
+        }
       }
     },
     "monitor": {
       "type": "object",
-      "required": ["name", "type", "mode", "target"],
+      "required": [
+        "name",
+        "type",
+        "mode",
+        "target"
+      ],
       "additionalProperties": false,
       "properties": {
-        "name": { "type": "string" },
+        "name": {
+          "type": "string"
+        },
         "type": {
           "type": "string",
-          "enum": ["http", "tcp", "dns", "heartbeat", "openmetrics"]
+          "enum": [
+            "http",
+            "tcp",
+            "dns",
+            "heartbeat",
+            "openmetrics"
+          ]
         },
-        "mode": { "type": "string", "enum": ["external", "internal"] },
-        "visibility": { "type": "string", "enum": ["public", "private"], "default": "private" },
-        "ssl": { "type": "boolean", "default": true },
-        "target": { "type": "string", "description": "URL, host:port, or domain to monitor." },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "external",
+            "internal"
+          ]
+        },
+        "visibility": {
+          "type": "string",
+          "enum": [
+            "public",
+            "private"
+          ],
+          "default": "private"
+        },
+        "ssl": {
+          "type": "boolean",
+          "default": true
+        },
+        "target": {
+          "type": "string",
+          "description": "URL, host:port, or domain to monitor."
+        },
         "interval": {
           "type": "string",
           "pattern": "^((6[0-9]|[7-9][0-9]|[1-9][0-9]{2,})s|[1-9][0-9]*m)$",
@@ -126,22 +333,43 @@
         },
         "alerts": {
           "type": "array",
-          "items": { "$ref": "#/$defs/alert" }
+          "items": {
+            "$ref": "#/$defs/alert"
+          }
         }
       }
     },
     "alert": {
       "type": "object",
-      "required": ["condition", "severity", "failures", "recovery"],
+      "required": [
+        "condition",
+        "severity",
+        "failures",
+        "recovery"
+      ],
       "additionalProperties": false,
       "properties": {
         "condition": {
           "type": "string",
           "description": "Alert condition, e.g. \"status != 200\", \"connect != true\", \"latency >= 1000\"."
         },
-        "severity": { "type": "string", "enum": ["warning", "critical"] },
-        "failures": { "type": "integer", "minimum": 1, "description": "Consecutive failures before alerting." },
-        "recovery": { "type": "integer", "minimum": 1, "description": "Consecutive successes before resolving." },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "warning",
+            "critical"
+          ]
+        },
+        "failures": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Consecutive failures before alerting."
+        },
+        "recovery": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Consecutive successes before resolving."
+        },
         "cooldown": {
           "type": "string",
           "pattern": "^[1-9][0-9]*[sm]$",

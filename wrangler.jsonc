@@ -9,6 +9,7 @@
 	"compatibility_date": "2025-06-07",
 	"compatibility_flags": ["nodejs_compat"],
 	"workers_dev": true,
+	"routes": [{ "pattern": "status.modem.by", "custom_domain": true }],
 	"observability": {
 		"enabled": true
 	},

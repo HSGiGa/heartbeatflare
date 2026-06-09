@@ -101,12 +101,16 @@ export async function getAuth(request: Request, env: Env): Promise<{ session: Se
 	return { session, authEnabled: true };
 }
 
-export function handleLogout(request: Request, authConfig: ResolvedAuthConfig): Response {
+export function handleLogout(request: Request, _authConfig: ResolvedAuthConfig): Response {
 	const origin = new URL(request.url).origin;
-	return Response.redirect(
-		`https://${authConfig.team_domain}.cloudflareaccess.com/cdn-cgi/access/logout?redirect_to=${encodeURIComponent(origin + '/')}`,
-		302,
-	);
+	return new Response(null, {
+		status: 302,
+		headers: {
+			Location: origin + '/public',
+			// Clear the CF Access cookie so subsequent requests are unauthenticated
+			'Set-Cookie': 'CF_Authorization=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=None',
+		},
+	});
 }
 
 export function _invalidateAuthCache(): void {

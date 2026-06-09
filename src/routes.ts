@@ -56,7 +56,7 @@ async function handleStatusApi(env: Env, runtimeEnv: RuntimeEnv, showAll: boolea
 			 FROM alert_rules
 			 ORDER BY monitor_id`,
 		).all<AlertRuleDbRow>(),
-		fetchUsage(runtimeEnv),
+		showAll ? fetchUsage(runtimeEnv) : Promise.resolve(null),
 	]);
 
 	const rulesByMonitor = new Map<string, AlertRuleDbRow[]>();
@@ -67,10 +67,9 @@ async function handleStatusApi(env: Env, runtimeEnv: RuntimeEnv, showAll: boolea
 	}
 
 	return Response.json({
-		d1: snapshot.d1,
-		d1Percent: snapshot.d1Percent,
-		workers: snapshot.workers,
-		usageResetsIn: usageResetsIn(Date.now()),
+		...(showAll && snapshot
+			? { d1: snapshot.d1, d1Percent: snapshot.d1Percent, workers: snapshot.workers, usageResetsIn: usageResetsIn(Date.now()) }
+			: {}),
 		monitors: monitors.map((m) => ({
 			id: m.id,
 			name: m.name,
@@ -174,7 +173,7 @@ async function handleStatusPage(
 			 WHERE i.status = 'open' ${visWhere}
 			 ORDER BY i.started_at DESC`,
 		).all<IncidentRow>(),
-		fetchUsage(runtimeEnv),
+		showAll ? fetchUsage(runtimeEnv) : Promise.resolve(null),
 	]);
 
 	const html = buildStatusPage({ nowMs, monitors, uptimeDays, latencyPoints, activeIncidents, d1Usage, session, authEnabled });
@@ -196,12 +195,20 @@ export async function handleFetch(request: Request, env: Env): Promise<Response>
 	}
 
 	if (pathname === '/auth/login') {
-		return new Response(null, { status: 302, headers: { Location: '/' } });
+		return Response.redirect(new URL(request.url).origin + '/private', 302);
 	}
 
 	if (pathname === '/auth/logout') {
 		const authConfig = await resolveAuthConfig(env);
-		return authConfig ? handleLogout(request, authConfig) : new Response(null, { status: 302, headers: { Location: '/' } });
+		return authConfig ? handleLogout(request, authConfig) : Response.redirect('/', 302);
+	}
+
+	if (request.method === 'GET' && pathname === '/') {
+		return Response.redirect(new URL(request.url).origin + '/public', 302);
+	}
+
+	if (request.method === 'GET' && pathname === '/public') {
+		return handleStatusPage(env, runtimeEnv, false, null, true);
 	}
 
 	const { session, authEnabled } = await getAuth(request, env);
@@ -215,7 +222,7 @@ export async function handleFetch(request: Request, env: Env): Promise<Response>
 		return handleHistoryApi(env, new URL(request.url).searchParams, showAll);
 	}
 
-	if (request.method === 'GET' && pathname === '/') {
+	if (request.method === 'GET' && pathname === '/private') {
 		return handleStatusPage(env, runtimeEnv, showAll, session, authEnabled);
 	}
 

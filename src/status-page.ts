@@ -70,7 +70,7 @@ export function buildStatusPage({
 	uptimeDays: UptimeDayRow[];
 	latencyPoints: LatencyRow[];
 	activeIncidents: IncidentRow[];
-	d1Usage: UsageSnapshot;
+	d1Usage: UsageSnapshot | null;
 	session: Session | null;
 	authEnabled: boolean;
 }): string {
@@ -159,6 +159,11 @@ export function buildStatusPage({
 		return `<span style="font-size:11px;font-weight:600;padding:2px 6px;border-radius:4px;background:#f4f4f5;color:#71717a;text-transform:uppercase;letter-spacing:0.04em">${escHtml(type)}</span>`;
 	}
 
+	function visibilityBadge(visibility: string): string {
+		if (visibility !== 'private') return '';
+		return `<span style="font-size:11px;font-weight:600;padding:2px 6px;border-radius:4px;background:#fef3c7;color:#92400e;text-transform:uppercase;letter-spacing:0.04em">Private</span>`;
+	}
+
 	function sslBadge(notAfter: string | null, issuer: string | null): string {
 		if (!notAfter) return '';
 		const days = Math.floor((new Date(notAfter).getTime() - Date.now()) / 86_400_000);
@@ -168,11 +173,22 @@ export function buildStatusPage({
 		return `<span title="${escHtml(title)}" style="font-size:11px;padding:2px 6px;border-radius:4px;background:${color}1a;color:${color};font-weight:600;cursor:default">🔒 ${label}</span>`;
 	}
 
-	const monitorsHtml = monitors.map((m) => {
+	const sortedMonitors = [...monitors].sort((a, b) => {
+		if (a.visibility === b.visibility) return 0;
+		return a.visibility === 'public' ? -1 : 1;
+	});
+
+	const monitorsHtml = sortedMonitors.map((m, i) => {
 		const pts = latencyByMonitor.get(m.id) ?? [];
 		const inc = activeByMonitor.get(m.id);
 		const sparkline = pts.length >= 3 ? renderSparkline(pts.slice(-40)) : '';
-		return `
+		const divider = (m.visibility === 'private' && (i === 0 || sortedMonitors[i - 1].visibility === 'public'))
+			? `<div style="margin:24px 0 16px;display:flex;align-items:center;gap:12px">
+				<span style="font-size:12px;font-weight:600;color:#92400e;text-transform:uppercase;letter-spacing:0.06em">Private</span>
+				<div style="flex:1;height:1px;background:#fde68a"></div>
+			</div>`
+			: '';
+		return divider + `
 		<div class="monitor-row">
 			<div class="monitor-header">
 				<div style="display:flex;align-items:flex-start;gap:9px">
@@ -180,6 +196,7 @@ export function buildStatusPage({
 					<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
 						<span class="monitor-name">${escHtml(m.name)}</span>
 						${typeBadge(m.type)}
+						${visibilityBadge(m.visibility)}
 						${sslBadge(m.ssl_not_after, m.ssl_issuer)}
 					</div>
 				</div>
@@ -241,14 +258,13 @@ export function buildStatusPage({
 		</div>`;
 	}
 
-	const { d1, d1Percent, workers, plan } = d1Usage;
-	const p = plan ?? { label: 'Free', rowsRead: 5_000_000, rowsWritten: 100_000, storageBytes: 5_000_000_000 };
-	const workersReqPct = workers ? (workers.requests / workersFreeLimit.requestsPerDay) * 100 : 0;
-
-	const d1ReadLimit = p.rowsRead >= 1_000_000_000 ? `${(p.rowsRead / 1_000_000_000).toFixed(0)}B` : `${(p.rowsRead / 1_000_000).toFixed(0)}M`;
-	const d1WriteLimit = p.rowsWritten >= 1_000_000 ? `${(p.rowsWritten / 1_000_000).toFixed(0)}M` : `${(p.rowsWritten / 1_000).toFixed(0)}K`;
-
-	const usageHtml = `
+	const usageHtml = d1Usage ? (() => {
+		const { d1, d1Percent, workers, plan } = d1Usage;
+		const p = plan ?? { label: 'Free', rowsRead: 5_000_000, rowsWritten: 100_000, storageBytes: 5_000_000_000 };
+		const workersReqPct = workers ? (workers.requests / workersFreeLimit.requestsPerDay) * 100 : 0;
+		const d1ReadLimit = p.rowsRead >= 1_000_000_000 ? `${(p.rowsRead / 1_000_000_000).toFixed(0)}B` : `${(p.rowsRead / 1_000_000).toFixed(0)}M`;
+		const d1WriteLimit = p.rowsWritten >= 1_000_000 ? `${(p.rowsWritten / 1_000_000).toFixed(0)}M` : `${(p.rowsWritten / 1_000).toFixed(0)}K`;
+		return `
 	<section class="section">
 		<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
 			<h2 class="section-title" style="margin:0">Infrastructure Usage</h2>
@@ -271,6 +287,7 @@ export function buildStatusPage({
 			${infoCard('Cron', '* * * * *', '#18181b', '~1,440 calls / day')}
 		</div>
 	</section>`;
+	})() : '';
 
 	const nowDisplay = new Date(nowMs).toUTCString().replace(' GMT', ' UTC');
 

@@ -1,5 +1,20 @@
 # yaml-language-server: $schema=./config.schema.json
 
+auth:
+  provider: cloudflare_access
+  team_domain: modem-by
+  aud: "c837d4695c934df64d4c02856e1a2db466fe3f486f2c133b2afa166c2f526b20" # auto-populated by deploy:access
+
+access:
+  app_name: heartbeatflare
+  domain: status.modem.by/private
+  session_duration: 24h
+  identity_provider: "login.modem.by"
+  policy:
+    name: Allow team
+    emails:
+      - vbondarenko@modem.by
+
 notification_channels:
   - name: Mattermost
     type: slack
