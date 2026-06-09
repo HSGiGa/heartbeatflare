@@ -17,6 +17,8 @@ async function fetchPlanInfo(accountId: string, apiToken: string): Promise<PlanI
 	if (cachedPlan && nowMs < cachedPlanUntil) return cachedPlan;
 
 	try {
+		// Requires Account → Billing → Read permission on the token.
+		// Returns 401/403 without it — falls back to Free plan limits, which is correct for most accounts.
 		const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/subscriptions`, {
 			headers: { Authorization: `Bearer ${apiToken}` },
 		});
