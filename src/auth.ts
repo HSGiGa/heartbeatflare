@@ -19,10 +19,8 @@ export async function resolveAuthConfig(env: Env): Promise<ResolvedAuthConfig | 
 
 	const aud = resolveEnvRef(row.aud, env);
 	if (!aud) {
-		console.error('[auth] Cannot resolve aud ref:', row.aud);
-		cachedAuthConfig = null;
-		cachedAuthConfigUntil = Date.now() + AUTH_CONFIG_TTL_MS;
-		return null;
+		// auth_config row exists but the env var it references is missing — misconfiguration
+		throw new Error(`[auth] Cannot resolve AUD env ref: ${row.aud}`);
 	}
 
 	cachedAuthConfig = { provider: 'cloudflare_access', team_domain: row.team_domain, aud };

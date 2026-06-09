@@ -211,7 +211,17 @@ export async function handleFetch(request: Request, env: Env): Promise<Response>
 		return handleStatusPage(env, runtimeEnv, false, null, true);
 	}
 
-	const { session, authEnabled } = await getAuth(request, env);
+	let session: Session | null;
+	let authEnabled: boolean;
+	try {
+		({ session, authEnabled } = await getAuth(request, env));
+	} catch (err) {
+		console.error('[auth] Auth resolution failed:', err);
+		return new Response('Authentication service unavailable', {
+			status: 503,
+			headers: { 'Retry-After': '30', 'Content-Type': 'text/plain' },
+		});
+	}
 	const showAll = !authEnabled || session !== null;
 
 	if (request.method === 'GET' && pathname === '/api/status') {
