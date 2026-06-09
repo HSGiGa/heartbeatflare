@@ -173,9 +173,16 @@ export function buildStatusPage({
 		return `<span title="${escHtml(title)}" style="font-size:11px;padding:2px 6px;border-radius:4px;background:${color}1a;color:${color};font-weight:600;cursor:default">🔒 ${label}</span>`;
 	}
 
+	const statusOrder: Record<string, number> = { down: 0, degraded: 1, up: 2 };
+
 	const sortedMonitors = [...monitors].sort((a, b) => {
-		if (a.visibility === b.visibility) return 0;
-		return a.visibility === 'public' ? -1 : 1;
+		const vA = a.visibility === 'public' ? 0 : 1;
+		const vB = b.visibility === 'public' ? 0 : 1;
+		if (vA !== vB) return vA - vB;
+		const sA = statusOrder[a.status ?? ''] ?? 3;
+		const sB = statusOrder[b.status ?? ''] ?? 3;
+		if (sA !== sB) return sA - sB;
+		return a.name.localeCompare(b.name);
 	});
 
 	const monitorsHtml = sortedMonitors.map((m, i) => {
