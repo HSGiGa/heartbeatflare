@@ -241,8 +241,12 @@ export function buildStatusPage({
 		</div>`;
 	}
 
-	const { d1, d1Percent, workers } = d1Usage;
+	const { d1, d1Percent, workers, plan } = d1Usage;
+	const p = plan ?? { label: 'Free', rowsRead: 5_000_000, rowsWritten: 100_000, storageBytes: 5_000_000_000 };
 	const workersReqPct = workers ? (workers.requests / workersFreeLimit.requestsPerDay) * 100 : 0;
+
+	const d1ReadLimit = p.rowsRead >= 1_000_000_000 ? `${(p.rowsRead / 1_000_000_000).toFixed(0)}B` : `${(p.rowsRead / 1_000_000).toFixed(0)}M`;
+	const d1WriteLimit = p.rowsWritten >= 1_000_000 ? `${(p.rowsWritten / 1_000_000).toFixed(0)}M` : `${(p.rowsWritten / 1_000).toFixed(0)}K`;
 
 	const usageHtml = `
 	<section class="section">
@@ -250,13 +254,13 @@ export function buildStatusPage({
 			<h2 class="section-title" style="margin:0">Infrastructure Usage</h2>
 			<span class="meta-text">resets in ${usageResetsIn(nowMs)}</span>
 		</div>
-		<div class="usage-sublabel">D1 Database · Free Plan · 5M reads / 100K writes / 5 GB / day</div>
+		<div class="usage-sublabel">D1 Database · ${p.label} · ${d1ReadLimit} reads / ${d1WriteLimit} writes / ${formatBytes(p.storageBytes)} / day</div>
 		<div class="usage-grid">
-			${progressBar('Rows Read', formatNumber(d1.rowsRead), '5M / day', d1Percent.rowsRead)}
-			${progressBar('Rows Written', formatNumber(d1.rowsWritten), '100K / day', d1Percent.rowsWritten)}
-			${progressBar('Storage', formatBytes(d1.databaseSizeBytes), '5 GB', d1Percent.storage)}
+			${progressBar('Rows Read', formatNumber(d1.rowsRead), `${d1ReadLimit} / day`, d1Percent.rowsRead)}
+			${progressBar('Rows Written', formatNumber(d1.rowsWritten), `${d1WriteLimit} / day`, d1Percent.rowsWritten)}
+			${progressBar('Storage', formatBytes(d1.databaseSizeBytes), formatBytes(p.storageBytes), d1Percent.storage)}
 		</div>
-		<div class="usage-sublabel" style="margin-top:16px">Workers · Free Plan · 100K requests / day</div>
+		<div class="usage-sublabel" style="margin-top:16px">Workers · ${p.label} · 100K requests / day</div>
 		<div class="usage-grid">
 			${workers
 				? progressBar('Requests', formatNumber(workers.requests), '100K / day', workersReqPct)

@@ -114,11 +114,19 @@ export type WorkersUsage = {
 	subrequests: number;
 };
 
+export type PlanInfo = {
+	label: string;
+	rowsRead: number;
+	rowsWritten: number;
+	storageBytes: number;
+};
+
 export type UsageSnapshot = {
 	d1: D1Usage;
 	d1Percent: D1UsagePercent;
 	workers: WorkersUsage | null;
 	fetchedAt: string | null;
+	plan: PlanInfo | null;
 };
 
 export type AuthConfigDbRow = {
