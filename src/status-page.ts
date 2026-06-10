@@ -61,6 +61,7 @@ export function buildStatusPage({
 	uptimeDays,
 	latencyPoints,
 	activeIncidents,
+	allIncidents,
 	d1Usage,
 	session,
 	authEnabled,
@@ -70,6 +71,7 @@ export function buildStatusPage({
 	uptimeDays: UptimeDayRow[];
 	latencyPoints: LatencyRow[];
 	activeIncidents: IncidentRow[];
+	allIncidents: IncidentRow[];
 	d1Usage: UsageSnapshot | null;
 	session: Session | null;
 	authEnabled: boolean;
@@ -89,6 +91,38 @@ export function buildStatusPage({
 	const activeByMonitor = new Map<string, IncidentRow>();
 	for (const inc of activeIncidents) activeByMonitor.set(inc.monitor_id, inc);
 
+	const todayStr = new Date(nowMs).toISOString().slice(0, 10);
+	const incidentsByMonitorDay = new Map<string, IncidentRow[]>();
+	for (const inc of allIncidents) {
+		const startDay = new Date(inc.started_at);
+		startDay.setUTCHours(0, 0, 0, 0);
+		const endDay = inc.resolved_at ? new Date(inc.resolved_at) : new Date(nowMs);
+		// An incident resolved at exactly midnight had zero duration on that day — exclude it
+		if (inc.resolved_at && endDay.getUTCHours() === 0 && endDay.getUTCMinutes() === 0 && endDay.getUTCSeconds() === 0 && endDay.getUTCMilliseconds() === 0) {
+			endDay.setUTCDate(endDay.getUTCDate() - 1);
+		}
+		endDay.setUTCHours(23, 59, 59, 999);
+		const cursor = new Date(startDay);
+		while (cursor <= endDay) {
+			const dayStr = cursor.toISOString().slice(0, 10);
+			if (dayStr > todayStr) break;
+			const key = `${inc.monitor_id}:${dayStr}`;
+			const list = incidentsByMonitorDay.get(key) ?? [];
+			list.push(inc);
+			incidentsByMonitorDay.set(key, list);
+			cursor.setUTCDate(cursor.getUTCDate() + 1);
+		}
+	}
+
+	const incMapObj: Record<string, Array<{ severity: string; started_at: string; resolved_at: string | null; reason: string | null }>> = {};
+	for (const [key, list] of incidentsByMonitorDay.entries()) {
+		incMapObj[key] = list.map((inc) => ({ severity: inc.severity, started_at: inc.started_at, resolved_at: inc.resolved_at ?? null, reason: inc.reason ?? null }));
+	}
+	const incMapJson = JSON.stringify(incMapObj)
+		.replace(/</g, '\\u003c')
+		.replace(new RegExp(String.fromCharCode(0x2028), 'g'), '\\u2028')
+		.replace(new RegExp(String.fromCharCode(0x2029), 'g'), '\\u2029');
+
 	const hasDown = monitors.some((m) => m.status === 'down');
 	const hasDegraded = monitors.some((m) => m.status === 'degraded');
 	const overallText = hasDown ? 'Partial Outage' : hasDegraded ? 'Degraded Performance' : 'All Systems Operational';
@@ -106,17 +140,26 @@ export function buildStatusPage({
 			d.setUTCDate(d.getUTCDate() - i);
 			const day = d.toISOString().slice(0, 10);
 			const avg = days?.get(day);
-			let color: string, tip: string;
+			const tip = avg !== undefined ? `${(avg * 100).toFixed(1)}% uptime` : 'No data';
+			const key = `${monitorId}:${day}`;
+			const dayIncs = incidentsByMonitorDay.get(key) ?? [];
+			let color: string;
 			if (avg === undefined) {
-				color = '#d4d4d8'; tip = 'No data';
-			} else if (avg >= 0.99) {
-				color = '#4ade80'; tip = `${(avg * 100).toFixed(1)}% uptime`;
-			} else if (avg >= 0.95) {
-				color = '#fbbf24'; tip = `${(avg * 100).toFixed(1)}% uptime`;
+				color = '#d4d4d8';
+			} else if (dayIncs.some((inc) => inc.severity === 'critical')) {
+				color = '#f87171';
+			} else if (dayIncs.length > 0) {
+				color = '#fbbf24';
+			} else if (avg < 0.95) {
+				color = '#f87171';
+			} else if (avg < 0.99) {
+				color = '#fbbf24';
 			} else {
-				color = '#f87171'; tip = `${(avg * 100).toFixed(1)}% uptime`;
+				color = '#4ade80';
 			}
-			bars += `<span class="bar" data-age="${i}" style="background:${color}" title="${day}: ${tip}"></span>`;
+			const safeKey = escHtml(key);
+			const safeTip = escHtml(day + ': ' + tip);
+			bars += `<span class="bar" data-age="${i}" data-key="${safeKey}" data-tip="${safeTip}" aria-label="${safeTip}" style="background:${color}"></span>`;
 		}
 		return bars;
 	}
@@ -325,6 +368,11 @@ header{background:${bannerBg};border-bottom:1px solid ${bannerBorder};padding:28
 .bars-row{display:flex;gap:2px;margin-bottom:3px;overflow:hidden}
 .bar{flex:1;min-width:4px;max-width:20px;height:26px;border-radius:2px;cursor:default;transition:opacity .12s}
 .bar:hover{opacity:.7}
+#bar-tt{position:fixed;z-index:100;pointer-events:none;background:#18181b;color:#f4f4f5;border-radius:8px;padding:10px 14px;font-size:12px;max-width:280px;box-shadow:0 4px 16px rgba(0,0,0,.35);line-height:1.5;white-space:normal}
+#bar-tt .tt-row+.tt-row{border-top:1px solid #3f3f46;margin-top:6px;padding-top:6px}
+#bar-tt .tt-sev{font-size:10px;font-weight:700;text-transform:uppercase;padding:1px 5px;border-radius:3px;margin-right:4px}
+#bar-tt .tt-sev.crit{background:#991b1b;color:#fee2e2}
+#bar-tt .tt-sev.warn{background:#78350f;color:#fef9c3}
 .bars-labels{display:flex;justify-content:space-between;font-size:11px;color:#a1a1aa;margin-bottom:6px}
 .range-picker{display:flex;gap:3px}
 .range-btn{font-size:11px;font-weight:600;padding:3px 9px;border-radius:5px;border:1px solid #e4e4e7;background:#fff;color:#71717a;cursor:pointer;transition:all .12s;line-height:1.6}
@@ -389,8 +437,10 @@ ${usageHtml}
 </div>
 </div>
 </footer>
+<div id="bar-tt" hidden></div>
 <script>
 (function(){
+  var INC=${incMapJson};
   var picker=document.getElementById('range-picker');
   var tabMonitors=document.getElementById('tab-monitors');
   var tabHistory=document.getElementById('tab-history');
@@ -457,6 +507,30 @@ ${usageHtml}
       picker.style.display=isHist?'none':'';
       if(isHist&&!histLoaded)loadHistory(1);
     });
+  });
+
+  var barTt=document.getElementById('bar-tt');
+  function positionTt(e){
+    var w=barTt.offsetWidth,h=barTt.offsetHeight;
+    barTt.style.left=Math.min(e.clientX-w/2,window.innerWidth-w-8)+'px';
+    barTt.style.top=(e.clientY>h+20?e.clientY-h-12:e.clientY+20)+'px';
+  }
+  document.querySelectorAll('.bar').forEach(function(b){
+    b.style.cursor='default';
+    b.addEventListener('mouseenter',function(e){
+      var html='<div style="font-weight:600;margin-bottom:4px">'+esc(b.dataset.tip||'')+'</div>';
+      var incs=INC[b.dataset.key||''];
+      if(incs&&incs.length){
+        incs.forEach(function(inc){
+          var icon=inc.severity==='critical'?'🔴':'🟡';
+          html+='<div class="tt-row">'+icon+' '+fmtDur(inc.started_at,inc.resolved_at)+(inc.reason?' — '+esc(inc.reason):'')+
+          '</div>';
+        });
+      }
+      barTt.innerHTML=html;barTt.hidden=false;positionTt(e);
+    });
+    b.addEventListener('mousemove',positionTt);
+    b.addEventListener('mouseleave',function(){barTt.hidden=true;});
   });
 })();
 </script>

@@ -9,6 +9,7 @@ const monitors = [
 	{ id: 'google', alertRuleId: 'google-alert-0', needsRule: false },
 	{ id: 'google-dns', alertRuleId: 'google-dns-alert-0', needsRule: false },
 	{ id: 'gmail-smtp', alertRuleId: 'gmail-smtp-alert-0', needsRule: false },
+	{ id: 'vpn-modem-by', alertRuleId: 'vpn-modem-by-alert-0', needsRule: false },
 ];
 
 function daysAgo(n: number): Date {
@@ -19,6 +20,10 @@ function daysAgo(n: number): Date {
 
 function isoStr(d: Date): string {
 	return d.toISOString().slice(0, 19) + 'Z';
+}
+
+function sqlStr(s: string): string {
+	return s.replace(/'/g, "''");
 }
 
 function vary(monIdx: number, offset: number): number {
@@ -97,9 +102,26 @@ for (const mon of monitors) {
 		const id = `seed-${mon.id}-${t}`;
 		sql.push(
 			`INSERT OR IGNORE INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, resolved_at, reason)` +
-			` VALUES ('${id}', '${mon.id}', '${mon.alertRuleId}', 'resolved', '${tmpl.severity}', '${isoStr(start)}', '${isoStr(end)}', '${tmpl.reason}');`,
+			` VALUES ('${sqlStr(id)}', '${sqlStr(mon.id)}', '${sqlStr(mon.alertRuleId)}', 'resolved', '${sqlStr(tmpl.severity)}', '${isoStr(start)}', '${isoStr(end)}', '${sqlStr(tmpl.reason)}');`,
 		);
 	}
+}
+
+// VPN modem.by: custom incidents with VPN-specific reasons and both alert rules
+const vpnIncidents = [
+	{ daysBack: 29, startHour: 2,  durationMs: 3 * 3600_000, severity: 'critical', alertRuleId: 'vpn-modem-by-alert-0', reason: 'VPN endpoint unreachable' },
+	{ daysBack: 16, startHour: 11, durationMs: 50 * 60_000,  severity: 'warning',  alertRuleId: 'vpn-modem-by-alert-1', reason: 'Elevated TCP response time' },
+	{ daysBack: 8,  startHour: 19, durationMs: 15 * 60_000,  severity: 'critical', alertRuleId: 'vpn-modem-by-alert-0', reason: 'Connection refused' },
+];
+for (let t = 0; t < vpnIncidents.length; t++) {
+	const tmpl = vpnIncidents[t];
+	const start = daysAgo(tmpl.daysBack);
+	start.setUTCHours(tmpl.startHour, 0, 0, 0);
+	const end = new Date(start.getTime() + tmpl.durationMs);
+	sql.push(
+		`INSERT OR IGNORE INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, resolved_at, reason)` +
+		` VALUES ('vpn-test-${t}', 'vpn-modem-by', '${sqlStr(tmpl.alertRuleId)}', 'resolved', '${sqlStr(tmpl.severity)}', '${isoStr(start)}', '${isoStr(end)}', '${sqlStr(tmpl.reason)}');`,
+	);
 }
 
 const sqlFile = '/tmp/hbf-seed.sql';

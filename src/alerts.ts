@@ -1,25 +1,15 @@
 import type { MonitorRow, ProbeResult, AlertRuleDbRow, NotificationMessage } from './types';
 
-const upsertDailySql = `
-	INSERT INTO uptime_daily (monitor_id, day, total_checks, up_checks, avg_latency_ms)
-	VALUES (?, ?, 1, ?, ?)
-	ON CONFLICT(monitor_id, day) DO UPDATE SET
-	  total_checks   = total_checks + 1,
-	  up_checks      = up_checks + excluded.up_checks,
-	  avg_latency_ms = CASE WHEN excluded.avg_latency_ms IS NULL THEN avg_latency_ms
-	                        WHEN avg_latency_ms IS NULL THEN excluded.avg_latency_ms
-	                        ELSE (avg_latency_ms * total_checks + excluded.avg_latency_ms) / (total_checks + 1)
-	                   END`;
-
 const upsertHourlySql = `
-	INSERT INTO uptime_hourly (monitor_id, hour, total_checks, up_checks, avg_latency_ms)
-	VALUES (?, ?, 1, ?, ?)
+	INSERT INTO uptime_hourly (monitor_id, hour, total_checks, up_checks, avg_latency_ms, latency_count)
+	VALUES (?, ?, 1, ?, ?, ?)
 	ON CONFLICT(monitor_id, hour) DO UPDATE SET
 	  total_checks   = total_checks + 1,
 	  up_checks      = up_checks + excluded.up_checks,
+	  latency_count  = latency_count + excluded.latency_count,
 	  avg_latency_ms = CASE WHEN excluded.avg_latency_ms IS NULL THEN avg_latency_ms
 	                        WHEN avg_latency_ms IS NULL THEN excluded.avg_latency_ms
-	                        ELSE (avg_latency_ms * total_checks + excluded.avg_latency_ms) / (total_checks + 1)
+	                        ELSE (avg_latency_ms * latency_count + excluded.avg_latency_ms) / (latency_count + excluded.latency_count)
 	                   END`;
 
 export async function storeResult(
@@ -34,7 +24,6 @@ export async function storeResult(
 	const successes = result.status === 'up' ? monitor.consecutive_successes + 1 : 0;
 	const upVal = result.status === 'up' ? 1 : 0;
 	const lat = result.latency_ms > 0 ? result.latency_ms : null;
-	const day = now.slice(0, 10);   // YYYY-MM-DD
 	const hour = now.slice(0, 13);  // YYYY-MM-DDTHH
 
 	// Only update SSL columns when values actually changed — certs renew a few times per year at most
@@ -64,8 +53,7 @@ export async function storeResult(
 			   ssl_not_after = COALESCE(excluded.ssl_not_after, ssl_not_after),
 			   ssl_issuer    = COALESCE(excluded.ssl_issuer, ssl_issuer)`,
 		).bind(monitor.id, result.status, now, result.status === 'up' ? now : null, failures, successes, bindSslNotAfter, bindSslIssuer),
-		env.DB.prepare(upsertDailySql).bind(monitor.id, day, upVal, lat),
-		env.DB.prepare(upsertHourlySql).bind(monitor.id, hour, upVal, lat),
+		env.DB.prepare(upsertHourlySql).bind(monitor.id, hour, upVal, lat, lat !== null ? 1 : 0),
 	];
 
 	if (writeMetric) {
@@ -107,6 +95,17 @@ export async function evaluateAlerts(
 		 ORDER BY failure_count ASC`,
 	).bind(monitor.id).all<AlertRuleDbRow>()).results;
 
+	// Resolve the metric_name of the active incident once to distinguish SSL vs connectivity
+	let activeIncidentMetricName: string | null | undefined;
+	if (monitor.active_incident_id) {
+		const incRow = await env.DB.prepare(
+			`SELECT ar.metric_name FROM incidents i
+			 LEFT JOIN alert_rules ar ON ar.id = i.alert_rule_id
+			 WHERE i.id = ?`,
+		).bind(monitor.active_incident_id).first<{ metric_name: string | null }>();
+		activeIncidentMetricName = incRow?.metric_name ?? null;
+	}
+
 	for (const rule of rules) {
 		if (rule.metric_name) continue; // metric-specific rules evaluated separately below
 
@@ -140,6 +139,8 @@ export async function evaluateAlerts(
 		}
 
 		if (result.status === 'up' && newSuccesses >= rule.recovery_count && monitor.active_incident_id) {
+			// SSL-expiry incidents have their own recovery path below — don't close them here
+			if (activeIncidentMetricName === 'ssl_expiry') break;
 			const incidentId = monitor.active_incident_id;
 			await env.DB.prepare(
 				`UPDATE incidents SET status = 'resolved', resolved_at = ? WHERE id = ?`,
@@ -158,35 +159,59 @@ export async function evaluateAlerts(
 		}
 	}
 
-	if (result.ssl_days_left !== undefined && !monitor.active_incident_id) {
-		// Sort by threshold ASC so critical (lower threshold) is evaluated before warning
+	if (result.ssl_days_left !== undefined) {
 		const sslRules = rules
 			.filter((r) => r.metric_name === 'ssl_expiry' && r.condition === 'lt')
 			.sort((a, b) => a.threshold - b.threshold);
 
-		for (const rule of sslRules) {
-			if (result.ssl_days_left < rule.threshold) {
-				const reason =
-					result.ssl_days_left <= 0
-						? 'SSL certificate has expired'
-						: `SSL cert expires in ${result.ssl_days_left} day(s)`;
-				const incidentId = crypto.randomUUID();
+		// Recovery: active SSL incident exists — close it if cert no longer triggers any rule
+		if (monitor.active_incident_id && activeIncidentMetricName === 'ssl_expiry') {
+			const stillTriggered = sslRules.some((r) => result.ssl_days_left! < r.threshold);
+			if (!stillTriggered) {
+				const incidentId = monitor.active_incident_id;
 				await env.DB.prepare(
-					`INSERT INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, reason)
-					 VALUES (?, ?, ?, 'open', ?, ?, ?)`,
-				).bind(incidentId, monitor.id, rule.id, rule.severity, now, reason).run();
+					`UPDATE incidents SET status = 'resolved', resolved_at = ? WHERE id = ?`,
+				).bind(now, incidentId).run();
 				await env.DB.prepare(
-					`UPDATE monitor_state SET active_incident_id = ? WHERE monitor_id = ?`,
-				).bind(incidentId, monitor.id).run();
+					`UPDATE monitor_state SET active_incident_id = NULL WHERE monitor_id = ?`,
+				).bind(monitor.id).run();
 				await (env.NOTIFICATION_QUEUE as Queue<NotificationMessage>).send({
 					incidentId,
 					monitorId: monitor.id,
 					monitorName: monitor.name,
-					eventType: 'down',
-					count: 1,
-					error: reason,
+					eventType: 'recovered',
+					count: newSuccesses,
 				});
-				break;
+			}
+			return; // active SSL incident handled — skip creation
+		}
+
+		// Creation: no active incident — check if cert is now expiring
+		if (!monitor.active_incident_id) {
+			for (const rule of sslRules) {
+				if (result.ssl_days_left < rule.threshold) {
+					const reason =
+						result.ssl_days_left <= 0
+							? 'SSL certificate has expired'
+							: `SSL cert expires in ${result.ssl_days_left} day(s)`;
+					const incidentId = crypto.randomUUID();
+					await env.DB.prepare(
+						`INSERT INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, reason)
+						 VALUES (?, ?, ?, 'open', ?, ?, ?)`,
+					).bind(incidentId, monitor.id, rule.id, rule.severity, now, reason).run();
+					await env.DB.prepare(
+						`UPDATE monitor_state SET active_incident_id = ? WHERE monitor_id = ?`,
+					).bind(incidentId, monitor.id).run();
+					await (env.NOTIFICATION_QUEUE as Queue<NotificationMessage>).send({
+						incidentId,
+						monitorId: monitor.id,
+						monitorName: monitor.name,
+						eventType: 'down',
+						count: 1,
+						error: reason,
+					});
+					break;
+				}
 			}
 		}
 	}

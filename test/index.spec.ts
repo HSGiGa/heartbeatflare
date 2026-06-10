@@ -14,6 +14,8 @@ import migration4Sql from '../migrations/0004_uptime_aggregates.sql?raw';
 import migration5Sql from '../migrations/0005_auth_config.sql?raw';
 // @ts-expect-error vite ?raw import
 import migration6Sql from '../migrations/0006_ssl_cert_state.sql?raw';
+// @ts-expect-error vite ?raw import
+import migration11Sql from '../migrations/0011_latency_count.sql?raw';
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 
@@ -56,6 +58,7 @@ beforeAll(async () => {
 	await applyMigration(migration4Sql as string);
 	await applyMigration(migration5Sql as string);
 	await applyMigration(migration6Sql as string);
+	await applyMigration(migration11Sql as string);
 	await env.DB.prepare(
 		`INSERT INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, enabled)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
@@ -211,6 +214,7 @@ describe('auth visibility filtering', () => {
 		const res = await worker.fetch(req, env, ctx);
 		await waitOnExecutionContext(ctx);
 		expect(res.status).toBe(302);
-		expect(res.headers.get('Location')).toContain('cloudflareaccess.com');
+		expect(res.headers.get('Location')).toBe('http://example.com/public');
+		expect(res.headers.get('Set-Cookie')).toContain('CF_Authorization=;');
 	});
 });

@@ -6,6 +6,8 @@ import { fetchUsage, usageResetsIn } from './usage';
 
 let cachedPage = '';
 let cachedPageUntil = 0;
+let cachedPublicPage = '';
+let cachedPublicPageUntil = 0;
 
 async function fetchMonitorRows(env: Env, showAll: boolean): Promise<MonitorDbRow[]> {
 	const visFilter = showAll ? '' : `AND m.visibility = 'public'`;
@@ -140,6 +142,9 @@ async function handleStatusPage(
 	session: Session | null,
 	authEnabled: boolean,
 ): Promise<Response> {
+	if (!session && !showAll && Date.now() < cachedPublicPageUntil) {
+		return new Response(cachedPublicPage, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
+	}
 	if (!authEnabled && Date.now() < cachedPageUntil) {
 		return new Response(cachedPage, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
 	}
@@ -151,6 +156,7 @@ async function handleStatusPage(
 		{ results: uptimeDays },
 		{ results: latencyPoints },
 		{ results: activeIncidents },
+		{ results: allIncidents },
 		d1Usage,
 	] = await Promise.all([
 		fetchMonitorRows(env, showAll),
@@ -173,12 +179,22 @@ async function handleStatusPage(
 			 WHERE i.status = 'open' ${visWhere}
 			 ORDER BY i.started_at DESC`,
 		).all<IncidentRow>(),
+		env.DB.prepare(
+			`SELECT i.id, i.monitor_id, i.severity, i.status, i.started_at, i.resolved_at, i.reason
+			 FROM incidents i JOIN monitors m ON m.id = i.monitor_id
+			 WHERE DATE(i.started_at) >= DATE(?1, '-89 days') AND m.enabled = 1 ${visWhere}
+			 ORDER BY i.started_at
+			 LIMIT 2000`,
+		).bind(new Date(nowMs).toISOString().slice(0, 10)).all<IncidentRow>(),
 		showAll ? fetchUsage(runtimeEnv) : Promise.resolve(null),
 	]);
 
-	const html = buildStatusPage({ nowMs, monitors, uptimeDays, latencyPoints, activeIncidents, d1Usage, session, authEnabled });
+	const html = buildStatusPage({ nowMs, monitors, uptimeDays, latencyPoints, activeIncidents, allIncidents, d1Usage, session, authEnabled });
 
-	if (!authEnabled) {
+	if (!session && !showAll) {
+		cachedPublicPage = html;
+		cachedPublicPageUntil = Date.now() + 60_000;
+	} else if (!authEnabled) {
 		cachedPage = html;
 		cachedPageUntil = Date.now() + 60_000;
 	}

@@ -3,9 +3,24 @@ import { dnsCheck, httpCheck, sslProbe, tcpCheck } from './probes';
 import type { AlertRuleDbRow, MonitorRow } from './types';
 
 const PER_UNIT_MS = 20_000;
+const MAX_CONCURRENT_CHECKS = 5;
+const MAX_CHECKS_PER_RUN = 15;
 
 function wait(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function runWithLimit(tasks: Array<() => Promise<void>>, limit: number): Promise<void> {
+	const active = new Set<Promise<void>>();
+	for (const task of tasks) {
+		const p: Promise<void> = task().then(
+			() => { active.delete(p); },
+			() => { active.delete(p); },
+		);
+		active.add(p);
+		if (active.size >= limit) await Promise.race(active);
+	}
+	await Promise.allSettled(active);
 }
 
 async function runExternalCheck(
@@ -86,8 +101,8 @@ export async function handleScheduled(env: Env): Promise<void> {
 				new Date(m.last_success_at).getTime() + m.interval_seconds * 1000 <= Date.now()),
 	);
 
-	await Promise.allSettled(
-		dueExternal.map((monitor) =>
+	await runWithLimit(
+		dueExternal.slice(0, MAX_CHECKS_PER_RUN).map((monitor) => () =>
 			Promise.race([
 				runExternalCheck(monitor, env, now, rulesByMonitor.get(monitor.id)),
 				wait(PER_UNIT_MS).then(() => Promise.reject(new Error(`timed out after ${PER_UNIT_MS / 1000}s`))),
@@ -95,10 +110,11 @@ export async function handleScheduled(env: Env): Promise<void> {
 				console.error(`[scheduler] ${monitor.id}: ${err instanceof Error ? err.message : String(err)}`),
 			),
 		),
+		MAX_CONCURRENT_CHECKS,
 	);
 
-	await Promise.allSettled(
-		staleHeartbeats.map((monitor) =>
+	await runWithLimit(
+		staleHeartbeats.slice(0, MAX_CHECKS_PER_RUN).map((monitor) => () =>
 			Promise.race([
 				(async () => {
 					const result = { status: 'down' as const, latency_ms: 0, error: 'Heartbeat missed' };
@@ -110,9 +126,34 @@ export async function handleScheduled(env: Env): Promise<void> {
 				console.error(`[scheduler] ${monitor.id}: ${err instanceof Error ? err.message : String(err)}`),
 			),
 		),
+		MAX_CONCURRENT_CHECKS,
 	);
 
 	console.log(`[scheduler] done in ${Date.now() - t0}ms — ${dueExternal.length} checks, ${staleHeartbeats.length} stale heartbeats`);
+
+	// Hourly: recompute uptime_daily for today and yesterday from uptime_hourly ground truth
+	if (new Date().getUTCMinutes() === 0) {
+		await env.DB.prepare(
+			`INSERT INTO uptime_daily (monitor_id, day, total_checks, up_checks, avg_latency_ms, latency_count)
+			 SELECT
+			   monitor_id,
+			   substr(hour, 1, 10) AS day,
+			   SUM(total_checks),
+			   SUM(up_checks),
+			   CASE WHEN SUM(latency_count) = 0 THEN NULL
+			        ELSE SUM(avg_latency_ms * latency_count) / SUM(latency_count)
+			   END,
+			   SUM(latency_count)
+			 FROM uptime_hourly
+			 WHERE substr(hour, 1, 10) >= date('now', '-1 day')
+			 GROUP BY monitor_id, substr(hour, 1, 10)
+			 ON CONFLICT(monitor_id, day) DO UPDATE SET
+			   total_checks   = excluded.total_checks,
+			   up_checks      = excluded.up_checks,
+			   avg_latency_ms = excluded.avg_latency_ms,
+			   latency_count  = excluded.latency_count`,
+		).run();
+	}
 
 	// Weekly cleanup: keep metric_series 7 days, uptime_hourly 48 hours
 	const minuteOfWeek = Math.floor(Date.now() / 60_000) % (7 * 24 * 60);
