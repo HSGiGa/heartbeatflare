@@ -48,7 +48,7 @@ jobs:
 
       - name: Smoke test
         run: |
-          url="${{ steps.deploy.outputs.url }}"
+          url="${{ steps.deploy.outputs.url }}/public"
           sleep 5
           http_code=$(curl -sf -o /dev/null -w "%{http_code}" "$url")
           [ "$http_code" = "200" ] || { echo "Smoke test failed: HTTP $http_code from $url"; exit 1; }
