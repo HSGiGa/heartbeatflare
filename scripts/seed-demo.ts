@@ -5,7 +5,6 @@ const TODAY = new Date();
 TODAY.setUTCHours(12, 0, 0, 0);
 
 const monitors = [
-	{ id: 'cloudflare-dns-tcp', alertRuleId: 'cloudflare-dns-tcp-alert-0', needsRule: true },
 	{ id: 'google', alertRuleId: 'google-alert-0', needsRule: false },
 	{ id: 'google-dns', alertRuleId: 'google-dns-alert-0', needsRule: false },
 	{ id: 'gmail-smtp', alertRuleId: 'gmail-smtp-alert-0', needsRule: false },
@@ -31,12 +30,6 @@ function vary(monIdx: number, offset: number): number {
 }
 
 const sql: string[] = [];
-
-// Seed alert rule for monitor with no rules
-sql.push(
-	`INSERT OR IGNORE INTO alert_rules (id, monitor_id, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled)` +
-	` VALUES ('cloudflare-dns-tcp-alert-0', 'cloudflare-dns-tcp', 'gt', 1000, 'critical', 3, 2, 300, 1);`,
-);
 
 // uptime_daily: 60 days per monitor
 const CHECKS_PER_DAY = 288; // every 5 min
