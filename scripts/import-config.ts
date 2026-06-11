@@ -164,12 +164,23 @@ async function main() {
 
 		console.log(`Importing monitor: ${monitor.name} (${id})`);
 
+		// Upsert (not INSERT OR REPLACE): REPLACE deletes the row first, which would cascade
+		// through ON DELETE CASCADE and wipe monitor_state, incidents, executions and metric_series
+		// on every import. ON CONFLICT updates in place and preserves runtime data + created_at.
 		await d1Query(
-			`INSERT OR REPLACE INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, ssl_check, enabled, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1,
-         COALESCE((SELECT created_at FROM monitors WHERE id = ?), datetime('now')),
-         datetime('now'))`,
-			[id, monitor.name, monitor.type, monitor.mode, monitor.visibility ?? 'private', target, intervalSeconds, (monitor.ssl ?? true) ? 1 : 0, id],
+			`INSERT INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, ssl_check, enabled, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))
+       ON CONFLICT(id) DO UPDATE SET
+         name = excluded.name,
+         type = excluded.type,
+         mode = excluded.mode,
+         visibility = excluded.visibility,
+         scrape_url = excluded.scrape_url,
+         interval_seconds = excluded.interval_seconds,
+         ssl_check = excluded.ssl_check,
+         enabled = 1,
+         updated_at = datetime('now')`,
+			[id, monitor.name, monitor.type, monitor.mode, monitor.visibility ?? 'private', target, intervalSeconds, (monitor.ssl ?? true) ? 1 : 0],
 		);
 
 		const alerts = monitor.alerts ?? [];
@@ -179,9 +190,21 @@ async function main() {
 			const { dbCondition, threshold, metricName } = parseCondition(alert.condition);
 			const cooldownSeconds = parseCooldown(alert.cooldown);
 
+			// Upsert: incidents.alert_rule_id references this row (no cascade), so a REPLACE
+			// delete would fail or orphan history. ON CONFLICT updates the rule in place.
 			await d1Query(
-				`INSERT OR REPLACE INTO alert_rules (id, monitor_id, metric_name, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+				`INSERT INTO alert_rules (id, monitor_id, metric_name, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+         ON CONFLICT(id) DO UPDATE SET
+           monitor_id = excluded.monitor_id,
+           metric_name = excluded.metric_name,
+           condition = excluded.condition,
+           threshold = excluded.threshold,
+           severity = excluded.severity,
+           failure_count = excluded.failure_count,
+           recovery_count = excluded.recovery_count,
+           cooldown_seconds = excluded.cooldown_seconds,
+           enabled = 1`,
 				[alertId, id, metricName ?? null, dbCondition, threshold, alert.severity, alert.failures, alert.recovery, cooldownSeconds],
 			);
 		}
@@ -214,9 +237,17 @@ async function main() {
 		console.log(`Importing channel: ${channel.name} (${id})`);
 		const { name: _n, type: _t, is_default: _d, ...rest } = channel as Record<string, unknown>;
 		const configuration = JSON.stringify(rest);
+		// Upsert: monitor_notification_channels and notification_deliveries cascade off this row,
+		// so a REPLACE delete would wipe per-monitor assignments and delivery history.
 		await d1Query(
-			`INSERT OR REPLACE INTO notification_channels (id, name, type, configuration, secret_name, is_default, enabled)
-       VALUES (?, ?, ?, ?, '', ?, 1)`,
+			`INSERT INTO notification_channels (id, name, type, configuration, secret_name, is_default, enabled)
+       VALUES (?, ?, ?, ?, '', ?, 1)
+       ON CONFLICT(id) DO UPDATE SET
+         name = excluded.name,
+         type = excluded.type,
+         configuration = excluded.configuration,
+         is_default = excluded.is_default,
+         enabled = 1`,
 			[id, channel.name, channel.type, configuration, channel.is_default ? 1 : 0],
 		);
 	}

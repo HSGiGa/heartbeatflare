@@ -153,16 +153,18 @@ TypeError в Workers. Использовать абсолютный URL, как 
 - SSL-проверка через сторонние API (ssl-checker.io / crt.sh), а не
   «SSL/TLS Inspector».
 
-## Отложено до выхода из беты
+## Выполнено
 
-### [ ] 11. import-config: INSERT OR REPLACE каскадно стирает runtime-данные
+### [x] 11. import-config: INSERT OR REPLACE каскадно стирает runtime-данные
 
-`scripts/import-config.ts:168` — `INSERT OR REPLACE INTO monitors` = DELETE +
-INSERT; через `ON DELETE CASCADE` на каждом деплое стираются `monitor_state`,
+`scripts/import-config.ts` — `INSERT OR REPLACE INTO monitors` = DELETE +
+INSERT; через `ON DELETE CASCADE` на каждом деплое стирались `monitor_state`,
 `alert_rules`, `incidents`, `monitor_executions`, `metric_series` всех мониторов
-из конфига. Выживают только `uptime_*` (без FK), поэтому бары выглядят целыми.
+из конфига. Выживали только `uptime_*` (без FK), поэтому бары выглядели целыми.
 
-**Решение принято 2026-06-11:** пока проект в активной разработке, потеря
-runtime-состояния на деплое приемлема. Зафиксировать схему БД и заменить
-`INSERT OR REPLACE` на `INSERT ... ON CONFLICT(id) DO UPDATE SET ...`
-(monitors, alert_rules, notification_channels) при выходе из беты.
+**Исправлено 2026-06-11:** `INSERT OR REPLACE` заменён на
+`INSERT ... ON CONFLICT(id) DO UPDATE SET ...` для `monitors`, `alert_rules` и
+`notification_channels` — апдейт на месте, runtime-данные и `created_at`
+сохраняются. `auth_config` оставлен на `INSERT OR REPLACE` (нет FK-зависимых
+таблиц — безопасно). Импорт конфига теперь идемпотентен и безопасен: после этого
+фикса CI на `main` (с шагом `config:import`) больше не уничтожает production-данные.
