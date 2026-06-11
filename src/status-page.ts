@@ -532,16 +532,24 @@ ${usageHtml}
       .catch(function(){histList.innerHTML='<div class="meta-text" style="padding:24px 0;text-align:center">Failed to load.</div>';});
   }
 
+  function activateTab(tab){
+    var isHist=tab==='history';
+    document.querySelectorAll('.tab-btn').forEach(function(b){b.classList.toggle('active',b.dataset.tab===tab);});
+    tabMonitors.hidden=isHist;
+    tabHistory.hidden=!isHist;
+    picker.style.display=isHist?'none':'';
+    if(isHist&&!histLoaded)loadHistory(1);
+  }
+  function tabFromHash(){return location.hash.slice(1)==='history'?'history':'monitors';}
   document.querySelectorAll('.tab-btn').forEach(function(btn){
     btn.addEventListener('click',function(){
-      var isHist=btn.dataset.tab==='history';
-      document.querySelectorAll('.tab-btn').forEach(function(b){b.classList.toggle('active',b===btn);});
-      tabMonitors.hidden=isHist;
-      tabHistory.hidden=!isHist;
-      picker.style.display=isHist?'none':'';
-      if(isHist&&!histLoaded)loadHistory(1);
+      var tab=btn.dataset.tab;
+      if(location.hash.slice(1)===tab)activateTab(tab);
+      else location.hash=tab;
     });
   });
+  window.addEventListener('hashchange',function(){activateTab(tabFromHash());});
+  activateTab(tabFromHash());
 
   var barTt=document.getElementById('bar-tt');
   function positionTt(e){
