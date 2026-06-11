@@ -110,7 +110,8 @@ async function handleHistoryApi(env: Env, searchParams: URLSearchParams, showAll
 
 	const [{ results: incidents }, countRow] = await Promise.all([
 		env.DB.prepare(
-			`SELECT i.id, i.monitor_id, i.severity, i.status, i.started_at, i.resolved_at, i.reason, m.name AS monitor_name
+			`SELECT i.id, i.monitor_id, i.severity, i.status, i.started_at, i.resolved_at, i.reason,
+			        m.name AS monitor_name, m.type AS monitor_type
 			 FROM incidents i JOIN monitors m ON m.id = i.monitor_id
 			 WHERE 1=1 ${visWhere}
 			 ORDER BY i.started_at DESC LIMIT ? OFFSET ?`,

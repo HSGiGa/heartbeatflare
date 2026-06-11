@@ -91,6 +91,7 @@ export type IncidentRow = {
 	resolved_at: string | null;
 	reason: string | null;
 	monitor_name?: string;
+	monitor_type?: string;
 };
 
 export type RuntimeEnv = Env & {

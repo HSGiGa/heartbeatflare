@@ -390,6 +390,30 @@ footer{border-top:1px solid #e4e4e7;padding:20px 0;margin-top:8px}
 .footer-inner{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
 .dot-pulse{animation:pulse 2s ease-in-out infinite}
+.events{display:flex;flex-direction:column}
+.event{display:grid;grid-template-columns:128px 1fr;gap:20px;padding:18px 0}
+.event+.event{border-top:1px solid #f4f4f5}
+.event-date{padding-top:2px}
+.event-date .date{font-size:15px;font-weight:700;color:#18181b}
+.event-date .relative{display:inline-block;margin-top:6px;font-size:11px;color:#71717a;background:#f4f4f5;border-radius:5px;padding:2px 7px}
+.event-title{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.event-title .name{font-size:16px;font-weight:600;color:#18181b}
+.event-card{background:#fff;border:1px solid #e4e4e7;border-radius:10px;padding:16px 18px 0}
+.update{position:relative;display:grid;grid-template-columns:18px 1fr;gap:11px;padding-bottom:22px}
+.update:not(:last-child)::before{content:"";position:absolute;left:5px;top:15px;bottom:-2px;width:1px;background:#d4d4d8}
+.update .marker{width:10px;height:10px;margin-top:5px;border-radius:2px;background:#a1a1aa;flex-shrink:0}
+.update-title{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.update-title .label{font-size:14px;font-weight:700}
+.update-title .time{font-size:12px;color:#a1a1aa;font-family:"SF Mono",ui-monospace,monospace}
+.update-body{margin-top:5px;font-size:13px;color:#52525b;font-family:"SF Mono",ui-monospace,monospace;line-height:1.55;word-break:break-word}
+.update.resolved .marker{background:#22c55e}
+.update.resolved::before{background:#86efac}
+.update.resolved .label{color:#15803d}
+.update.down .marker{background:#ef4444}
+.update.down .label{color:#b91c1c}
+.update.degraded .marker{background:#f59e0b}
+.update.degraded .label{color:#b45309}
+@media(max-width:640px){.event{grid-template-columns:1fr;gap:10px}.event-date .relative{margin-top:0;margin-left:8px}}
 </style>
 </head>
 <body>
@@ -458,22 +482,32 @@ ${usageHtml}
   });
 
   function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
-  function fmtDate(s){var d=new Date(s);return d.toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'})+' · '+d.toUTCString().slice(17,22)+' UTC';}
   function fmtDur(s,e){if(!e)return'ongoing';var m=Math.floor((new Date(e)-new Date(s))/60000);if(m<60)return m+'m';var h=Math.floor(m/60);if(h<24)return h+'h '+(m%60)+'m';return Math.floor(h/24)+'d '+(h%24)+'h';}
+  function fmtDay(s){return new Date(s).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'});}
+  function fmtTime(s){var d=new Date(s);return d.toLocaleDateString('en-US',{month:'long',day:'numeric',timeZone:'UTC'})+' at '+d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true,timeZone:'UTC'});}
+  function relAgo(s){var m=Math.floor((Date.now()-new Date(s).getTime())/60000);if(m<1)return'just now';if(m<60)return m+'m ago';var h=Math.floor(m/60);if(h<24)return h+'h ago';var d=Math.floor(h/24);if(d<30)return d+'d ago';var mo=Math.floor(d/30);if(mo<12)return mo+' month'+(mo>1?'s':'')+' ago';var y=Math.floor(d/365);return y+' year'+(y>1?'s':'')+' ago';}
+  function renderUpdate(cls,label,time,body){return '<div class="update '+cls+'"><div class="marker"></div><div><div class="update-title"><span class="label">'+label+'</span><span class="time">'+time+'</span></div>'+(body?'<div class="update-body">'+body+'</div>':'')+'</div></div>';}
 
   function renderRows(rows){
     if(!rows.length)return'<div class="meta-text" style="padding:24px 0;text-align:center">No incidents recorded.</div>';
-    var h='<div style="background:#fff;border:1px solid #e4e4e7;border-radius:10px;overflow:hidden">';
-    rows.forEach(function(inc,i){
+    var h='<div class="events">';
+    rows.forEach(function(inc){
       var crit=inc.severity==='critical';
-      h+='<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;'+(i<rows.length-1?'border-bottom:1px solid #f4f4f5;':'')+'gap:12px;flex-wrap:wrap">'+
-        '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'+
-          '<span style="font-size:14px;font-weight:500">'+esc(inc.monitor_name||inc.monitor_id)+'</span>'+
-          '<span style="font-size:11px;font-weight:600;padding:1px 6px;border-radius:4px;text-transform:uppercase;background:'+(crit?'#fee2e2':'#fef9c3')+';color:'+(crit?'#b91c1c':'#92400e')+'">'+esc(inc.severity)+'</span>'+
-          (inc.reason?'<span class="meta-text">· '+esc(inc.reason)+'</span>':'')+
-        '</div>'+
-        '<span class="meta-text">'+fmtDate(inc.started_at)+' · '+fmtDur(inc.started_at,inc.resolved_at)+'</span>'+
-      '</div>';
+      var openCls=crit?'down':'degraded';
+      var openLabel=crit?'Down':'Degraded';
+      var ups='';
+      if(inc.resolved_at){
+        var dur=fmtDur(inc.started_at,inc.resolved_at);
+        ups+=renderUpdate('resolved','Resolved',fmtTime(inc.resolved_at)+' (in '+dur+')','Recovered after '+dur+'.');
+      }
+      var openTime=fmtTime(inc.started_at)+(inc.resolved_at?' ('+fmtDur(inc.started_at,inc.resolved_at)+' earlier)':' (ongoing)');
+      ups+=renderUpdate(openCls,openLabel,openTime,inc.reason?esc(inc.reason):'');
+      var badge=inc.monitor_type?'<span style="font-size:11px;font-weight:600;padding:2px 6px;border-radius:4px;background:#f4f4f5;color:#71717a;text-transform:uppercase;letter-spacing:0.04em">'+esc(inc.monitor_type)+'</span>':'';
+      h+='<article class="event">'+
+        '<aside class="event-date"><div class="date">'+fmtDay(inc.started_at)+'</div><div class="relative">'+relAgo(inc.started_at)+'</div></aside>'+
+        '<div class="event-content"><div class="event-title"><span class="name">'+esc(inc.monitor_name||inc.monitor_id)+'</span>'+badge+'</div>'+
+        '<div class="event-card">'+ups+'</div></div>'+
+      '</article>';
     });
     return h+'</div>';
   }

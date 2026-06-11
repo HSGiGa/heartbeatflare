@@ -14,7 +14,8 @@
 		"d1:create:prod": "wrangler d1 create heartbeatflare-prod-db",
 		"d1:migrate:prod": "wrangler d1 migrations apply heartbeatflare-prod-db --remote",
 		"migration:lint": "if grep -riE 'DROP TABLE|DROP COLUMN|RENAME COLUMN|RENAME TABLE' migrations/ | grep -v 'lint-ok'; then echo 'ERROR: destructive migration detected — use additive-only schema changes' && exit 1; fi",
-		"config:import": "tsx scripts/import-config.ts"
+		"config:import": "tsx scripts/import-config.ts",
+		"seed:incidents": "tsx scripts/seed-incidents.ts"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.16.13",
