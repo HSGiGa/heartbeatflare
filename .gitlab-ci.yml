@@ -3,7 +3,7 @@ stages:
 
 deploy_cloudflare:
   stage: deploy
-  image: node:22
+  image: node:24
   rules:
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
