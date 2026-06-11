@@ -4,7 +4,7 @@ import { handleScheduled } from './scheduler';
 
 export default {
 	async fetch(request, env, ctx): Promise<Response> {
-		return handleFetch(request, env);
+		return handleFetch(request, env, ctx);
 	},
 
 	async scheduled(event, env, ctx): Promise<void> {

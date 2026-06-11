@@ -1,13 +1,29 @@
-import { evaluateAlerts, storeResult } from './alerts';
 import { getAuth, handleLogout, resolveAuthConfig } from './auth';
 import { buildStatusPage } from './status-page';
-import type { AlertRuleDbRow, IncidentRow, LatencyRow, MonitorDbRow, MonitorRow, RuntimeEnv, Session, UptimeDayRow } from './types';
+import type { AlertRuleDbRow, IncidentRow, LatencyRow, MonitorDbRow, RuntimeEnv, Session, UptimeDayRow } from './types';
 import { fetchUsage, usageResetsIn } from './usage';
 
-let cachedPage = '';
-let cachedPageUntil = 0;
-let cachedPublicPage = '';
-let cachedPublicPageUntil = 0;
+// Edge-cache TTL for unauthenticated responses (status page + public API).
+const PUBLIC_MAXAGE = 60;
+
+// Cache API key namespaced to public responses, so an authenticated request to the same URL
+// (which we never cache) can never match a cached public response.
+function publicCacheKey(request: Request): Request {
+	const url = new URL(request.url);
+	url.searchParams.set('__pub', '1');
+	return new Request(url.toString(), { method: 'GET' });
+}
+
+// Serve a public GET from the edge cache if present, otherwise run `produce`, cache it, and return it.
+async function withPublicEdgeCache(request: Request, ctx: ExecutionContext, produce: () => Promise<Response>): Promise<Response> {
+	const cache = caches.default;
+	const key = publicCacheKey(request);
+	const hit = await cache.match(key);
+	if (hit) return hit;
+	const res = await produce();
+	if (res.ok) ctx.waitUntil(cache.put(key, res.clone()));
+	return res;
+}
 
 async function fetchMonitorRows(env: Env, showAll: boolean): Promise<MonitorDbRow[]> {
 	const visFilter = showAll ? '' : `AND m.visibility = 'public'`;
@@ -24,29 +40,6 @@ async function fetchMonitorRows(env: Env, showAll: boolean): Promise<MonitorDbRo
 		 ORDER BY m.name`,
 	).all<MonitorDbRow>();
 	return results;
-}
-
-async function handleHeartbeat(requestPath: string, env: Env): Promise<Response> {
-	const monitorId = requestPath.slice(6);
-	const monitor = await env.DB.prepare(
-		`SELECT m.id, m.name, m.type, m.scrape_url, m.interval_seconds,
-		        COALESCE(m.ssl_check, 1) AS ssl_check,
-		        ms.status AS current_status, ms.last_check_at,
-		        COALESCE(ms.consecutive_failures, 0) AS consecutive_failures,
-		        COALESCE(ms.consecutive_successes, 0) AS consecutive_successes,
-		        ms.active_incident_id,
-		        ms.ssl_not_after, ms.ssl_issuer
-		 FROM monitors m
-		 LEFT JOIN monitor_state ms ON ms.monitor_id = m.id
-		 WHERE m.id = ? AND m.type = 'heartbeat' AND m.enabled = 1`,
-	).bind(monitorId).first<MonitorRow>();
-	if (!monitor) return new Response(null, { status: 404 });
-
-	const now = new Date().toISOString();
-	const result = { status: 'up' as const, latency_ms: 0 };
-	const { newFailures, newSuccesses } = await storeResult(env, monitor, result, crypto.randomUUID(), now);
-	await evaluateAlerts(env, monitor, result, newFailures, newSuccesses, now);
-	return new Response(null, { status: 200 });
 }
 
 async function handleStatusApi(env: Env, runtimeEnv: RuntimeEnv, showAll: boolean): Promise<Response> {
@@ -106,7 +99,7 @@ async function handleStatusApi(env: Env, runtimeEnv: RuntimeEnv, showAll: boolea
 					}))
 				: [],
 		})),
-	}, { headers: { 'Cache-Control': 'no-store' } });
+	}, { headers: { 'Cache-Control': showAll ? 'no-store' : `public, max-age=${PUBLIC_MAXAGE}` } });
 }
 
 async function handleHistoryApi(env: Env, searchParams: URLSearchParams, showAll: boolean): Promise<Response> {
@@ -132,7 +125,7 @@ async function handleHistoryApi(env: Env, searchParams: URLSearchParams, showAll
 	const total = countRow?.total ?? 0;
 	const pages = Math.max(1, Math.ceil(total / limit));
 
-	return Response.json({ incidents, total, page, pages }, { headers: { 'Cache-Control': 'no-store' } });
+	return Response.json({ incidents, total, page, pages }, { headers: { 'Cache-Control': showAll ? 'no-store' : `public, max-age=${PUBLIC_MAXAGE}` } });
 }
 
 async function handleStatusPage(
@@ -142,13 +135,6 @@ async function handleStatusPage(
 	session: Session | null,
 	authEnabled: boolean,
 ): Promise<Response> {
-	if (!session && !showAll && Date.now() < cachedPublicPageUntil) {
-		return new Response(cachedPublicPage, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
-	}
-	if (!authEnabled && Date.now() < cachedPageUntil) {
-		return new Response(cachedPage, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
-	}
-
 	const nowMs = Date.now();
 	const visWhere = showAll ? '' : `AND m.visibility = 'public'`;
 	const [
@@ -191,40 +177,31 @@ async function handleStatusPage(
 
 	const html = buildStatusPage({ nowMs, monitors, uptimeDays, latencyPoints, activeIncidents, allIncidents, d1Usage, session, authEnabled });
 
-	if (!session && !showAll) {
-		cachedPublicPage = html;
-		cachedPublicPageUntil = Date.now() + 60_000;
-	} else if (!authEnabled) {
-		cachedPage = html;
-		cachedPageUntil = Date.now() + 60_000;
-	}
-
-	return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
+	// Unauthenticated (public) renders are cacheable at the edge; authenticated views are always fresh.
+	const cacheControl = session ? 'no-store' : `public, max-age=${PUBLIC_MAXAGE}`;
+	return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': cacheControl } });
 }
 
-export async function handleFetch(request: Request, env: Env): Promise<Response> {
+export async function handleFetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+	const origin = new URL(request.url).origin;
 	const { pathname } = new URL(request.url);
 	const runtimeEnv = env as RuntimeEnv;
 
-	if (request.method === 'POST' && pathname.startsWith('/beat/')) {
-		return handleHeartbeat(pathname, env);
-	}
-
 	if (pathname === '/auth/login') {
-		return Response.redirect(new URL(request.url).origin + '/private', 302);
+		return Response.redirect(origin + '/private', 302);
 	}
 
 	if (pathname === '/auth/logout') {
 		const authConfig = await resolveAuthConfig(env);
-		return authConfig ? handleLogout(request, authConfig) : Response.redirect('/', 302);
+		return authConfig ? handleLogout(request, authConfig) : Response.redirect(origin + '/public', 302);
 	}
 
 	if (request.method === 'GET' && pathname === '/') {
-		return Response.redirect(new URL(request.url).origin + '/public', 302);
+		return Response.redirect(origin + '/public', 302);
 	}
 
 	if (request.method === 'GET' && pathname === '/public') {
-		return handleStatusPage(env, runtimeEnv, false, null, true);
+		return withPublicEdgeCache(request, ctx, () => handleStatusPage(env, runtimeEnv, false, null, true));
 	}
 
 	let session: Session | null;
@@ -238,14 +215,21 @@ export async function handleFetch(request: Request, env: Env): Promise<Response>
 			headers: { 'Retry-After': '30', 'Content-Type': 'text/plain' },
 		});
 	}
-	const showAll = !authEnabled || session !== null;
+	// Fail-closed: private data is shown only with a valid session. A missing/disabled auth_config
+	// means "public only", never "everything open".
+	const showAll = session !== null;
 
 	if (request.method === 'GET' && pathname === '/api/status') {
-		return handleStatusApi(env, runtimeEnv, showAll);
+		return showAll
+			? handleStatusApi(env, runtimeEnv, true)
+			: withPublicEdgeCache(request, ctx, () => handleStatusApi(env, runtimeEnv, false));
 	}
 
 	if (request.method === 'GET' && pathname === '/api/history') {
-		return handleHistoryApi(env, new URL(request.url).searchParams, showAll);
+		const searchParams = new URL(request.url).searchParams;
+		return showAll
+			? handleHistoryApi(env, searchParams, true)
+			: withPublicEdgeCache(request, ctx, () => handleHistoryApi(env, searchParams, false));
 	}
 
 	if (request.method === 'GET' && pathname === '/private') {

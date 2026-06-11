@@ -18,13 +18,16 @@ function resolveVars(env: Env, value: string): string {
 	return value.replace(/\$\{([^}]+)\}/g, (_, key) => (env as unknown as Record<string, string | undefined>)[key] ?? '');
 }
 
+// Attempts delivery to a single channel, records the outcome, and reports whether it succeeded.
+// `attemptCount` is the queue message's attempt number, so retried deliveries are tracked accurately.
 export async function sendToChannel(
 	env: Env,
 	channel: NotificationChannelDbRow,
 	incidentId: string,
 	text: string,
 	now: string,
-): Promise<void> {
+	attemptCount: number,
+): Promise<boolean> {
 	const cfg = JSON.parse(channel.configuration) as Record<string, unknown>;
 	const resolve = (v: unknown): string => (typeof v === 'string' ? resolveVars(env, v) : String(v ?? ''));
 
@@ -47,6 +50,7 @@ export async function sendToChannel(
 	}
 	await env.DB.prepare(
 		`INSERT INTO notification_deliveries (id, incident_id, channel_id, status, attempt_count, last_attempt_at, error)
-		 VALUES (?, ?, ?, ?, 1, ?, ?)`,
-	).bind(crypto.randomUUID(), incidentId, channel.id, error ? 'failed' : 'sent', now, error).run();
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+	).bind(crypto.randomUUID(), incidentId, channel.id, error ? 'failed' : 'sent', attemptCount, now, error).run();
+	return error === null;
 }

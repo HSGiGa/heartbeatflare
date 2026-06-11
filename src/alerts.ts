@@ -1,4 +1,7 @@
-import type { MonitorRow, ProbeResult, AlertRuleDbRow, NotificationMessage } from './types';
+import type { MonitorRow, ProbeResult, AlertRuleDbRow, NotificationMessage, ActiveIncident } from './types';
+
+// Metric-class sentinel for connectivity rules (alert_rules.metric_name IS NULL).
+export const CONNECTIVITY_CLASS = '__connectivity__';
 
 const upsertHourlySql = `
 	INSERT INTO uptime_hourly (monitor_id, hour, total_checks, up_checks, avg_latency_ms, latency_count)
@@ -79,6 +82,18 @@ export async function storeResult(
 	return { newFailures: failures, newSuccesses: successes };
 }
 
+/**
+ * Evaluates alert rules against a check result. Connectivity (metric_name IS NULL) and
+ * metric-class incidents (e.g. ssl_expiry) are tracked independently: an open SSL incident
+ * no longer suppresses a connectivity down-incident, and vice versa.
+ *
+ * `activeByClass` maps a metric class → its open incident, derived once per scheduler tick
+ * from the incidents table (single source of truth). The connectivity class uses the
+ * CONNECTIVITY_CLASS sentinel. `monitor_state.active_incident_id` is kept updated as a
+ * denormalised hint for the active *connectivity* incident only; SSL incidents do not touch it.
+ *
+ * Single-writer: only the scheduler calls this (one evaluation per monitor per tick).
+ */
 export async function evaluateAlerts(
 	env: Env,
 	monitor: MonitorRow,
@@ -86,30 +101,17 @@ export async function evaluateAlerts(
 	newFailures: number,
 	newSuccesses: number,
 	now: string,
-	preloadedRules?: AlertRuleDbRow[],
+	rules: AlertRuleDbRow[],
+	activeByClass: Map<string, ActiveIncident>,
 ): Promise<void> {
-	const rules = preloadedRules ?? (await env.DB.prepare(
-		`SELECT id, monitor_id, metric_name, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled
-		 FROM alert_rules
-		 WHERE monitor_id = ? AND enabled = 1
-		 ORDER BY failure_count ASC`,
-	).bind(monitor.id).all<AlertRuleDbRow>()).results;
+	const connInc = activeByClass.get(CONNECTIVITY_CLASS);
+	const sslInc = activeByClass.get('ssl_expiry');
 
-	// Resolve the metric_name of the active incident once to distinguish SSL vs connectivity
-	let activeIncidentMetricName: string | null | undefined;
-	if (monitor.active_incident_id) {
-		const incRow = await env.DB.prepare(
-			`SELECT ar.metric_name FROM incidents i
-			 LEFT JOIN alert_rules ar ON ar.id = i.alert_rule_id
-			 WHERE i.id = ?`,
-		).bind(monitor.active_incident_id).first<{ metric_name: string | null }>();
-		activeIncidentMetricName = incRow?.metric_name ?? null;
-	}
-
+	// --- Connectivity incidents (metric_name IS NULL) ---
 	for (const rule of rules) {
-		if (rule.metric_name) continue; // metric-specific rules evaluated separately below
+		if (rule.metric_name) continue; // metric-specific rules handled separately below
 
-		if (result.status === 'down' && newFailures >= rule.failure_count && !monitor.active_incident_id) {
+		if (result.status === 'down' && newFailures >= rule.failure_count && !connInc) {
 			if (rule.cooldown_seconds > 0) {
 				const last = await env.DB.prepare(
 					`SELECT resolved_at FROM incidents WHERE monitor_id = ? AND status = 'resolved' ORDER BY resolved_at DESC LIMIT 1`,
@@ -120,13 +122,14 @@ export async function evaluateAlerts(
 				}
 			}
 			const incidentId = crypto.randomUUID();
-			await env.DB.prepare(
-				`INSERT INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, reason)
-				 VALUES (?, ?, ?, 'open', ?, ?, ?)`,
-			).bind(incidentId, monitor.id, rule.id, rule.severity, now, result.error ?? null).run();
-			await env.DB.prepare(
-				`UPDATE monitor_state SET active_incident_id = ? WHERE monitor_id = ?`,
-			).bind(incidentId, monitor.id).run();
+			// Atomic: incident row + state hint in one batch, notification only after it commits
+			await env.DB.batch([
+				env.DB.prepare(
+					`INSERT INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, reason)
+					 VALUES (?, ?, ?, 'open', ?, ?, ?)`,
+				).bind(incidentId, monitor.id, rule.id, rule.severity, now, result.error ?? null),
+				env.DB.prepare(`UPDATE monitor_state SET active_incident_id = ? WHERE monitor_id = ?`).bind(incidentId, monitor.id),
+			]);
 			await (env.NOTIFICATION_QUEUE as Queue<NotificationMessage>).send({
 				incidentId,
 				monitorId: monitor.id,
@@ -138,16 +141,12 @@ export async function evaluateAlerts(
 			break;
 		}
 
-		if (result.status === 'up' && newSuccesses >= rule.recovery_count && monitor.active_incident_id) {
-			// SSL-expiry incidents have their own recovery path below — don't close them here
-			if (activeIncidentMetricName === 'ssl_expiry') break;
-			const incidentId = monitor.active_incident_id;
-			await env.DB.prepare(
-				`UPDATE incidents SET status = 'resolved', resolved_at = ? WHERE id = ?`,
-			).bind(now, incidentId).run();
-			await env.DB.prepare(
-				`UPDATE monitor_state SET active_incident_id = NULL WHERE monitor_id = ?`,
-			).bind(monitor.id).run();
+		if (result.status === 'up' && newSuccesses >= rule.recovery_count && connInc) {
+			const incidentId = connInc.id;
+			await env.DB.batch([
+				env.DB.prepare(`UPDATE incidents SET status = 'resolved', resolved_at = ? WHERE id = ?`).bind(now, incidentId),
+				env.DB.prepare(`UPDATE monitor_state SET active_incident_id = NULL WHERE monitor_id = ?`).bind(monitor.id),
+			]);
 			await (env.NOTIFICATION_QUEUE as Queue<NotificationMessage>).send({
 				incidentId,
 				monitorId: monitor.id,
@@ -159,35 +158,27 @@ export async function evaluateAlerts(
 		}
 	}
 
+	// --- SSL-expiry incidents (metric_name = 'ssl_expiry'), fully independent of connectivity ---
 	if (result.ssl_days_left !== undefined) {
 		const sslRules = rules
 			.filter((r) => r.metric_name === 'ssl_expiry' && r.condition === 'lt')
-			.sort((a, b) => a.threshold - b.threshold);
+			.sort((a, b) => a.threshold - b.threshold); // ascending: smallest threshold (critical) matches first
 
-		// Recovery: active SSL incident exists — close it if cert no longer triggers any rule
-		if (monitor.active_incident_id && activeIncidentMetricName === 'ssl_expiry') {
+		if (sslInc) {
+			// Recovery: close the SSL incident once the cert no longer triggers any rule
 			const stillTriggered = sslRules.some((r) => result.ssl_days_left! < r.threshold);
 			if (!stillTriggered) {
-				const incidentId = monitor.active_incident_id;
-				await env.DB.prepare(
-					`UPDATE incidents SET status = 'resolved', resolved_at = ? WHERE id = ?`,
-				).bind(now, incidentId).run();
-				await env.DB.prepare(
-					`UPDATE monitor_state SET active_incident_id = NULL WHERE monitor_id = ?`,
-				).bind(monitor.id).run();
+				await env.DB.prepare(`UPDATE incidents SET status = 'resolved', resolved_at = ? WHERE id = ?`).bind(now, sslInc.id).run();
 				await (env.NOTIFICATION_QUEUE as Queue<NotificationMessage>).send({
-					incidentId,
+					incidentId: sslInc.id,
 					monitorId: monitor.id,
 					monitorName: monitor.name,
 					eventType: 'recovered',
 					count: newSuccesses,
 				});
 			}
-			return; // active SSL incident handled — skip creation
-		}
-
-		// Creation: no active incident — check if cert is now expiring
-		if (!monitor.active_incident_id) {
+		} else {
+			// Creation: open an SSL incident at the highest matching severity
 			for (const rule of sslRules) {
 				if (result.ssl_days_left < rule.threshold) {
 					const reason =
@@ -199,9 +190,6 @@ export async function evaluateAlerts(
 						`INSERT INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, reason)
 						 VALUES (?, ?, ?, 'open', ?, ?, ?)`,
 					).bind(incidentId, monitor.id, rule.id, rule.severity, now, reason).run();
-					await env.DB.prepare(
-						`UPDATE monitor_state SET active_incident_id = ? WHERE monitor_id = ?`,
-					).bind(incidentId, monitor.id).run();
 					await (env.NOTIFICATION_QUEUE as Queue<NotificationMessage>).send({
 						incidentId,
 						monitorId: monitor.id,

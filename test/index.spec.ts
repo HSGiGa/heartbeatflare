@@ -2,6 +2,8 @@ import { env, createExecutionContext, waitOnExecutionContext, SELF } from 'cloud
 import { describe, it, expect, beforeAll } from 'vitest';
 import worker from '../src/index';
 import { _invalidateAuthCache } from '../src/auth';
+import { CONNECTIVITY_CLASS, evaluateAlerts } from '../src/alerts';
+import type { AlertRuleDbRow, MonitorRow } from '../src/types';
 // @ts-expect-error vite ?raw import
 import migrationSql from '../migrations/0001_initial_schema.sql?raw';
 // @ts-expect-error vite ?raw import
@@ -18,21 +20,6 @@ import migration6Sql from '../migrations/0006_ssl_cert_state.sql?raw';
 import migration11Sql from '../migrations/0011_latency_count.sql?raw';
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
-
-function expectUsageFields(body: { d1: unknown; d1Percent: unknown }) {
-	expect(body.d1).toEqual({
-		readQueries: expect.any(Number),
-		writeQueries: expect.any(Number),
-		rowsRead: expect.any(Number),
-		rowsWritten: expect.any(Number),
-		databaseSizeBytes: expect.any(Number),
-	});
-	expect(body.d1Percent).toEqual({
-		rowsRead: expect.any(Number),
-		rowsWritten: expect.any(Number),
-		storage: expect.any(Number),
-	});
-}
 
 async function applyMigration(sql: string) {
 	const stripped = sql
@@ -71,12 +58,6 @@ beforeAll(async () => {
 	)
 		.bind('dns-example', 'DNS Example', 'dns', 'external', 'public', 'example.com', 60)
 		.run();
-	await env.DB.prepare(
-		`INSERT INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, enabled)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
-	)
-		.bind('hb-example', 'Heartbeat Example', 'heartbeat', 'external', 'public', null, 60)
-		.run();
 });
 
 describe('GET /', () => {
@@ -91,64 +72,39 @@ describe('GET /', () => {
 });
 
 describe('GET /api/status', () => {
-	it('includes TCP monitors from D1', async () => {
+	// These run before auth_config is seeded, so requests are unauthenticated (public view):
+	// public monitors appear, but targets and the usage block are withheld (fail-closed).
+	it('includes TCP monitors from D1 (target withheld for public)', async () => {
 		const response = await SELF.fetch('https://example.com/api/status');
-		const body = (await response.json()) as { monitors: Array<{ id: string; type: string; target: string }> };
-		expect(body.monitors).toContainEqual(expect.objectContaining({ id: 'tcp-example', type: 'tcp', target: '1.1.1.1:53' }));
+		const body = (await response.json()) as { monitors: Array<{ id: string; type: string; target: string | null }> };
+		expect(body.monitors).toContainEqual(expect.objectContaining({ id: 'tcp-example', type: 'tcp', target: null }));
 	});
 
-	it('includes DNS monitors from D1', async () => {
+	it('includes DNS monitors from D1 (target withheld for public)', async () => {
 		const response = await SELF.fetch('https://example.com/api/status');
-		const body = (await response.json()) as { monitors: Array<{ id: string; type: string; target: string }> };
-		expect(body.monitors).toContainEqual(expect.objectContaining({ id: 'dns-example', type: 'dns', target: 'example.com' }));
+		const body = (await response.json()) as { monitors: Array<{ id: string; type: string; target: string | null }> };
+		expect(body.monitors).toContainEqual(expect.objectContaining({ id: 'dns-example', type: 'dns', target: null }));
 	});
 
-	it('includes heartbeat monitors from D1', async () => {
-		const response = await SELF.fetch('https://example.com/api/status');
-		const body = (await response.json()) as { monitors: Array<{ id: string; type: string }> };
-		expect(body.monitors).toContainEqual(expect.objectContaining({ id: 'hb-example', type: 'heartbeat' }));
-	});
-
-	it('returns JSON monitors list (unit style)', async () => {
+	it('returns JSON monitors list without usage for public (unit style)', async () => {
 		const request = new IncomingRequest('http://example.com/api/status');
 		const ctx = createExecutionContext();
 		const response = await worker.fetch(request, env, ctx);
 		await waitOnExecutionContext(ctx);
 		expect(response.status).toBe(200);
 		expect(response.headers.get('Content-Type')).toContain('application/json');
-		const body = (await response.json()) as { monitors: unknown[]; d1: unknown; d1Percent: unknown };
+		const body = (await response.json()) as { monitors: unknown[]; d1: unknown };
 		expect(Array.isArray(body.monitors)).toBe(true);
-		expectUsageFields(body);
+		expect(body.d1).toBeUndefined();
 	});
 
-	it('returns JSON monitors list (integration style)', async () => {
+	it('returns JSON monitors list without usage for public (integration style)', async () => {
 		const response = await SELF.fetch('https://example.com/api/status');
 		expect(response.status).toBe(200);
 		expect(response.headers.get('Content-Type')).toContain('application/json');
-		const body = (await response.json()) as { monitors: unknown[]; d1: unknown; d1Percent: unknown };
+		const body = (await response.json()) as { monitors: unknown[]; d1: unknown };
 		expect(Array.isArray(body.monitors)).toBe(true);
-		expectUsageFields(body);
-	});
-});
-
-describe('POST /beat/:id', () => {
-	it('records beat and marks monitor up', async () => {
-		const res = await SELF.fetch('https://example.com/beat/hb-example', { method: 'POST' });
-		expect(res.status).toBe(200);
-		const state = await env.DB.prepare(`SELECT status FROM monitor_state WHERE monitor_id = ?`)
-			.bind('hb-example')
-			.first<{ status: string }>();
-		expect(state?.status).toBe('up');
-	});
-
-	it('returns 404 for unknown monitor id', async () => {
-		const res = await SELF.fetch('https://example.com/beat/nonexistent', { method: 'POST' });
-		expect(res.status).toBe(404);
-	});
-
-	it('returns 404 for non-heartbeat monitor', async () => {
-		const res = await SELF.fetch('https://example.com/beat/tcp-example', { method: 'POST' });
-		expect(res.status).toBe(404);
+		expect(body.d1).toBeUndefined();
 	});
 });
 
@@ -170,6 +126,63 @@ describe('SSL cert fields', () => {
 		const body = (await response.json()) as { monitors: Array<{ state: { ssl_not_after: unknown; ssl_issuer: unknown } }> };
 		expect(body.monitors.every((m) => m.state.ssl_not_after === null)).toBe(true);
 		expect(body.monitors.every((m) => m.state.ssl_issuer === null)).toBe(true);
+	});
+});
+
+describe('incident independence', () => {
+	it('opens a connectivity incident even when an SSL incident is already open', async () => {
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, enabled)
+			 VALUES ('indep-test', 'Indep', 'http', 'external', 'public', 'https://indep.example.com', 60, 1)`,
+		).run();
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO monitor_state (monitor_id, status, consecutive_failures, consecutive_successes)
+			 VALUES ('indep-test', 'down', 1, 0)`,
+		).run();
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO alert_rules (id, monitor_id, metric_name, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled)
+			 VALUES ('indep-conn', 'indep-test', NULL, 'eq', 0, 'critical', 2, 2, 0, 1)`,
+		).run();
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO alert_rules (id, monitor_id, metric_name, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled)
+			 VALUES ('indep-ssl', 'indep-test', 'ssl_expiry', 'lt', 7, 'warning', 1, 1, 0, 1)`,
+		).run();
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, reason)
+			 VALUES ('indep-ssl-inc', 'indep-test', 'indep-ssl', 'open', 'warning', '2026-01-01T00:00:00Z', 'SSL cert expires in 5 day(s)')`,
+		).run();
+
+		const monitor: MonitorRow = {
+			id: 'indep-test',
+			name: 'Indep',
+			type: 'http',
+			scrape_url: 'https://indep.example.com',
+			interval_seconds: 60,
+			ssl_check: 1,
+			current_status: 'down',
+			last_check_at: null,
+			consecutive_failures: 1,
+			consecutive_successes: 0,
+			active_incident_id: null,
+			ssl_not_after: null,
+			ssl_issuer: null,
+		};
+		const rules: AlertRuleDbRow[] = [
+			{ id: 'indep-conn', monitor_id: 'indep-test', metric_name: null, condition: 'eq', threshold: 0, severity: 'critical', failure_count: 2, recovery_count: 2, cooldown_seconds: 0, enabled: 1 },
+		];
+		// Only an SSL incident is active — the connectivity slot is empty
+		const activeByClass = new Map([['ssl_expiry', { id: 'indep-ssl-inc', severity: 'warning' }]]);
+
+		await evaluateAlerts(env, monitor, { status: 'down', latency_ms: 0, error: 'HTTP 500' }, 2, 0, '2026-06-11T00:00:00Z', rules, activeByClass);
+
+		const conn = await env.DB.prepare(
+			`SELECT id FROM incidents WHERE monitor_id = 'indep-test' AND status = 'open' AND alert_rule_id = 'indep-conn'`,
+		).first<{ id: string }>();
+		expect(conn).not.toBeNull();
+
+		// The pre-existing SSL incident must remain open and untouched
+		const ssl = await env.DB.prepare(`SELECT status FROM incidents WHERE id = 'indep-ssl-inc'`).first<{ status: string }>();
+		expect(ssl?.status).toBe('open');
 	});
 });
 

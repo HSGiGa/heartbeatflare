@@ -35,7 +35,7 @@ export type AlertRuleDbRow = {
 export type MonitorRow = {
 	id: string;
 	name: string;
-	type: 'http' | 'tcp' | 'dns' | 'heartbeat';
+	type: 'http' | 'tcp' | 'dns';
 	scrape_url: string | null;
 	interval_seconds: number;
 	ssl_check: number;
@@ -74,6 +74,11 @@ export type NotificationChannelDbRow = {
 	type: string;
 	configuration: string;
 };
+
+// Active (open) incident keyed by metric class — derived from incidents JOIN alert_rules.
+// class is alert_rules.metric_name, or '__connectivity__' when metric_name IS NULL.
+export type ActiveIncidentRow = { monitor_id: string; class: string; incident_id: string; severity: string };
+export type ActiveIncident = { id: string; severity: string };
 
 export type UptimeDayRow = { monitor_id: string; day: string; avg_up: number };
 export type LatencyRow = { monitor_id: string; latency_ms: number };

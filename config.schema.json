@@ -298,7 +298,6 @@
             "http",
             "tcp",
             "dns",
-            "heartbeat",
             "openmetrics"
           ]
         },

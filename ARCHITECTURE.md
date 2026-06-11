@@ -1,251 +1,154 @@
 # Monitoring Platform Architecture
 
+> **Implementation status (MVP).** This document describes the implemented system.
+> The MVP is a **single Cloudflare Worker** (`src/index.ts`) exposing three entry
+> points — `fetch` (status pages + API), `scheduled` (cron probing + maintenance),
+> and `queue` (notification delivery). The earlier multi-Worker / Service-Bindings
+> design and OpenMetrics scraping are **not implemented**; OpenMetrics remains a
+> Phase 2 path. Sections below reflect the code as built.
+
 ## Overview
 
-Cloudflare-native monitoring platform with two collection modes: direct external probing and OpenMetrics pull from internal services via Cloudflare Tunnel.
+Cloudflare-native uptime monitoring platform. A single Worker probes external
+targets on a cron trigger, stores operational state and time-series in D1,
+generates incidents, and delivers notifications via a Cloudflare Queue.
 
-The platform collects metrics, stores operational state, generates incidents, and sends notifications.
+Supported monitoring capabilities (implemented):
 
-Supported monitoring capabilities:
+- HTTP/HTTPS monitoring (status code, response time)
+- TCP port monitoring (reachability, connect latency)
+- DNS monitoring (resolution via DoH)
+- SSL/TLS certificate expiry (via external CT/cert APIs — see SSL section)
+- Alerting and incident management (connectivity + SSL, independent)
+- Public + private status pages (one Worker, path-based routing)
 
-- Ping / host reachability (TCP connect)
-- HTTP/HTTPS monitoring
-- TCP port monitoring
-- SSL/TLS monitoring
-- OpenMetrics collection from internal services
-- Alerting
-- Incident management
+Planned (Phase 2, not implemented): OpenMetrics collection from internal services
+via Cloudflare Tunnel.
 
 ## Architecture
 
 ```
-+-------------------------------+     +----------------------------------+
-|     Public Internet           |     |     Private Network              |
-|                               |     |                                  |
-|  - HTTP/HTTPS endpoints       |     |  OpenMetrics Exporters           |
-|  - TCP ports                  |     |  - blackbox_exporter             |
-|  - SSL/TLS certificates       |     |  - node_exporter                 |
-|  - Host reachability          |     |  - custom exporters              |
-|                               |     |  - OpenTelemetry Collector       |
-+---------------+---------------+     |  - Grafana Alloy                 |
-                |                     +----------------+-----------------+
-                | Direct probe                        |
-                |                          Cloudflare Tunnel
-                |                                     |
-                v                                     v
-
-+----------------------------------------------------------+
-|                    Scheduler Worker                      |
-|                                                          |
-|  - Cron Trigger (every 1 minute)                        |
-|  - Determines due monitors                              |
-|  - Invokes Probe/Scraper Worker directly via            |
-|    Service Bindings (no Queues on Free Plan)            |
-|  - Max 50 invocations per tick (subrequest limit)       |
-|                                                          |
-+------------------+-------------------+------------------+
-                   | Service Binding   | Service Binding
-                   v                   v
-
-+----------------------+   +----------------------+
-|   Probe Worker       |   |   Scraper Worker     |
-|                      |   |                      |
-|  External checks:    |   |  Internal checks:    |
-|  - HTTP/HTTPS        |   |  - Fetch /metrics    |
-|  - TCP port          |   |    or /probe via     |
-|  - SSL/TLS           |   |    Cloudflare Tunnel |
-|  - Ping (TCP L4)     |   |  - Parse OpenMetrics |
-|                      |   |  - Normalize data    |
-+----------+-----------+   +-----------+----------+
-           |                           |
-           +------------+--------------+
-                        |
-                        v
-
-            +---------------------------+
-            |       Result Store        |
-            |                           |
-            |  - Write monitor_state    |
-            |  - Write executions log   |
-            |  - Write metric_series    |
-            +-------------+-------------+
-                          |
-                          v
-                  +-------+----+
-                  | D1 Database|
-                  +------------+
-                 |
-                 v
-
-            +---------------------------+
-            |     Alert Evaluator       |
-            |                           |
-            |  Reads D1 state only:     |
-            |  - consecutive_failures   |
-            |  - consecutive_successes  |
-            |  - active_incident_id     |
-            |                           |
-            |  Writes D1:               |
-            |  - open incident          |
-            |  - resolve incident       |
-            |  - update monitor_state   |
-            +-------------+-------------+
-                          | Service Binding
-                          | (only on incident open/resolve)
-                          v
-
-+----------------------------------------------------------+
-|                 Notification Worker                      |
-|                                                          |
-|  - Telegram                                              |
-|  - Slack                                                 |
-|  - Email                                                 |
-|  - Generic Webhook                                       |
-|                                                          |
-+----------------------------------------------------------+
+        Public Internet targets
+   (HTTP/HTTPS, TCP ports, DNS, TLS certs)
+                    ^
+                    | direct probe (fetch / cloudflare:sockets / DoH)
+                    |
++---------------------------------------------------------------+
+|                  Single Worker (heartbeatflare)               |
+|                                                               |
+|  fetch()      → status pages (/public, /private) + JSON API   |
+|  scheduled()  → cron (every 1 min):                           |
+|                   • select due monitors, probe (bounded       |
+|                     concurrency), store results               |
+|                   • evaluate alerts → open/resolve incidents  |
+|                   • hourly uptime rollup, daily cleanup       |
+|  queue()      → deliver notifications (Slack/webhook)         |
+|                                                               |
++----------------+--------------------------+-------------------+
+                 |                          ^
+   read/write    |                          | enqueue on incident
+                 v                          | open / resolve
+          +------------+          +----------+-----------+
+          | D1 Database|          | Notification Queue   |
+          +------------+          | (Cloudflare Queues)  |
+                                  +----------------------+
 ```
+
+The same Worker is both the queue **producer** (alert evaluation enqueues a
+message on incident open/resolve) and the queue **consumer** (`queue()` handler
+delivers it). There are no Service Bindings and no separate Workers.
 
 ## Core Components
 
-### Scheduler Worker
+### Scheduler (`scheduled()` in `src/scheduler.ts`)
 
-**Purpose:** Schedules all monitoring jobs.
-
-**Responsibilities:**
-- Runs on Cron Trigger every 1 minute
-- Queries D1 for monitors due for execution (`last_check_at + interval_seconds <= now`)
-- Invokes the correct Worker directly via Service Binding based on monitor mode:
-  - external monitors → Probe Worker
-  - internal OpenMetrics monitors → Scraper Worker
-
-**Why Service Bindings instead of Queues:** Cloudflare Queues on the Free Plan are capped at 10k operations/day (≈3 ops per message lifecycle ≈ 2 monitors at 60s interval), and may require a paid plan entirely. Service Bindings are free, have no separate daily cap, and count only against the shared 100k requests/day budget.
-
-**Fan-out limit:** A single Worker invocation can make at most 50 subrequests on the Free Plan. Each Service Binding call counts as one subrequest, so one Scheduler tick dispatches at most 50 monitors. Beyond 50 monitors, work is sharded across consecutive minute ticks (e.g. by `monitor_id` modulo). Each invoked Probe/Scraper Worker gets its own 50-subrequest budget for the actual check.
-
----
-
-### Probe Worker
-
-**Purpose:** Performs direct external checks against publicly accessible targets.
+**Purpose:** Drives all probing and periodic maintenance.
 
 **Responsibilities:**
-- Execute checks based on monitor type
-- Measure latency and collect result data
-- Pass results to Result Store
+- Runs on Cron Trigger every 1 minute.
+- One batched read at the start of each tick loads all enabled monitors (+ their
+  `monitor_state`), all enabled alert rules, and all currently-open incidents.
+- Selects due monitors (`last_check_at + interval_seconds <= now`), **sorted
+  oldest-checked first** so that, when more than `MAX_CHECKS_PER_RUN` (15) are due,
+  no monitor starves.
+- Probes inline (no Service Bindings, no separate Worker) with bounded
+  concurrency (`MAX_CONCURRENT_CHECKS` = 5) and a per-check timeout
+  (`PER_UNIT_MS`). Each probe writes results and evaluates alerts.
+- Hourly (`getUTCMinutes() === 0`): recomputes `uptime_daily` from `uptime_hourly`.
+- Daily (~04:30 UTC): cleanup (see Retention).
 
-**Check implementations:**
+**Probe implementations (`src/probes.ts`):**
 
 | Type | Implementation |
 |---|---|
-| HTTP/HTTPS | `fetch()` — native Workers API |
-| TCP port | `connect()` from `cloudflare:sockets` |
-| SSL/TLS | SSL/TLS Inspector (see note) |
-| Ping | TCP connect to port 80/443 — L4 reachability check |
+| HTTP/HTTPS | `fetch()` with a 10s timeout; `res.ok` = up |
+| TCP port | `connect()` from `cloudflare:sockets`, 10s timeout |
+| DNS | DoH query to `cloudflare-dns.com/dns-query`; non-empty answer = up |
+| SSL/TLS expiry | external API (ssl-checker.io, fallback crt.sh) — see SSL section |
 
-**Note on SSL/TLS Inspector:** The mechanism for retrieving certificate expiry (e.g. via `fetch()` response metadata) is subject to change after PoC. The component is described abstractly to allow implementation to be determined during development.
+SSL expiry is probed alongside HTTP/TCP checks when the monitor has `ssl_check = 1`
+and a derivable hostname.
 
-**Note on Ping:** ICMP is unavailable in the Workers sandbox. TCP connect provides equivalent host reachability detection for uptime monitoring purposes. Packet loss is approximated via consecutive failure tracking in D1.
-
----
-
-### Scraper Worker
-
-**Purpose:** Collects OpenMetrics data from internal services accessible via Cloudflare Tunnel.
-
-**Responsibilities:**
-- Pull OpenMetrics endpoints through the tunnel
-- Parse OpenMetrics format
-- Extract configured metrics
-- Normalize values
-- Pass results to Result Store
-
-**Supported Endpoints:**
-```
-/metrics
-/probe
-```
-
-**Supported Exporters:**
-```
-blackbox_exporter
-node_exporter
-OpenTelemetry Collector
-Grafana Alloy
-custom exporters
-```
+**Fan-out limit:** a single Worker invocation can make at most 50 subrequests on
+the Free Plan, and the cron tick itself has a CPU/time budget. `MAX_CHECKS_PER_RUN`
+caps checks per tick; beyond that, the oldest-checked-first ordering rotates work
+across consecutive ticks.
 
 ---
 
-### Result Store
+### Result store (`storeResult()` in `src/alerts.ts`)
 
-**Purpose:** Centralises result persistence after each check execution.
+Persists each check result, minimising D1 writes:
+- Upserts `monitor_state` (status, timestamps, consecutive counters, SSL columns) — 1 write/check.
+- Upserts the hourly aggregate `uptime_hourly` — 1 write/check.
+- Writes a raw `metric_series` row **only when actionable** (failure, status
+  transition, or first sample of the hour) — not every check.
+- Writes `monitor_executions` **only on status change or failure**.
 
-**Responsibilities:**
-- Update `monitor_state` (status, latency, timestamps, consecutive counters) — 1 write per check
-- Write to `monitor_executions` **only on status change or failure** — not every check
-- Write one `metric_series` row per check (metrics packed into columns, not one row per metric)
-
-Called by both Probe Worker and Scraper Worker. Alert Evaluator runs after Result Store completes.
-
-**Write-amplification budget (Free Plan):** D1 allows 100k writes/day. The write strategy above keeps steady-state writes to ~2 per check (state + metric_series), since `monitor_executions` writes only fire on change. See the capacity estimate under Data Storage.
-
----
-
-### Alert Evaluator
-
-**Purpose:** Converts check results into incidents. Works with state, not history.
-
-**Responsibilities:**
-- Read `monitor_state` from D1
-- Open incidents after N consecutive failures
-- Resolve incidents after M consecutive successes
-- Prevent alert storms via cooldowns
-- Deduplicate notifications for the same incident
-
-**Example Rules:**
-
-Open Incident: `alert_rules.failure_count` consecutive failures
-
-Resolve Incident: `alert_rules.recovery_count` consecutive successes
-
-Incident severity is taken from the `alert_rules.severity` that triggered the open.
+**Write-amplification budget (Free Plan):** D1 allows 100k writes/day. Steady-state
+writes are ~2 per check (state + hourly aggregate).
 
 ---
 
-### Notification Worker
+### Alert evaluator (`evaluateAlerts()` in `src/alerts.ts`)
 
-**Purpose:** Handles notification delivery.
+Converts check results into incidents. Incidents are tracked **independently per
+metric class**, derived from the open-incidents snapshot loaded at tick start
+(the `incidents` table is the source of truth; class = `alert_rules.metric_name`,
+or the `__connectivity__` sentinel when `metric_name IS NULL`).
 
-**Responsibilities:**
-- Send alerts on incident open/resolve
-- Retry failed deliveries
-- Rate limiting per channel
-- Delivery tracking
+- **Connectivity** (metric_name NULL): opens an incident after `failure_count`
+  consecutive failures (subject to `cooldown_seconds`), resolves after
+  `recovery_count` consecutive successes.
+- **SSL expiry** (metric_name `ssl_expiry`): opens at the highest matching
+  severity when `ssl_days_left < threshold`, resolves when the cert no longer
+  triggers any rule.
 
-**Channels:**
-```
-Telegram
-Slack
-Email
-Webhook
-```
+The two classes do **not** block each other: an open SSL-warning no longer
+suppresses a connectivity down-incident. Incident open/resolve writes (incident
+row + `monitor_state.active_incident_id` hint) go through a single `DB.batch()`;
+the notification is enqueued only after that batch commits.
+`monitor_state.active_incident_id` is a denormalised hint for the active
+*connectivity* incident only; SSL incidents live solely in the `incidents` table.
 
-## Invocation Payload Contract
+---
 
-The Scheduler passes a single payload schema to Probe and Scraper Workers via Service Binding:
+### Notification delivery (`queue()` in `src/queue.ts`)
 
-```json
-{
-  "monitor_id": "uuid",
-  "type": "http | tcp | ssl | ping | openmetrics",
-  "execution_id": "uuid",
-  "scheduled_at": "ISO 8601 timestamp"
-}
-```
+Consumes the `NOTIFICATION_QUEUE`. For each message, resolves the monitor's
+channels (per-monitor assignments, else defaults) and delivers.
 
-`execution_id` is generated by the Scheduler and carried through the entire execution lifecycle, linking the invocation to any `monitor_executions` record written on status change.
+- **Implemented channels:** Slack and generic Webhook (HTTP POST `{ text }`).
+- Telegram/Email are **not implemented** and would record a `failed` delivery —
+  do not configure them (email was removed from `config.yaml`).
+- Each attempt is recorded in `notification_deliveries` with the real attempt
+  count (`msg.attempts`).
+- **Retry:** if no channel succeeds, `msg.retry()` (the queue's `max_retries`
+  caps attempts before drop). On partial success the message is acked to avoid
+  double-notifying already-delivered channels.
 
-This contract is transport-agnostic: if the platform later moves to a paid plan and adopts Queues for durability/backpressure, the same payload becomes the queue message body with no schema change.
+Configuration values support `${VAR}` substitution resolved from the Worker's
+environment at send time (e.g. `url: ${MATTERMOST_WEBHOOK_URL}`).
 
 ## Data Storage
 
@@ -255,41 +158,38 @@ Stores operational state and execution history.
 
 **monitors**
 ```
-id
+id                    -- slug derived from name
 name
-type                  -- http | tcp | ssl | ping | openmetrics
+type                  -- http | tcp | dns  (CHECK also permits openmetrics, Phase 2)
 mode                  -- external | internal
 visibility            -- public | private  (controls status page exposure)
-scrape_url
+scrape_url            -- target (URL / host:port / hostname)
+ssl_check             -- 1 = also probe TLS cert expiry for this monitor
 interval_seconds
 enabled
 created_at
 updated_at
 ```
 
-**alert_rules** — evaluation rules and incident configuration for all monitor types
+**alert_rules** — evaluation rules and incident configuration
 ```
 id
 monitor_id
-metric_name           -- nullable; used by Scraper Worker for OpenMetrics metric filtering only
+metric_name           -- nullable; 'ssl_expiry' for SSL rules, NULL for connectivity
 condition             -- eq | gt | lt | gte | lte
-threshold             -- numeric value; durations stored in seconds
+threshold             -- numeric value; SSL thresholds are in days
 severity              -- warning | critical
 failure_count         -- consecutive failures required to open incident
 recovery_count        -- consecutive successes required to resolve incident
-cooldown_seconds      -- minimum time between repeated notifications
+cooldown_seconds      -- minimum time after last resolve before re-opening
 enabled
 ```
 
-Examples:
-```
-metric_name: probe_success,                   condition: eq,  threshold: 0,       severity: critical
-metric_name: probe_duration_seconds,          condition: gt,  threshold: 2,       severity: warning
-metric_name: probe_ssl_earliest_cert_expiry,  condition: lt,  threshold: 2592000, severity: warning
-metric_name: probe_ssl_earliest_cert_expiry,  condition: lt,  threshold: 604800,  severity: critical
-```
-
-For external monitors (HTTP, TCP, SSL, Ping) `metric_name` is null — the condition evaluates the check result directly.
+For connectivity rules `metric_name IS NULL` — the condition evaluates the check
+result (up/down) directly. SSL-expiry rules use `metric_name = 'ssl_expiry'` with
+`condition = 'lt'` and a day threshold (e.g. `lt 7` warning, `lt 1` critical).
+The import step auto-adds default SSL rules (7-day warning, 1-day critical) for
+http/tcp monitors with `ssl` enabled when none are specified.
 
 **monitor_state** — current operational state per monitor
 ```
@@ -299,12 +199,16 @@ last_check_at
 last_success_at
 consecutive_failures
 consecutive_successes
-active_incident_id
+active_incident_id        -- denormalised hint: the active *connectivity* incident
+                          --   only. SSL incidents are not reflected here; the
+                          --   incidents table is the source of truth.
+ssl_not_after             -- cached cert expiry timestamp
+ssl_issuer                -- cached cert issuer
 ```
 
 **monitor_executions** — execution history for investigation and debugging
 ```
-id                    -- matches execution_id from invocation payload
+id                    -- per-check execution UUID
 monitor_id
 started_at
 completed_at
@@ -314,7 +218,7 @@ error
 worker_region
 ```
 
-**Written only on status change or failure** (not every successful check) to stay within the D1 write budget. A steady-state healthy monitor produces near-zero execution rows. Retention: last 24–48 hours, purged by the cleanup Cron job.
+**Written only on status change or failure** (not every successful check) to stay within the D1 write budget. A steady-state healthy monitor produces near-zero execution rows. Retention: **48 hours**, purged by the daily cleanup (not read by the UI).
 
 **incidents**
 ```
@@ -330,20 +234,24 @@ reason
 
 Incident visibility is inherited from the monitor (`monitors.visibility`) — there is no separate column. The public status page shows incidents only for public monitors.
 
-Retention: resolved incidents are purged after 7 days by the cleanup Cron job. **Open incidents are never purged**, regardless of age.
+Retention: resolved incidents are purged after **120 days** by the daily cleanup —
+the status page colours its 90-day uptime bars from incidents, so a shorter window
+would degrade the UI. **Open incidents are never purged**, regardless of age.
 
 **notification_channels**
 ```
 id
 name
-type                  -- telegram | slack | email | webhook
-configuration         -- JSON: non-sensitive config only (chat_id, channel name, etc.)
-secret_name           -- name of the Cloudflare Secret holding the token/credential
+type                  -- slack | webhook  (telegram/email defined but not implemented)
+configuration         -- JSON; string values may contain ${VAR} env references
 is_default            -- fallback channel when monitor has no explicit channels
 enabled
 ```
 
-`configuration` never holds tokens or credentials. `secret_name` references a Cloudflare Secret; the Notification Worker resolves the actual value from its environment (`env[secret_name]`) at send time. Secrets are never written to D1.
+`configuration` holds non-sensitive config plus `${VAR}` placeholders (e.g. a
+webhook `url`). The actual secret value is resolved from the Worker's environment
+at send time, so the secret itself is never written to D1. (A legacy `secret_name`
+column exists in the schema but is unused by the current code.)
 
 **monitor_notification_channels** — per-monitor channel assignments
 ```
@@ -368,31 +276,38 @@ last_attempt_at
 error
 ```
 
-**metric_series** — platform-level time-series, one row per check
+**metric_series** — raw time-series, one row per *actionable* check
 ```
 id
 monitor_id
 recorded_at
 availability        -- 0 | 1
 latency_ms          -- nullable
-response_time_ms    -- nullable
-ssl_expiry_seconds  -- nullable
+response_time_ms    -- nullable (unused)
+ssl_expiry_seconds  -- nullable (unused; SSL expiry is cached on monitor_state)
 tcp_connect_ms      -- nullable
 ```
 
-Metrics are packed into columns of a single row (not one row per metric) to keep each check to a single insert. Raw OpenMetrics metric streams from exporters are not stored here to avoid cardinality explosion (e.g. `node_cpu_seconds_total`, `node_memory_*`).
+Written only on failure, status transition, or the first sample of an hour (see
+Result store). Retention: **7 days**, purged by the daily cleanup.
 
-Retention: configurable, default 30 days. A cleanup Cron job purges records older than the retention window.
+**uptime_hourly / uptime_daily** — pre-aggregated uptime + latency
+```
+monitor_id, hour|day, total_checks, up_checks, avg_latency_ms, latency_count
+```
+Every check upserts the current `uptime_hourly` bucket (cheap, 1 write); the hourly
+cron rolls `uptime_hourly` up into `uptime_daily`. The status page reads these
+aggregates (≈900 rows for 90 days) instead of scanning `metric_series`.
+`uptime_hourly` retention: 48 hours; `uptime_daily` is retained for the 90-day view.
 
 **Free Plan write budget (D1: 100k writes/day):**
 ```
-Per check:  1 monitor_state update + 1 metric_series insert = 2 writes
-            (monitor_executions only on change ≈ 0 in steady state)
+Per check:  1 monitor_state upsert + 1 uptime_hourly upsert = 2 writes
+            (metric_series only when actionable; monitor_executions only on change)
 
-10 monitors × 60s interval:  10 × 1,440 × 2  =  28,800 writes/day
 30 monitors × 60s interval:  30 × 1,440 × 2  =  86,400 writes/day  (near ceiling)
 ```
-The MVP comfortably supports ~25–30 external monitors at a 60s interval. Larger fleets use longer intervals or sharding.
+The MVP comfortably supports ~25–30 external monitors at a 60s interval. Larger fleets use longer intervals.
 
 Used for:
 - Dashboards
@@ -423,51 +338,66 @@ degraded  -- checks passing but a warning threshold exceeded
 down      -- check failing (probe_success == 0 or connection refused)
 ```
 
-Examples of `degraded`:
-- SSL certificate expires in < 14 days
+> **Status note:** the current probe path sets only `up` or `down` on
+> `monitor_state.status`. `degraded` is defined in the schema and rendered by the
+> status page, but is **not currently produced** — warning conditions (e.g. SSL
+> expiry) open a *warning incident* without changing the monitor's status. Driving
+> `monitor_state.status = 'degraded'` from warning thresholds is a Phase 2 item.
+
+Intended meaning of `degraded` (Phase 2):
+- SSL certificate expires soon
 - HTTP response latency > configured threshold
 - TCP connect time > configured threshold
 
-`degraded` generates a warning incident, not a down incident. Notification channels can be configured per severity.
-
 ## Status Pages
 
-Two read-only views over the same monitoring data, served by a single **Status Page Worker** that routes by hostname.
+Two read-only views over the same data, served by the Worker's `fetch()` handler,
+routed by **path** (not hostname).
 
 ```
-                    +------------------------+
-                    |   Status Page Worker   |
-                    +-----------+------------+
-                                |
-              hostname routing  |
-              +-----------------+-----------------+
-              |                                   |
-   status.example.com                  monitoring.example.com
-   (public, no auth)                   (private, Cloudflare Access)
-              |                                   |
-   visibility = 'public' only          all monitors
+   GET /            → 302 /public
+   GET /public      → public view  (no session; WHERE visibility = 'public')
+   GET /private     → private view (requires a valid Cloudflare Access session)
+   GET /api/status  → JSON; public-scoped unless authenticated
+   GET /api/history → JSON; paginated incident history
+   /auth/login | /auth/logout
 ```
 
-### Single Worker, hostname routing
+### Path routing + fail-closed visibility
 
-One Worker handles both pages and selects behaviour from the request hostname:
+The Worker derives a session from the `Cf-Access-Jwt-Assertion` header (JWT verified
+against the team's Access certs, see `src/auth.ts`). Then:
 
-- `status.example.com` → public view, queries `WHERE visibility = 'public'`
-- `monitoring.example.com` → private view, queries all monitors
+- `showAll = session !== null` — **fail-closed**. Private monitors, their target
+  URLs, alert rules, and the usage block are shown **only** with a valid session.
+- A missing or disabled `auth_config` means *public-only*, never *everything open*.
+  (Earlier behaviour was fail-open; this was fixed.)
 
-Cloudflare Access is attached to the `monitoring.example.com` route in the Cloudflare dashboard (not in Worker code). The public route has no Access policy.
+**Defense in depth:** visibility is enforced in Worker code (`WHERE visibility =
+'public'` for unauthenticated requests), independently of the Cloudflare Access
+gate on `/private`. Even if Access is misconfigured, the public path never returns
+private data.
 
-**Defense in depth:** the public/private split is enforced in Worker code by hostname, not only by Access. The public hostname must *never* query private monitors even if the Access layer is misconfigured. Visibility filtering is the Worker's responsibility; Access is an additional gate, not the only one.
+### Edge caching
+
+Unauthenticated responses (`/public`, and public-scoped `/api/status`,
+`/api/history`) are stored in the Cloudflare **Cache API** (`caches.default`) for
+60s under a public-namespaced key, and carry `Cache-Control: public, max-age=60`.
+Repeat public traffic — which spikes precisely during an incident — is served from
+the colo cache without re-invoking the Worker or touching D1. Authenticated views
+are always `no-store`. The public cache key is namespaced so an authenticated
+request can never match a cached public response.
 
 ### Rendering
 
-Server-rendered HTML inline in the Worker — a simple status table, no client JS, no build step, no Static Assets binding. Sufficient for the MVP scope (no charts, no history graphs).
+Server-rendered HTML inline in the Worker, with a small inline `<script>` for the
+history tab, 90-day uptime bars, and tooltips. No build step, no Static Assets binding.
 
 ### Public Status Page
 
 - Accessible without authentication
 - Shows only monitors with `visibility = 'public'`
-- Current status + active incidents + recent incident history (resolved incidents within the 7-day retention window)
+- Current status + active incidents + 90-day uptime bars + paginated incident history
 
 Status vocabulary (mapped from internal `monitor_state.status`):
 
@@ -513,13 +443,13 @@ The private page is low-traffic (operators behind Access) and is not cached, so 
 
 Component groups, dependencies, maintenance windows, subscriptions, email updates, status page API, SLA reporting, uptime charts, custom incident messages, multiple status pages.
 
-## OpenMetrics Model
+## OpenMetrics Model — Phase 2 (not implemented)
 
-Used exclusively by the Scraper Worker (internal monitors).
+Planned design for internal monitors. The platform would evaluate a curated
+subset of OpenMetrics values against configured rules in `alert_rules`; raw metric
+streams would not be persisted.
 
-The platform evaluates a curated subset of OpenMetrics values against configured rules in `alert_rules`. Raw metric streams are not persisted.
-
-**CPU budget note (Free Plan: 10ms CPU per invocation):** Exporters like `node_exporter` emit thousands of metric lines. Parsing the full payload can exceed the 10ms CPU limit. The Scraper Worker must parse only the metrics referenced by the monitor's `alert_rules` (filter by `metric_name` while streaming), not deserialize the entire document. Oversized payloads are capped.
+**CPU budget note (Free Plan: 10ms CPU per invocation):** Exporters like `node_exporter` emit thousands of metric lines. Parsing the full payload can exceed the 10ms CPU limit. A scraper must parse only the metrics referenced by the monitor's `alert_rules` (filter by `metric_name` while streaming), not deserialize the entire document. Oversized payloads are capped.
 
 Example metrics from blackbox_exporter:
 ```
@@ -533,64 +463,71 @@ probe_tcp_connect_duration_seconds
 ## Monitoring Types
 
 ### HTTP/HTTPS (external)
-Probe Worker. Checks: status code, response time.
+`fetch()` with a 10s timeout. Checks: status code (`res.ok`), response time.
 
 ### TCP Port (external)
-Probe Worker uses `cloudflare:sockets connect()`. Checks: port reachability, connect latency.
+`cloudflare:sockets connect()` with a 10s timeout. Checks: port reachability, connect latency.
 
-### SSL/TLS (external)
-Probe Worker via SSL/TLS Inspector. Checks: certificate validity, days until expiry. Implementation to be confirmed during PoC.
+### DNS (external)
+DoH query to `cloudflare-dns.com/dns-query`. Up = `Status 0` with a non-empty answer.
 
-### Ping / Host Reachability (external)
-Probe Worker uses TCP connect via `cloudflare:sockets`. Measures L4 reachability and round-trip time. No ICMP dependency.
+### SSL/TLS expiry (external, opt-in via `ssl_check`)
+TLS introspection is unavailable in the Workers sandbox, so cert expiry is fetched
+from an external API (ssl-checker.io, fallback crt.sh) and cached 6h in the Cache
+API. Treated as a best-effort signal (`ssl_days_left`); the authoritative
+connectivity signal remains the HTTP/TCP check itself.
 
-### OpenMetrics (internal, via Cloudflare Tunnel)
-Scraper Worker fetches `/metrics` or `/probe`. Evaluates a configured subset of metrics against threshold rules.
+### OpenMetrics (internal) — Phase 2, not implemented
+Planned: scrape `/metrics` or `/probe` through a Cloudflare Tunnel and evaluate a
+configured subset of metrics. No code today.
 
 ## Alerting Flow
 
 ```
-Check Result (Probe Worker or Scraper Worker)
+Check Result (probe, inline in scheduled())
         |
         v
-Result Store
-  - update monitor_state            (1 write)
-  - write metric_series             (1 write)
+storeResult()
+  - upsert monitor_state            (1 write)
+  - upsert uptime_hourly            (1 write)
+  - write metric_series             (only when actionable)
   - write monitor_executions        (only on status change)
         |
         v
-Alert Evaluator  (reads D1 state only)
+evaluateAlerts()  (gates on the per-class open-incident snapshot)
         |
-        +-- consecutive_failures >= threshold  -->  open incident (down or degraded)
+        +-- connectivity: failures >= failure_count   --> open incident
+        +-- connectivity: successes >= recovery_count --> resolve incident
+        +-- ssl_expiry:   days_left < threshold        --> open/resolve (independent)
         |
-        +-- consecutive_successes >= threshold  -->  resolve incident
+        v  enqueue on NOTIFICATION_QUEUE (only on open/resolve)
         |
-        v  Service Binding (only on incident open/resolve)
+queue() consumer
         |
-Notification Worker
-        |
-        +-- Telegram
         +-- Slack
-        +-- Email
         +-- Webhook
+        (Telegram/Email not implemented)
 ```
 
 ## Cloudflare Free Plan Constraints
 
-The platform is designed to run entirely within the Cloudflare Free Plan.
+The platform runs entirely within the Cloudflare Free Plan.
 
 | Product | Free Limit | Usage |
 |---|---|---|
-| Workers | 100k requests/day | Scheduler, Probe, Scraper, Notification, Status Page Workers |
-| Workers | 10ms CPU/invocation | Bounds OpenMetrics parsing — filter, don't full-parse |
-| Workers | 50 subrequests/invocation | Bounds Scheduler fan-out to 50 monitors/tick |
-| Cron Triggers | 5 per account | Scheduler (1), cleanup (1) — 3 remaining |
-| Edge cache | Free | Public status page (`Cache-Control: max-age=30`) caps Worker + D1 load |
+| Workers | 100k requests/day | Single Worker: status pages, API, cron, queue consumer |
+| Workers | 10ms CPU/invocation | Bounds per-tick probing work |
+| Workers | 50 subrequests/invocation | Bounds checks per tick (`MAX_CHECKS_PER_RUN`) |
+| Cron Triggers | 5 per account | 1 used (`* * * * *`); rollup + cleanup run inside it |
+| Edge cache | Free | Public pages/API cached 60s via Cache API — caps Worker + D1 load |
 | D1 | 5M reads/day, 100k writes/day, 5GB | All data; ~2 writes/check → ~30 monitors at 60s |
-| Service Bindings | Free, no daily cap | Hot-path fan-out and notifications (replaces Queues) |
-| R2 | 10GB, 1M ops/month | Optional, not required for MVP |
+| Queues | 100k ops/day (Free) | Notifications only — low volume (only on incident open/resolve) |
+| R2 | 10GB, 1M ops/month | Optional, not used |
 
-**Queues are not used in the MVP.** Queues are available on the Free Plan (added Feb 2026) but capped at 10k operations/day. At ~3 operations per message lifecycle (write + read + delete), that supports only ~2 monitors at a 60s interval — unusable for the hot path. The hot path uses Service Bindings instead. Queues remain an upgrade for durability and backpressure (the invocation payload is already queue-compatible).
+**Queues are used for notifications only.** Because messages are produced only on
+incident open/resolve (not per check), volume stays far below the Free Plan's
+100k ops/day. The probing hot path runs inline in the cron tick — no Queues, no
+Service Bindings, no second Worker.
 
 **Analytics Engine** is available on the Free Plan (100k data points/day, 10k read queries/day). The MVP deliberately keeps time-series in D1 anyway, for:
 - a single storage backend (simpler backup, reconciliation, and import model),
@@ -632,66 +569,63 @@ config.yaml  +  Cloudflare Secrets
 
 ```yaml
 notification_channels:
-  - name: telegram-main
-    type: telegram
+  - name: Mattermost
+    type: slack                          # slack | webhook (telegram/email not implemented)
     is_default: true
-    chat_id: "123456"                    # non-sensitive, stored in D1
-    secret_name: TELEGRAM_BOT_TOKEN      # name only; value lives in Cloudflare Secrets
+    url: ${MATTERMOST_WEBHOOK_URL}       # ${VAR} resolved from Worker env at send time
+    channel: "#alerts"
 
 monitors:
-  - name: public-api
-    type: http
+  - name: Google
+    type: http                           # http | tcp | dns
     mode: external
     visibility: public                   # appears on both status pages
-    target: https://api.example.com/health
+    target: https://www.google.com/generate_204
     interval: 60s
-
     alerts:
       - condition: "status != 200"
         severity: critical
-        failures: 3
+        failures: 2
         recovery: 2
         cooldown: 300s
-      - condition: "latency > 2000"
-        severity: warning
-        failures: 3
-        recovery: 2
 
-    notifications:
-      - channel: telegram-main
-        notify_on: [incident_open, incident_resolved]
-
-  - name: internal-db
-    type: openmetrics
-    mode: internal
+  - name: VPN modem.by
+    type: tcp
+    mode: external
     visibility: private                  # private status page only
-    target: https://tunnel.example.internal/metrics
-    interval: 30s
-
+    ssl: true                            # also probe TLS cert expiry
+    target: vpn.modem.by:443
+    interval: 5m
     alerts:
-      - metric: probe_success
-        condition: "== 0"
+      - condition: "connect != true"
         severity: critical
         failures: 2
         recovery: 2
+      - condition: ssl_expiry < 14       # metric_name = 'ssl_expiry'
+        severity: warning
+        failures: 1
+        recovery: 1
 ```
 
 ### Secrets
 
-Sensitive values (tokens, webhook URLs, credentials) live exclusively in Cloudflare Secrets bound to the Workers. They never appear in `config.yaml` and are **never written to D1**.
+Sensitive values (webhook URLs, tokens) are kept out of `config.yaml` and out of
+D1 as literals. They are referenced as `${VAR}` placeholders; the Worker resolves
+the actual value from its environment (Cloudflare Secrets / vars) at send time.
 
-The flow is reference-only:
 ```
-config.yaml         secret_name: TELEGRAM_BOT_TOKEN     (just a name)
+config.yaml   url: ${MATTERMOST_WEBHOOK_URL}     (placeholder)
       |
       v
-D1                  notification_channels.secret_name = "TELEGRAM_BOT_TOKEN"
+D1            notification_channels.configuration = {"url":"${MATTERMOST_WEBHOOK_URL}", ...}
       |
       v
-Worker (runtime)    value = env["TELEGRAM_BOT_TOKEN"]   (resolved from Cloudflare Secrets)
+Worker        value = resolveVars(env, "${MATTERMOST_WEBHOOK_URL}")  (at send time)
 ```
 
-The import step writes only the secret name into D1. The actual value is resolved by the Notification Worker from its environment at send time. A D1 dump therefore contains no credentials.
+A D1 dump therefore contains placeholders, not credentials. (Note: the secret
+value reaches the Worker via its bound env; keep real secrets in Cloudflare Secrets,
+not in `wrangler.jsonc` `vars`.)
 
 ### Import Semantics
 
@@ -715,26 +649,25 @@ The import step is idempotent and runs on every push to main via CI/CD.
 
 ## Roadmap
 
-### MVP (Free Plan)
-- External probing: HTTP, TCP, SSL, Ping (TCP-based)
-- Internal OpenMetrics scraping via Cloudflare Tunnel
-- blackbox_exporter support
-- Service Binding fan-out (no Queues)
-- Incident management (down + degraded)
-- Telegram notifications
-- Webhook notifications
-- D1 storage (state, executions, metric_series)
-- Status pages: public (no auth) + private (Cloudflare Access), single Worker
+### MVP (Free Plan) — implemented
+- External probing: HTTP, TCP, DNS
+- SSL/TLS cert-expiry monitoring (external API, best-effort)
+- Inline probing in the cron tick (no Queues, no Service Bindings)
+- Incident management: independent connectivity + SSL incidents
+- Slack + Webhook notifications, with queue-based retry
+- D1 storage (state, executions, metric_series, uptime aggregates)
+- Status pages: public (no auth) + private (Cloudflare Access), single Worker, fail-closed
+- Edge caching of public responses via the Cache API
 
 ### Phase 2
-- Maintenance Windows
-- Tags
-- Monitor Groups
-- Monitor Dependencies
+- Internal OpenMetrics scraping via Cloudflare Tunnel (blackbox_exporter etc.)
+- Telegram + Email notification channels
+- Heartbeat (push) monitoring with secret tokens (see ROADMAP.md)
+- Separate cron expressions for rollup/cleanup (see ROADMAP.md)
+- Maintenance Windows, Tags, Monitor Groups, Monitor Dependencies
 - Status page enhancements (component groups, uptime charts, subscriptions, SLA reporting)
 - Multi-region probing
-- Migrate `metric_series` to Analytics Engine when monitor count nears the D1 write ceiling (~30 at 60s) — frees ~half of D1 writes, ~doubles capacity to ~60 monitors
-- Adopt Queues for durable fan-out and backpressure once monitor volume justifies the per-message operation cost
+- Migrate `metric_series` to Analytics Engine when monitor count nears the D1 write ceiling (~30 at 60s)
 
 ### Deferred
 - User accounts
@@ -745,20 +678,18 @@ The import step is idempotent and runs on every push to main via CI/CD.
 
 ## Design Principles
 
-- External probing runs natively in Workers — no external probe agents.
-- Internal services are reached exclusively via Cloudflare Tunnel.
+- External probing runs natively in the Worker — no external probe agents.
 - TCP connect is the reachability primitive; ICMP is not required.
-- OpenMetrics is the integration format for internal exporters.
-- Alert Evaluator works with operational state (D1), not with metrics history.
-- All data lives in D1: operational state, execution history (`monitor_executions`), and time-series (`metric_series`). No raw exporter metrics are persisted.
-- The hot path uses Service Bindings, not Queues — Queues do not fit the Free Plan and are a paid-plan upgrade.
-- Writes are minimised: `monitor_state` + one `metric_series` row per check; `monitor_executions` only on status change.
+- Alert evaluation works with operational state + the open-incident snapshot (D1), not with metrics history.
+- Incidents are tracked independently per metric class (connectivity vs `ssl_expiry`); the `incidents` table is the source of truth.
+- All data lives in D1: operational state, execution history (`monitor_executions`), time-series (`metric_series`), and uptime aggregates.
+- The probing hot path runs inline in the cron tick. Queues are used only for notifications (low volume); no Service Bindings, no second Worker.
+- Writes are minimised: `monitor_state` + one `uptime_hourly` upsert per check; `metric_series` only when actionable; `monitor_executions` only on status change.
 - The MVP must run entirely within Cloudflare Free Plan limits.
-- Additional Cloudflare services should only be introduced when they solve a demonstrated scaling problem.
+- Additional Cloudflare services are introduced only for a demonstrated scaling problem.
 - Alerting is incident-based, not check-based. Severity and thresholds are defined in `alert_rules`.
-- Notifications are asynchronous. Delivery state is tracked in `notification_deliveries`.
+- Notifications are asynchronous via a queue; delivery state is tracked in `notification_deliveries`; failed deliveries retry up to `max_retries`.
 - Notification routing: per-monitor channels take precedence; default channels are the fallback.
-- Invocation payload carries `execution_id` from scheduling through to storage.
-- Configuration is defined in YAML (version-controlled) and imported into D1 via CI/CD. Workers never read YAML.
-- Secrets live only in Cloudflare Secrets. D1 stores the secret *name*; Workers resolve the value from their environment at runtime. Secrets never touch `config.yaml` or D1.
-- Status pages are read-only views over the same data; one Worker routes by hostname. Monitor `visibility` is enforced in Worker code, not only by Cloudflare Access — the public page can never expose private monitors.
+- Configuration is defined in YAML (version-controlled) and imported into D1 via CI/CD. The Worker never reads YAML.
+- Secrets are referenced as `${VAR}` placeholders in config/D1 and resolved from the Worker's environment at send time — credentials never appear as literals in `config.yaml` or D1.
+- Status pages are read-only views over the same data; one Worker routes by **path** (`/public`, `/private`). Visibility is **fail-closed**: private data requires a valid session, enforced in Worker code independently of Cloudflare Access.

@@ -30,7 +30,7 @@
 	],
 	"queues": {
 		"producers": [{ "queue": "heartbeatflare-notifications", "binding": "NOTIFICATION_QUEUE" }],
-		"consumers": [{ "queue": "heartbeatflare-notifications", "max_batch_size": 10, "max_batch_timeout": 5 }]
+		"consumers": [{ "queue": "heartbeatflare-notifications", "max_batch_size": 10, "max_batch_timeout": 5, "max_retries": 5 }]
 	}
 	/**
 	 * Smart Placement

@@ -1,6 +1,6 @@
-import { evaluateAlerts, storeResult } from './alerts';
+import { CONNECTIVITY_CLASS, evaluateAlerts, storeResult } from './alerts';
 import { dnsCheck, httpCheck, sslProbe, tcpCheck } from './probes';
-import type { AlertRuleDbRow, MonitorRow } from './types';
+import type { ActiveIncident, ActiveIncidentRow, AlertRuleDbRow, MonitorRow } from './types';
 
 const PER_UNIT_MS = 20_000;
 const MAX_CONCURRENT_CHECKS = 5;
@@ -27,7 +27,8 @@ async function runExternalCheck(
 	monitor: MonitorRow & { mode: string; last_success_at: string | null },
 	env: Env,
 	now: string,
-	rules: AlertRuleDbRow[] | undefined,
+	rules: AlertRuleDbRow[],
+	activeByClass: Map<string, ActiveIncident>,
 ): Promise<void> {
 	const executionId = crypto.randomUUID();
 	let sslHostname: string | null = null;
@@ -51,15 +52,15 @@ async function runExternalCheck(
 		result.ssl_issuer = sslInfo.issuer;
 	}
 	const { newFailures, newSuccesses } = await storeResult(env, monitor, result, executionId, now);
-	await evaluateAlerts(env, monitor, result, newFailures, newSuccesses, now, rules);
+	await evaluateAlerts(env, monitor, result, newFailures, newSuccesses, now, rules, activeByClass);
 }
 
 export async function handleScheduled(env: Env): Promise<void> {
 	const now = new Date().toISOString();
 	const t0 = Date.now();
 
-	// Single query for all monitors + preload all alert rules — avoids N+2 DB round-trips per cron run
-	const [{ results: allMonitors }, { results: allRules }] = await Promise.all([
+	// Single query for all monitors + preload all alert rules + open incidents — avoids N+2 DB round-trips per cron run
+	const [{ results: allMonitors }, { results: allRules }, { results: openIncidents }] = await Promise.all([
 		env.DB.prepare(
 			`SELECT m.id, m.name, m.type, m.mode, m.scrape_url, m.interval_seconds,
 			        COALESCE(m.ssl_check, 1) AS ssl_check,
@@ -77,6 +78,13 @@ export async function handleScheduled(env: Env): Promise<void> {
 			        failure_count, recovery_count, cooldown_seconds, enabled
 			 FROM alert_rules WHERE enabled = 1 ORDER BY monitor_id, failure_count ASC`,
 		).all<AlertRuleDbRow>(),
+		env.DB.prepare(
+			`SELECT i.monitor_id, COALESCE(ar.metric_name, '${CONNECTIVITY_CLASS}') AS class,
+			        i.id AS incident_id, i.severity
+			 FROM incidents i
+			 LEFT JOIN alert_rules ar ON ar.id = i.alert_rule_id
+			 WHERE i.status = 'open'`,
+		).all<ActiveIncidentRow>(),
 	]);
 
 	const rulesByMonitor = new Map<string, AlertRuleDbRow[]>();
@@ -84,6 +92,17 @@ export async function handleScheduled(env: Env): Promise<void> {
 		const list = rulesByMonitor.get(r.monitor_id) ?? [];
 		list.push(r);
 		rulesByMonitor.set(r.monitor_id, list);
+	}
+
+	// monitor_id → (metric class → open incident). Source of truth for incident gating this tick.
+	const activeByMonitor = new Map<string, Map<string, ActiveIncident>>();
+	for (const inc of openIncidents) {
+		let byClass = activeByMonitor.get(inc.monitor_id);
+		if (!byClass) {
+			byClass = new Map();
+			activeByMonitor.set(inc.monitor_id, byClass);
+		}
+		byClass.set(inc.class, { id: inc.incident_id, severity: inc.severity });
 	}
 
 	const dueExternal = allMonitors.filter(
@@ -94,17 +113,14 @@ export async function handleScheduled(env: Env): Promise<void> {
 				new Date(m.last_check_at).getTime() + m.interval_seconds * 1000 <= Date.now()),
 	);
 
-	const staleHeartbeats = allMonitors.filter(
-		(m) =>
-			m.type === 'heartbeat' &&
-			(!m.last_success_at ||
-				new Date(m.last_success_at).getTime() + m.interval_seconds * 1000 <= Date.now()),
-	);
+	// Oldest-checked first so that, when more than MAX_CHECKS_PER_RUN are due, no monitor starves.
+	// last_check_at is ISO 8601 (lexicographically ordered); never-checked (null → '') sort first.
+	dueExternal.sort((a, b) => (a.last_check_at ?? '').localeCompare(b.last_check_at ?? ''));
 
 	await runWithLimit(
 		dueExternal.slice(0, MAX_CHECKS_PER_RUN).map((monitor) => () =>
 			Promise.race([
-				runExternalCheck(monitor, env, now, rulesByMonitor.get(monitor.id)),
+				runExternalCheck(monitor, env, now, rulesByMonitor.get(monitor.id) ?? [], activeByMonitor.get(monitor.id) ?? new Map()),
 				wait(PER_UNIT_MS).then(() => Promise.reject(new Error(`timed out after ${PER_UNIT_MS / 1000}s`))),
 			]).catch((err: unknown) =>
 				console.error(`[scheduler] ${monitor.id}: ${err instanceof Error ? err.message : String(err)}`),
@@ -113,23 +129,7 @@ export async function handleScheduled(env: Env): Promise<void> {
 		MAX_CONCURRENT_CHECKS,
 	);
 
-	await runWithLimit(
-		staleHeartbeats.slice(0, MAX_CHECKS_PER_RUN).map((monitor) => () =>
-			Promise.race([
-				(async () => {
-					const result = { status: 'down' as const, latency_ms: 0, error: 'Heartbeat missed' };
-					const { newFailures, newSuccesses } = await storeResult(env, monitor, result, crypto.randomUUID(), now);
-					await evaluateAlerts(env, monitor, result, newFailures, newSuccesses, now, rulesByMonitor.get(monitor.id));
-				})(),
-				wait(PER_UNIT_MS).then(() => Promise.reject(new Error(`timed out after ${PER_UNIT_MS / 1000}s`))),
-			]).catch((err: unknown) =>
-				console.error(`[scheduler] ${monitor.id}: ${err instanceof Error ? err.message : String(err)}`),
-			),
-		),
-		MAX_CONCURRENT_CHECKS,
-	);
-
-	console.log(`[scheduler] done in ${Date.now() - t0}ms — ${dueExternal.length} checks, ${staleHeartbeats.length} stale heartbeats`);
+	console.log(`[scheduler] done in ${Date.now() - t0}ms — ${dueExternal.length} checks`);
 
 	// Hourly: recompute uptime_daily for today and yesterday from uptime_hourly ground truth
 	if (new Date().getUTCMinutes() === 0) {
@@ -155,10 +155,15 @@ export async function handleScheduled(env: Env): Promise<void> {
 		).run();
 	}
 
-	// Weekly cleanup: keep metric_series 7 days, uptime_hourly 48 hours
-	const minuteOfWeek = Math.floor(Date.now() / 60_000) % (7 * 24 * 60);
-	if (minuteOfWeek === 0) {
+	// Daily cleanup at ~04:30 UTC. notification_deliveries are removed via ON DELETE CASCADE
+	// when their incident is purged, so they need no explicit delete here.
+	const dNow = new Date();
+	if (dNow.getUTCHours() === 4 && dNow.getUTCMinutes() === 30) {
 		await env.DB.batch([
+			// debug-only execution log, not read by the UI
+			env.DB.prepare(`DELETE FROM monitor_executions WHERE started_at < datetime('now', '-48 hours')`),
+			// resolved incidents kept 120 days: the status page colours bars from incidents up to 90 days back
+			env.DB.prepare(`DELETE FROM incidents WHERE status = 'resolved' AND resolved_at < datetime('now', '-120 days')`),
 			env.DB.prepare(`DELETE FROM metric_series WHERE recorded_at < datetime('now', '-7 days')`),
 			env.DB.prepare(`DELETE FROM uptime_hourly WHERE hour < strftime('%Y-%m-%dT%H', datetime('now', '-48 hours'))`),
 		]);
