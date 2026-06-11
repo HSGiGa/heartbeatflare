@@ -88,11 +88,25 @@ async function getVerifiedPayload(jwt: string, authConfig: ResolvedAuthConfig): 
 	}
 }
 
+// Cloudflare Access injects the JWT as a header only on requests that go through an
+// Access-protected route (here: /private). Client-side fetches to /api/* are NOT under
+// that route, so the header is absent — but the browser still holds the same JWT in the
+// CF_Authorization cookie set at login and sends it same-origin. Fall back to that cookie
+// so authenticated API calls (e.g. the History tab) see the private scope too. The token is
+// fully verified by getVerifiedPayload regardless of where it came from.
+function readAccessJwt(request: Request): string | null {
+	const header = request.headers.get('Cf-Access-Jwt-Assertion');
+	if (header) return header;
+	const cookie = request.headers.get('Cookie');
+	const m = cookie?.match(/(?:^|;\s*)CF_Authorization=([^;]+)/);
+	return m ? m[1] : null;
+}
+
 export async function getAuth(request: Request, env: Env): Promise<{ session: Session | null; authEnabled: boolean }> {
 	const authConfig = await resolveAuthConfig(env);
 	if (!authConfig) return { session: null, authEnabled: false };
 
-	const jwt = request.headers.get('Cf-Access-Jwt-Assertion');
+	const jwt = readAccessJwt(request);
 	if (!jwt) return { session: null, authEnabled: true };
 
 	const session = await getVerifiedPayload(jwt, authConfig);
