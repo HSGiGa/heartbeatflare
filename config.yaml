@@ -27,9 +27,6 @@ notification_channels:
     url: ${MATTERMOST_WEBHOOK_URL}
     channel: "#alerts"
     is_default: true
-  - name: Webhook
-    type: webhook
-    url: https://example.com/${PAGERDUTY_API_KEY}/alerts
 
 monitors:
   - name: Google

@@ -5,8 +5,9 @@
 	"scripts": {
 		"deploy": "wrangler deploy",
 		"deploy:access": "tsx scripts/deploy-access.ts",
-		"deploy:prod": "npm run test && npm run migration:lint && npm run provision && npm run d1:migrate:prod && npm run deploy:access && npm run config:import && wrangler deploy",
+		"deploy:prod": "npm run test && npm run migration:lint && npm run provision && npm run d1:migrate:prod && npm run deploy:access && npm run config:import && wrangler deploy && npm run secrets:sync",
 		"provision": "tsx scripts/provision.ts",
+		"secrets:sync": "tsx scripts/sync-secrets.ts",
 		"dev": "wrangler dev",
 		"start": "wrangler dev",
 		"test": "vitest",

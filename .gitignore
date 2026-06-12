@@ -23,3 +23,9 @@ npm-debug.log*
 .DS_Store
 Thumbs.db
 statuspage-events.webp
+
+# Stray binaries / installers
+*.exe
+
+# Temporary planning documents
+current-plan.md

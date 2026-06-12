@@ -30,6 +30,7 @@ deploy_cloudflare:
       echo "$output"
       url=$(echo "$output" | grep -oE 'https://[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev[^ ]*' | head -1)
       [ -z "$url" ] && echo "Could not parse Worker URL from deploy output" && exit 1
+      npm run secrets:sync
       sleep 5
       http_code=$(curl -sf -o /dev/null -w "%{http_code}" "$url")
       [ "$http_code" = "200" ] || { echo "Smoke test failed: HTTP $http_code from $url"; exit 1; }

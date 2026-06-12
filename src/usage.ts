@@ -1,3 +1,7 @@
+// Infrastructure-usage block for the private status page: D1 reads/writes/storage and Worker
+// invocations for today, fetched from the Cloudflare GraphQL API and cached 60s per isolate.
+// Limits are plan-dependent; plan detection needs Billing:Read on the token and falls back to
+// Free Plan limits without it. Errors keep serving the last (or fallback) snapshot.
 import type { RuntimeEnv, D1Usage, D1UsagePercent, UsageSnapshot, UsageGraphQLResponse, PlanInfo } from './types';
 
 export const workersFreeLimit = {

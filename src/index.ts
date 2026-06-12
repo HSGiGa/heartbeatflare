@@ -1,3 +1,7 @@
+// Worker entry point. One Worker, three entry points:
+//   fetch()     — status pages + JSON API (routes.ts)
+//   scheduled() — cron tick: probing, alerting, rollups, cleanup (scheduler.ts)
+//   queue()     — notification delivery consumer (queue.ts)
 import { handleQueue } from './queue';
 import { handleFetch } from './routes';
 import { handleScheduled } from './scheduler';

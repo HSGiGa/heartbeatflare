@@ -1,3 +1,7 @@
+// HTTP routing: status pages (/public, /private), JSON API (/api/status, /api/history) and
+// auth redirects. Visibility is fail-closed — private data requires a verified Access session,
+// enforced here in SQL WHERE clauses independently of the Cloudflare Access gate on /private.
+// Unauthenticated responses are edge-cached to absorb traffic spikes without touching D1.
 import { getAuth, handleLogout, resolveAuthConfig } from './auth';
 import { buildStatusPage } from './status-page';
 import type { AlertRuleDbRow, IncidentRow, LatencyRow, MonitorDbRow, RuntimeEnv, Session, UptimeDayRow } from './types';

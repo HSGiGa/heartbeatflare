@@ -1,3 +1,7 @@
+// Channel resolution and delivery. Per-monitor channel assignments take precedence; channels
+// marked is_default are the fallback. Channel configuration comes from D1 with ${VAR}
+// placeholders — the real secret (webhook URL etc.) is resolved from the Worker env at send
+// time, so credentials never land in config.yaml or D1.
 import type { NotificationChannelDbRow } from './types';
 
 export async function fetchNotificationChannels(env: Env, monitorId: string): Promise<NotificationChannelDbRow[]> {

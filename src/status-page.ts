@@ -1,3 +1,7 @@
+// Server-rendered status page: monitor cards with 90-day uptime bars, latency sparklines,
+// active incidents and (when authenticated) the usage block. Plain HTML built inline — no
+// build step, no assets binding. Reads only the uptime_daily/uptime_hourly aggregates and
+// incidents, never raw metric_series.
 import type { MonitorDbRow, UptimeDayRow, LatencyRow, IncidentRow, Session, UsageSnapshot } from './types';
 import { usageResetsIn, workersFreeLimit } from './usage';
 
@@ -91,6 +95,8 @@ export function buildStatusPage({
 	const activeByMonitor = new Map<string, IncidentRow>();
 	for (const inc of activeIncidents) activeByMonitor.set(inc.monitor_id, inc);
 
+	// Expand each incident onto every UTC day it spans ("monitorId:YYYY-MM-DD" keys), so the
+	// 90-day bars can colour a day by the incidents that touched it, not just uptime ratio.
 	const todayStr = new Date(nowMs).toISOString().slice(0, 10);
 	const incidentsByMonitorDay = new Map<string, IncidentRow[]>();
 	for (const inc of allIncidents) {
@@ -118,6 +124,8 @@ export function buildStatusPage({
 	for (const [key, list] of incidentsByMonitorDay.entries()) {
 		incMapObj[key] = list.map((inc) => ({ severity: inc.severity, started_at: inc.started_at, resolved_at: inc.resolved_at ?? null, reason: inc.reason ?? null }));
 	}
+	// Embedded into an inline <script> for tooltips — escape sequences that could break out of
+	// the script context (</script> via "<", and the JS line separators U+2028/U+2029).
 	const incMapJson = JSON.stringify(incMapObj)
 		.replace(/</g, '\\u003c')
 		.replace(new RegExp(String.fromCharCode(0x2028), 'g'), '\\u2028')
@@ -143,6 +151,8 @@ export function buildStatusPage({
 			const tip = avg !== undefined ? `${(avg * 100).toFixed(1)}% uptime` : 'No data';
 			const key = `${monitorId}:${day}`;
 			const dayIncs = incidentsByMonitorDay.get(key) ?? [];
+			// Colour precedence: no data → grey; any critical incident that day → red; any other
+			// incident → amber; otherwise by uptime ratio (<95% red, <99% amber, else green).
 			let color: string;
 			if (avg === undefined) {
 				color = '#d4d4d8';

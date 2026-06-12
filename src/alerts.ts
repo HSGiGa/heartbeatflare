@@ -1,3 +1,6 @@
+// Result store + alert evaluator. storeResult() persists each check within the D1 Free Plan
+// write budget (~2 writes/check steady-state); evaluateAlerts() turns results into incidents
+// and enqueues notifications.
 import type { MonitorRow, ProbeResult, AlertRuleDbRow, NotificationMessage, ActiveIncident } from './types';
 
 // Metric-class sentinel for connectivity rules (alert_rules.metric_name IS NULL).
@@ -15,6 +18,12 @@ const upsertHourlySql = `
 	                        ELSE (avg_latency_ms * latency_count + excluded.avg_latency_ms) / (latency_count + excluded.latency_count)
 	                   END`;
 
+/**
+ * Persists one check result in a single D1 batch, minimising writes (Free Plan: 100k/day):
+ * always 2 (monitor_state upsert + uptime_hourly upsert); metric_series only when actionable
+ * (failure, status transition, or first sample of the hour); monitor_executions only on
+ * status change or failure. Returns the updated consecutive counters for alert evaluation.
+ */
 export async function storeResult(
 	env: Env,
 	monitor: MonitorRow,

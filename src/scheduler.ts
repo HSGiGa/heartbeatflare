@@ -1,15 +1,23 @@
+// Cron tick (every minute): select due monitors, probe them with bounded concurrency,
+// store results and evaluate alerts. Also hosts the hourly uptime rollup and daily cleanup,
+// since the Free Plan allows few cron triggers per account.
 import { CONNECTIVITY_CLASS, evaluateAlerts, storeResult } from './alerts';
 import { dnsCheck, httpCheck, sslProbe, tcpCheck } from './probes';
 import type { ActiveIncident, ActiveIncidentRow, AlertRuleDbRow, MonitorRow } from './types';
 
+// Per-check hard timeout (probe timeouts are 10s; this is the outer safety net).
 const PER_UNIT_MS = 20_000;
 const MAX_CONCURRENT_CHECKS = 5;
+// Free Plan allows 50 subrequests per invocation; each check costs 1–2 (probe + optional SSL API).
+// Monitors beyond the cap roll over to the next tick via oldest-checked-first ordering.
 const MAX_CHECKS_PER_RUN = 15;
 
 function wait(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Runs tasks with at most `limit` in flight: starts tasks eagerly and, once the window is
+// full, awaits the next completion (whichever it is) before starting another.
 async function runWithLimit(tasks: Array<() => Promise<void>>, limit: number): Promise<void> {
 	const active = new Set<Promise<void>>();
 	for (const task of tasks) {

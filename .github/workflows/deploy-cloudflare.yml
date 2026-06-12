@@ -12,6 +12,9 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      # All repository secrets as JSON, so secrets:sync can look up runtime secrets
+      # (one per ${VAR} in config.yaml) without listing each one here.
+      SECRETS_CONTEXT: ${{ toJSON(secrets) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -51,6 +54,9 @@ jobs:
           url=$(echo "$output" | grep -oE 'https://[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev[^ ]*' | head -1)
           [ -z "$url" ] && echo "Could not parse Worker URL from deploy output" && exit 1
           echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Sync Worker secrets
+        run: npm run secrets:sync
 
       - name: Smoke test
         run: |

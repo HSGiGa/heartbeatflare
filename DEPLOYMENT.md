@@ -40,6 +40,29 @@ CLOUDFLARE_API_TOKEN
 CLOUDFLARE_ACCOUNT_ID
 ```
 
+## Runtime Worker Secrets
+
+The variables above are deploy-time only and never reach the Worker. Values the Worker needs at request time — the optional `CLOUDFLARE_GRAPHQL_API_TOKEN` for the usage block, and one variable per `${VAR}` placeholder used in `config.yaml` notification channels (e.g. `MATTERMOST_WEBHOOK_URL`) — are read from `.env` in local dev and tests. For production, both paths work and can be mixed:
+
+**Automatic (recommended):** add each secret to GitHub repository secrets / GitLab CI variables under the same name. The `secrets:sync` step (`scripts/sync-secrets.ts`) runs after every deploy: it discovers required names from `${VAR}` references in `config.yaml` and pushes them all to Cloudflare Worker secrets in one bulk call. A referenced name absent from CI is skipped (value kept) when the secret already exists on the Worker — so manually uploaded secrets don't have to be duplicated into CI. When a referenced secret exists in neither place, the step prints a warning and the deploy proceeds; the affected notification channel stays broken until the secret is added. On GitHub the workflow passes all repository secrets to the step via `SECRETS_CONTEXT: ${{ toJSON(secrets) }}` (repository secrets are not individually enumerable from a step); on GitLab CI variables are plain env vars and need no extra wiring. `npm run deploy:prod` runs the same sync using your local `.env`. Optional secrets (`CLOUDFLARE_GRAPHQL_API_TOKEN`) produce a warning instead of a failure when absent.
+
+**Manual:** upload each secret once by hand; it persists across deployments and the sync step simply overwrites it with the same value on the next CI run:
+
+```sh
+npx wrangler secret put CLOUDFLARE_GRAPHQL_API_TOKEN
+npx wrangler secret put MATTERMOST_WEBHOOK_URL
+```
+
+Or upload a whole file at once with `npx wrangler secret bulk <file>` (JSON or KEY=VALUE format). Don't point it at the full `.env` — that would also push the deploy-time credentials (`CLOUDFLARE_API_TOKEN` etc.) into the Worker, which it doesn't need; pass a file containing only the runtime secrets.
+
+Preview the required/optional secret list without credentials:
+
+```sh
+npm run secrets:sync -- --dry-run
+```
+
+See the section comments in `.env.example` for the full list and required token scopes.
+
 ## Deployment Inputs (`config.yaml`)
 
 The `deploy:` section is the single place to configure deployment:
@@ -86,7 +109,7 @@ Run the combined production flow:
 npm run deploy:prod
 ```
 
-It runs: tests → migration lint → provision → D1 migrations → Access app → config import → `wrangler deploy`. Individual steps are available as separate scripts (`npm run provision`, `npm run d1:migrate:prod`, `npm run deploy:access`, `npm run config:import`, `npm run deploy`).
+It runs: tests → migration lint → provision → D1 migrations → Access app → config import → `wrangler deploy` → secrets sync. Individual steps are available as separate scripts (`npm run provision`, `npm run d1:migrate:prod`, `npm run deploy:access`, `npm run config:import`, `npm run deploy`, `npm run secrets:sync`).
 
 ## CI Deployment
 
@@ -111,6 +134,7 @@ npm run d1:migrate:prod
 npm run deploy:access
 npm run config:import
 npm run deploy
+npm run secrets:sync
 ```
 
 followed by a smoke test of the deployed Worker.

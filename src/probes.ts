@@ -1,3 +1,7 @@
+// Probe implementations: HTTP (fetch), TCP (cloudflare:sockets), DNS (DoH), and SSL cert
+// expiry. The Workers sandbox cannot introspect TLS certificates directly, so expiry comes
+// from external APIs (ssl-checker.io, fallback crt.sh) as a best-effort signal — the
+// authoritative up/down signal is always the HTTP/TCP check itself.
 import { connect } from 'cloudflare:sockets';
 import type { ProbeResult } from './types';
 
@@ -67,6 +71,8 @@ async function crtSh(hostname: string): Promise<{ daysLeft: number; notAfter: st
 		}
 		const certs = (await res.json()) as Array<{ not_after: string; issuer_name: string; common_name: string }>;
 		if (!Array.isArray(certs) || certs.length === 0) return null;
+		// CT logs list every cert ever issued for the host; assume the one expiring last is the
+		// one currently served. Heuristic — a freshly renewed cert not yet deployed skews optimistic.
 		const now = Date.now();
 		const best = certs
 			.filter((c) => new Date(c.not_after + 'Z').getTime() > now)

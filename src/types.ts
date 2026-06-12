@@ -1,3 +1,5 @@
+// Shared shapes: D1 row types (suffix DbRow mirrors column names), probe results, queue
+// messages and view models. No runtime code.
 export type MonitorDbRow = {
 	id: string;
 	name: string;

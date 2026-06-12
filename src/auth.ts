@@ -1,5 +1,10 @@
+// Cloudflare Access session verification. The Access JWT (header or CF_Authorization cookie)
+// is verified locally: aud + expiry checks, then RSA signature against the team's published
+// JWKs (cached 1h). Any verification failure yields session = null — callers treat that as
+// public-only access (fail-closed).
 import type { AuthConfigDbRow, ResolvedAuthConfig, Session } from './types';
 
+// auth_config lives in D1 (imported from config.yaml); cached in the isolate for 5 minutes.
 let cachedAuthConfig: ResolvedAuthConfig | null = null;
 let cachedAuthConfigUntil = 0;
 const AUTH_CONFIG_TTL_MS = 300_000;
