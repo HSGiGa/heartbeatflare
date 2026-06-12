@@ -1,14 +1,16 @@
 import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
+import { readWranglerConfig, requireEnv } from './lib/deploy-config';
 
-const DB_ID = 'fe16be42-154e-47ed-bd63-a54cf5d5cd53';
 const API_BASE = 'https://api.cloudflare.com/client/v4';
 
-const token = process.env.CLOUDFLARE_API_TOKEN;
-const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+const token = requireEnv('CLOUDFLARE_API_TOKEN');
+const accountId = requireEnv('CLOUDFLARE_ACCOUNT_ID');
 
-if (!token || !accountId) {
-	console.error('CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are required');
+// provision is the single writer of this field and runs earlier in every pipeline
+const DB_ID = readWranglerConfig().d1_databases?.find((d) => d.binding === 'DB')?.database_id;
+if (!DB_ID || !/^[0-9a-f-]{36}$/.test(DB_ID)) {
+	console.error('No valid database_id for binding "DB" in wrangler.jsonc — run `npm run provision` first');
 	process.exit(1);
 }
 
@@ -180,7 +182,16 @@ async function main() {
          ssl_check = excluded.ssl_check,
          enabled = 1,
          updated_at = datetime('now')`,
-			[id, monitor.name, monitor.type, monitor.mode, monitor.visibility ?? 'private', target, intervalSeconds, (monitor.ssl ?? true) ? 1 : 0],
+			[
+				id,
+				monitor.name,
+				monitor.type,
+				monitor.mode,
+				monitor.visibility ?? 'private',
+				target,
+				intervalSeconds,
+				(monitor.ssl ?? true) ? 1 : 0,
+			],
 		);
 
 		const alerts = monitor.alerts ?? [];
@@ -235,7 +246,7 @@ async function main() {
 	for (const channel of config.notification_channels ?? []) {
 		const id = slug(channel.name);
 		console.log(`Importing channel: ${channel.name} (${id})`);
-		const { name: _n, type: _t, is_default: _d, ...rest } = channel as Record<string, unknown>;
+		const { name: _n, type: _t, is_default: _d, ...rest } = channel as unknown as Record<string, unknown>;
 		const configuration = JSON.stringify(rest);
 		// Upsert: monitor_notification_channels and notification_deliveries cascade off this row,
 		// so a REPLACE delete would wipe per-monitor assignments and delivery history.

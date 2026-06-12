@@ -1,9 +1,7 @@
 import Cloudflare from 'cloudflare';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { parseDocument } from 'yaml';
-
-const ACCOUNT_ID = '0a8f78933036db3025075e950a307acd';
-const TEAM_DOMAIN = 'modem-by';
+import { requireEnv, resolveDeploy, type DeployConfig } from './lib/deploy-config';
 
 interface AccessPolicyConfig {
 	name: string;
@@ -12,30 +10,35 @@ interface AccessPolicyConfig {
 
 interface AccessConfig {
 	app_name: string;
-	domain: string;
+	domain?: string;
 	session_duration?: string;
 	identity_provider: string;
 	policy: AccessPolicyConfig;
 }
 
-const token = process.env.CLOUDFLARE_API_TOKEN;
-if (!token) {
-	console.error('CLOUDFLARE_API_TOKEN is required');
-	process.exit(1);
-}
+const token = requireEnv('CLOUDFLARE_API_TOKEN');
+const ACCOUNT_ID = requireEnv('CLOUDFLARE_ACCOUNT_ID');
 
 const client = new Cloudflare({ apiToken: token });
 
+async function findTeamDomain(): Promise<string> {
+	const org = await client.zeroTrust.organizations.list({ account_id: ACCOUNT_ID });
+	if (!org?.auth_domain) {
+		throw new Error('Zero Trust organization not found. Set up Cloudflare Zero Trust for this account first.');
+	}
+	return org.auth_domain.replace(/\.cloudflareaccess\.com$/, '');
+}
+
 async function findIdP(name: string): Promise<string> {
 	for await (const idp of client.zeroTrust.identityProviders.list({ account_id: ACCOUNT_ID })) {
-		if (idp.name === name) return idp.id;
+		if (idp.name === name && idp.id) return idp.id;
 	}
 	throw new Error(`Identity provider "${name}" not found. Add it in Cloudflare Zero Trust → Settings → Authentication first.`);
 }
 
 async function findOrCreatePolicy(cfg: AccessPolicyConfig): Promise<string> {
 	for await (const p of client.zeroTrust.access.policies.list({ account_id: ACCOUNT_ID })) {
-		if (p.name === cfg.name) {
+		if (p.name === cfg.name && p.id) {
 			console.log(`Updating policy: ${cfg.name} (${p.id})`);
 			await client.zeroTrust.access.policies.update(p.id, {
 				account_id: ACCOUNT_ID,
@@ -56,12 +59,12 @@ async function findOrCreatePolicy(cfg: AccessPolicyConfig): Promise<string> {
 	return created.id!;
 }
 
-async function findOrCreateApp(cfg: AccessConfig, idpId: string, policyId: string): Promise<string> {
+async function findOrCreateApp(cfg: AccessConfig, domain: string, idpId: string, policyId: string): Promise<string> {
 	const appParams = {
 		account_id: ACCOUNT_ID,
 		type: 'self_hosted' as const,
 		name: cfg.app_name,
-		domain: cfg.domain,
+		domain,
 		session_duration: cfg.session_duration ?? '24h',
 		allowed_idps: [idpId],
 		auto_redirect_to_identity: true,
@@ -86,11 +89,17 @@ async function findOrCreateApp(cfg: AccessConfig, idpId: string, policyId: strin
 async function main() {
 	const raw = readFileSync('config.yaml', 'utf-8');
 	const doc = parseDocument(raw);
-	const config = doc.toJS() as { access: AccessConfig };
+	const config = doc.toJS() as { deploy?: DeployConfig; access: AccessConfig };
 
 	if (!config.access) throw new Error('Missing "access:" section in config.yaml');
 
 	const { access } = config;
+	const deploy = resolveDeploy(config);
+	const accessDomain = access.domain ?? (deploy.domain ? `${deploy.domain}/private` : undefined);
+	if (!accessDomain) throw new Error('Set access.domain or deploy.domain in config.yaml');
+
+	const teamDomain = await findTeamDomain();
+	console.log(`Team domain: ${teamDomain}`);
 
 	const idpId = await findIdP(access.identity_provider);
 	console.log(`IdP: ${access.identity_provider} (${idpId})`);
@@ -98,11 +107,11 @@ async function main() {
 	const policyId = await findOrCreatePolicy(access.policy);
 	console.log(`Policy: ${access.policy.name} (${policyId})`);
 
-	const aud = await findOrCreateApp(access, idpId, policyId);
+	const aud = await findOrCreateApp(access, accessDomain, idpId, policyId);
 	console.log(`Application AUD: ${aud}`);
 
 	doc.setIn(['auth', 'provider'], 'cloudflare_access');
-	doc.setIn(['auth', 'team_domain'], TEAM_DOMAIN);
+	doc.setIn(['auth', 'team_domain'], teamDomain);
 	doc.setIn(['auth', 'aud'], aud);
 	writeFileSync('config.yaml', doc.toString());
 	console.log('config.yaml updated with auth.aud — run config:import to push to D1');

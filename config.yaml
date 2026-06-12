@@ -1,5 +1,11 @@
 # yaml-language-server: $schema=./config.schema.json
 
+deploy:
+  name: heartbeatflare # worker name; D1/queue names derive from it unless overridden
+  domain: status.modem.by # custom domain route; omit to serve on workers.dev only
+  # database_name: heartbeatflare-prod-db   # default: ${name}-prod-db
+  # queue_name: heartbeatflare-notifications # default: ${name}-notifications
+
 auth:
   provider: cloudflare_access
   team_domain: modem-by
@@ -7,7 +13,7 @@ auth:
 
 access:
   app_name: heartbeatflare
-  domain: status.modem.by/private
+  # domain defaults to ${deploy.domain}/private
   session_duration: 24h
   identity_provider: "login.modem.by"
   policy:

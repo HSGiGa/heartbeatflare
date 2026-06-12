@@ -21,7 +21,9 @@ deploy_cloudflare:
   script:
     - npm run test
     - npm run migration:lint
+    - npm run provision
     - npm run d1:migrate:prod
+    - npm run deploy:access
     - npm run config:import
     - |
       output=$(npm run deploy 2>&1)

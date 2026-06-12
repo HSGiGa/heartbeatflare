@@ -31,8 +31,14 @@ jobs:
       - name: Lint migrations
         run: npm run migration:lint
 
+      - name: Provision Cloudflare resources
+        run: npm run provision
+
       - name: Apply D1 migrations
         run: npm run d1:migrate:prod
+
+      - name: Deploy Access application
+        run: npm run deploy:access
 
       - name: Import config
         run: npm run config:import

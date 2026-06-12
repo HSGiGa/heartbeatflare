@@ -92,7 +92,7 @@ The current handler is request-agnostic. To add routing:
 
 ### Writing D1 Migrations
 
-- Migrations live in `migrations/` and run via `npx wrangler d1 migrations apply heartbeatflare-prod-db --remote`
+- Migrations live in `migrations/` and run via `npx wrangler d1 migrations apply DB --remote` (binding name resolves via `wrangler.jsonc`)
 - Each migration file runs exactly once; there is no rollback — design schemas to be additive
 - **Always include a backfill when adding a derived/aggregate table.** If the new table is computed from existing data, add `INSERT INTO … SELECT …` in the same migration file so existing rows are populated immediately and no historical data is silently lost:
 
