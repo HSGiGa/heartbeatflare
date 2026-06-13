@@ -18,11 +18,13 @@
 	"workers_dev": true,
 	"routes": [{ "pattern": "", "custom_domain": true }], // generated: deploy.domain (omitted when domain is unset)
 	"observability": {
-		"enabled": true
+		"enabled": true,
+		"head_sampling_rate": 1 // log 100% of invocations; lower only if nearing the Free Logs limit
 	},
 	"vars": {
 		"CLOUDFLARE_ACCOUNT_ID": "", // generated: $CLOUDFLARE_ACCOUNT_ID env var
-		"D1_DATABASE_ID": "" // generated: deploy.database_id
+		"D1_DATABASE_ID": "", // generated: deploy.database_id
+		"LOG_LEVEL": "info" // runtime log level: info (default) | debug; debug adds successful checks + probe timings
 	},
 	"triggers": {
 		"crons": ["* * * * *"]

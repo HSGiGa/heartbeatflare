@@ -23,7 +23,7 @@ interface WranglerTemplate {
 	compatibility_flags: string[];
 	workers_dev: boolean;
 	routes?: { pattern: string; custom_domain: boolean }[];
-	observability: { enabled: boolean };
+	observability: { enabled: boolean; head_sampling_rate?: number };
 	vars: Record<string, string>;
 	triggers: { crons: string[] };
 	d1_databases: { binding: string; database_name: string; database_id: string; migrations_dir: string }[];
@@ -47,7 +47,8 @@ function main() {
 	const wrangler = parseJsonc(readFileSync('wrangler.template.jsonc', 'utf-8')) as WranglerTemplate;
 
 	wrangler.name = name;
-	wrangler.vars = { CLOUDFLARE_ACCOUNT_ID: accountId, D1_DATABASE_ID: databaseId };
+	// Preserve template vars (e.g. LOG_LEVEL) and overwrite only the generated ones.
+	wrangler.vars = { ...wrangler.vars, CLOUDFLARE_ACCOUNT_ID: accountId, D1_DATABASE_ID: databaseId };
 	wrangler.d1_databases[0].database_name = databaseName;
 	wrangler.d1_databases[0].database_id = databaseId;
 	wrangler.queues.producers[0].queue = queueName;

@@ -42,9 +42,20 @@ agents, no build step. Live example: `status.modem.by`.
 - `npm run provision` / `deploy:access` / `secrets:sync` — create D1+queue, configure Cloudflare
   Access, sync secrets
 
-### Debugging
+### Debugging & Logging
 - `npm run dev`, then hit `/public`, `/private`, `/api/status`, `/api/history`
-- `console.log()` output appears in the terminal and the Cloudflare dashboard (observability is on)
+- **Runtime logs go to Cloudflare Workers Logs** (Workers & Pages → heartbeatflare → Observability),
+  not D1 — runtime logging must never burn the D1 write budget. View locally in the `npm run dev`
+  terminal.
+- Use the structured logger in `src/log.ts` — `log(level, event, fields)` emits one JSON line;
+  call `log`, not `console.*`. Levels: `debug < info < warn < error`, gated by the `LOG_LEVEL` var
+  (default `info`; set `LOG_LEVEL=debug` in `wrangler.template.jsonc` to add successful checks +
+  probe timings). `configureLogging(env)` runs at each entry point in `src/index.ts`.
+- **Always logged** (info/warn/error): `scheduler.tick`, `check.failed`/`check.error`,
+  `incident.open`/`incident.resolved`/`incident.escalation`, `notification.delivery_failed`/
+  `notification.retry`, `auth.error`. **Debug only**: `check.ok`. **Never log** secrets or full
+  webhook URLs, and don't log per-request public traffic. Long-term audit stays in D1 (incidents,
+  notification_deliveries) only.
 
 ## Architecture & Code Structure
 

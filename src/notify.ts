@@ -2,6 +2,7 @@
 // marked is_default are the fallback. Channel configuration comes from D1 with ${VAR}
 // placeholders — the real secret (webhook URL etc.) is resolved from the Worker env at send
 // time, so credentials never land in config.yaml or D1.
+import { log } from './log';
 import type { NotificationChannelDbRow } from './types';
 
 export async function fetchNotificationChannels(env: Env, monitorId: string): Promise<NotificationChannelDbRow[]> {
@@ -56,5 +57,9 @@ export async function sendToChannel(
 		`INSERT INTO notification_deliveries (id, incident_id, channel_id, status, attempt_count, last_attempt_at, error)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 	).bind(crypto.randomUUID(), incidentId, channel.id, error ? 'failed' : 'sent', attemptCount, now, error).run();
+	if (error) {
+		// No url / headers / message body — only the channel id, type and error reason.
+		log('warn', 'notification.delivery_failed', { incidentId, channelId: channel.id, channelType: channel.type, attempt: attemptCount, error });
+	}
 	return error === null;
 }

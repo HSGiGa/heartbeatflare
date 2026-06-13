@@ -2,6 +2,7 @@
 // store results and evaluate alerts. Also hosts the hourly uptime rollup and daily cleanup,
 // since the Free Plan allows few cron triggers per account.
 import { CONNECTIVITY_CLASS, evaluateAlerts, storeResult } from './alerts';
+import { log } from './log';
 import { dnsCheck, httpCheck, sslProbe, tcpCheck } from './probes';
 import type { ActiveIncident, ActiveIncidentRow, AlertRuleDbRow, MonitorRow, NotificationMessage } from './types';
 
@@ -61,6 +62,12 @@ async function runExternalCheck(
 	}
 	const { newFailures, newSuccesses } = await storeResult(env, monitor, result, executionId, now);
 	await evaluateAlerts(env, monitor, result, newFailures, newSuccesses, now, rules, activeByClass);
+
+	if (result.status === 'down') {
+		log('warn', 'check.failed', { monitorId: monitor.id, type: monitor.type, error: result.error, latencyMs: result.latency_ms });
+	} else {
+		log('debug', 'check.ok', { monitorId: monitor.id, latencyMs: result.latency_ms, tcpConnectMs: result.tcp_connect_ms });
+	}
 }
 
 export async function handleScheduled(env: Env): Promise<void> {
@@ -150,13 +157,19 @@ export async function handleScheduled(env: Env): Promise<void> {
 				runExternalCheck(monitor, env, now, rulesByMonitor.get(monitor.id) ?? [], activeByMonitor.get(monitor.id) ?? new Map()),
 				wait(PER_UNIT_MS).then(() => Promise.reject(new Error(`timed out after ${PER_UNIT_MS / 1000}s`))),
 			]).catch((err: unknown) =>
-				console.error(`[scheduler] ${monitor.id}: ${err instanceof Error ? err.message : String(err)}`),
+				log('error', 'check.error', { monitorId: monitor.id, error: err instanceof Error ? err.message : String(err) }),
 			),
 		),
 		MAX_CONCURRENT_CHECKS,
 	);
 
-	console.log(`[scheduler] done in ${Date.now() - t0}ms — ${dueExternal.length} checks`);
+	log('info', 'scheduler.tick', {
+		durationMs: Date.now() - t0,
+		due: dueExternal.length,
+		checked: Math.min(dueExternal.length, MAX_CHECKS_PER_RUN),
+		maintenanceMonitors: maintenanceMonitorIds.size,
+		globalMaintenance,
+	});
 
 	// Escalation: re-notify for open incidents that haven't been notified within escalation_seconds
 	const { results: escalations } = await env.DB.prepare(
@@ -174,6 +187,7 @@ export async function handleScheduled(env: Env): Promise<void> {
 		if (underMaintenance(inc.monitor_id)) continue;
 		await env.DB.prepare(`UPDATE incidents SET last_notified_at = ? WHERE id = ?`).bind(now, inc.id).run();
 		const minutesOpen = Math.floor((new Date(now).getTime() - new Date(inc.started_at).getTime()) / 60_000);
+		log('info', 'incident.escalation', { incidentId: inc.id, monitorId: inc.monitor_id, minutesOpen });
 		await (env.NOTIFICATION_QUEUE as Queue<NotificationMessage>).send({
 			incidentId: inc.id,
 			monitorId: inc.monitor_id,

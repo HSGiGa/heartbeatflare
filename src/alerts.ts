@@ -1,6 +1,7 @@
 // Result store + alert evaluator. storeResult() persists each check within the D1 Free Plan
 // write budget (~2 writes/check steady-state); evaluateAlerts() turns results into incidents
 // and enqueues notifications.
+import { log } from './log';
 import type { MonitorRow, ProbeResult, AlertRuleDbRow, NotificationMessage, ActiveIncident } from './types';
 
 // Metric-class sentinel for connectivity rules (alert_rules.metric_name IS NULL).
@@ -139,6 +140,7 @@ export async function evaluateAlerts(
 				).bind(incidentId, monitor.id, rule.id, rule.severity, now, now, result.error ?? null),
 				env.DB.prepare(`UPDATE monitor_state SET active_incident_id = ? WHERE monitor_id = ?`).bind(incidentId, monitor.id),
 			]);
+			log('info', 'incident.open', { monitorId: monitor.id, incidentId, severity: rule.severity, class: CONNECTIVITY_CLASS });
 			await (env.NOTIFICATION_QUEUE as Queue<NotificationMessage>).send({
 				incidentId,
 				monitorId: monitor.id,
@@ -156,6 +158,7 @@ export async function evaluateAlerts(
 				env.DB.prepare(`UPDATE incidents SET status = 'resolved', resolved_at = ? WHERE id = ?`).bind(now, incidentId),
 				env.DB.prepare(`UPDATE monitor_state SET active_incident_id = NULL WHERE monitor_id = ?`).bind(monitor.id),
 			]);
+			log('info', 'incident.resolved', { monitorId: monitor.id, incidentId, class: CONNECTIVITY_CLASS });
 			await (env.NOTIFICATION_QUEUE as Queue<NotificationMessage>).send({
 				incidentId,
 				monitorId: monitor.id,
@@ -178,6 +181,7 @@ export async function evaluateAlerts(
 			const stillTriggered = sslRules.some((r) => result.ssl_days_left! < r.threshold);
 			if (!stillTriggered) {
 				await env.DB.prepare(`UPDATE incidents SET status = 'resolved', resolved_at = ? WHERE id = ?`).bind(now, sslInc.id).run();
+				log('info', 'incident.resolved', { monitorId: monitor.id, incidentId: sslInc.id, class: 'ssl_expiry' });
 				await (env.NOTIFICATION_QUEUE as Queue<NotificationMessage>).send({
 					incidentId: sslInc.id,
 					monitorId: monitor.id,
@@ -199,6 +203,7 @@ export async function evaluateAlerts(
 						`INSERT INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, reason)
 						 VALUES (?, ?, ?, 'open', ?, ?, ?)`,
 					).bind(incidentId, monitor.id, rule.id, rule.severity, now, reason).run();
+					log('info', 'incident.open', { monitorId: monitor.id, incidentId, severity: rule.severity, class: 'ssl_expiry' });
 					await (env.NOTIFICATION_QUEUE as Queue<NotificationMessage>).send({
 						incidentId,
 						monitorId: monitor.id,

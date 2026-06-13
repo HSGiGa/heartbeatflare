@@ -567,6 +567,29 @@ queue() consumer
         (Telegram/Email not implemented)
 ```
 
+## Observability & Logging
+
+Runtime logging goes to **Cloudflare Workers Logs** (`observability.enabled = true`,
+`head_sampling_rate = 1`), viewed under Workers & Pages → the Worker → Observability (not Cloudflare
+One Insights). Runtime logs are deliberately **not** written to D1 — that would burn the Free Plan
+write budget. D1 holds long-term audit only for domain events (`incidents`, `notification_deliveries`).
+
+All logs are structured single-line JSON via `src/log.ts` (`log(level, event, fields)`), gated by a
+`LOG_LEVEL` var (default `info`; `debug` adds successful checks and probe timings). Level ordering:
+`debug < info < warn < error`; `configureLogging(env)` sets the threshold once per invocation at each
+entry point.
+
+| When | Level | Events |
+|---|---|---|
+| Always | info | `scheduler.tick`, `incident.open`, `incident.resolved`, `incident.escalation` |
+| Always | warn | `check.failed`, `notification.delivery_failed`, `notification.retry` |
+| Always | error | `check.error`, `auth.error` |
+| Debug only | debug | `check.ok` (per successful check + probe timings) |
+
+**Never logged:** secrets or full webhook URLs (delivery-failure logs carry only channel id/type +
+error), and per-request public traffic. The Free Plan target is operational visibility, not long-term
+log retention; if logs approach the Free limit, lower `head_sampling_rate` or raise `LOG_LEVEL`.
+
 ## Cloudflare Free Plan Constraints
 
 The platform runs entirely within the Cloudflare Free Plan.

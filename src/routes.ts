@@ -3,6 +3,7 @@
 // enforced here in SQL WHERE clauses independently of the Cloudflare Access gate on /private.
 // Unauthenticated responses are edge-cached to absorb traffic spikes without touching D1.
 import { getAuth, handleLogout, resolveAuthConfig } from './auth';
+import { log } from './log';
 import { buildBadgeSvg } from './badge';
 import { buildAtomFeed } from './feed';
 import { buildStatusPage } from './status-page';
@@ -295,7 +296,7 @@ export async function handleFetch(request: Request, env: Env, ctx: ExecutionCont
 	try {
 		({ session, authEnabled } = await getAuth(request, env));
 	} catch (err) {
-		console.error('[auth] Auth resolution failed:', err);
+		log('error', 'auth.error', { error: err instanceof Error ? err.message : String(err) });
 		return new Response('Authentication service unavailable', {
 			status: 503,
 			headers: { 'Retry-After': '30', 'Content-Type': 'text/plain' },
