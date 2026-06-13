@@ -32,6 +32,7 @@ export type AlertRuleDbRow = {
 	failure_count: number;
 	recovery_count: number;
 	cooldown_seconds: number;
+	escalation_seconds: number | null;
 	enabled: number;
 };
 
@@ -66,7 +67,7 @@ export type NotificationMessage = {
 	incidentId: string;
 	monitorId: string;
 	monitorName: string;
-	eventType: 'down' | 'recovered';
+	eventType: 'down' | 'recovered' | 'escalation';
 	count: number;
 	error?: string;
 };

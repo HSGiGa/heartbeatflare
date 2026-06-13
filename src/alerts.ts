@@ -134,9 +134,9 @@ export async function evaluateAlerts(
 			// Atomic: incident row + state hint in one batch, notification only after it commits
 			await env.DB.batch([
 				env.DB.prepare(
-					`INSERT INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, reason)
-					 VALUES (?, ?, ?, 'open', ?, ?, ?)`,
-				).bind(incidentId, monitor.id, rule.id, rule.severity, now, result.error ?? null),
+					`INSERT INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, last_notified_at, reason)
+					 VALUES (?, ?, ?, 'open', ?, ?, ?, ?)`,
+				).bind(incidentId, monitor.id, rule.id, rule.severity, now, now, result.error ?? null),
 				env.DB.prepare(`UPDATE monitor_state SET active_incident_id = ? WHERE monitor_id = ?`).bind(incidentId, monitor.id),
 			]);
 			await (env.NOTIFICATION_QUEUE as Queue<NotificationMessage>).send({

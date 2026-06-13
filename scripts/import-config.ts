@@ -20,6 +20,7 @@ interface AlertConfig {
 	failures: number;
 	recovery: number;
 	cooldown?: string;
+	escalation?: string;
 }
 
 interface MonitorConfig {
@@ -113,13 +114,25 @@ function parseCondition(condition: string): { dbCondition: string; threshold: nu
 	throw new Error(`Cannot parse condition: ${condition}`);
 }
 
-function parseCooldown(cooldown?: string): number {
-	if (!cooldown) return 0;
-	const sMatch = cooldown.match(/^(\d+)s$/);
+function parseDuration(value?: string): number {
+	if (!value) return 0;
+	const sMatch = value.match(/^(\d+)s$/);
 	if (sMatch) return parseInt(sMatch[1]);
-	const mMatch = cooldown.match(/^(\d+)m$/);
+	const mMatch = value.match(/^(\d+)m$/);
 	if (mMatch) return parseInt(mMatch[1]) * 60;
+	const hMatch = value.match(/^(\d+)h$/);
+	if (hMatch) return parseInt(hMatch[1]) * 3600;
 	return 0;
+}
+
+function parseCooldown(cooldown?: string): number {
+	return parseDuration(cooldown);
+}
+
+function parseEscalation(escalation?: string): number | null {
+	if (!escalation) return null;
+	const secs = parseDuration(escalation);
+	return secs > 0 ? secs : null;
 }
 
 function normalizeTarget(monitor: MonitorConfig): string {
@@ -232,12 +245,13 @@ async function main() {
 			const alertId = `${id}-alert-${i}`;
 			const { dbCondition, threshold, metricName } = parseCondition(alert.condition);
 			const cooldownSeconds = parseCooldown(alert.cooldown);
+			const escalationSeconds = parseEscalation(alert.escalation);
 
 			// Upsert: incidents.alert_rule_id references this row (no cascade), so a REPLACE
 			// delete would fail or orphan history. ON CONFLICT updates the rule in place.
 			await d1Query(
-				`INSERT INTO alert_rules (id, monitor_id, metric_name, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+				`INSERT INTO alert_rules (id, monitor_id, metric_name, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, escalation_seconds, enabled)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
          ON CONFLICT(id) DO UPDATE SET
            monitor_id = excluded.monitor_id,
            metric_name = excluded.metric_name,
@@ -247,8 +261,9 @@ async function main() {
            failure_count = excluded.failure_count,
            recovery_count = excluded.recovery_count,
            cooldown_seconds = excluded.cooldown_seconds,
+           escalation_seconds = excluded.escalation_seconds,
            enabled = 1`,
-				[alertId, id, metricName ?? null, dbCondition, threshold, alert.severity, alert.failures, alert.recovery, cooldownSeconds],
+				[alertId, id, metricName ?? null, dbCondition, threshold, alert.severity, alert.failures, alert.recovery, cooldownSeconds, escalationSeconds],
 			);
 		}
 

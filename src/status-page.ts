@@ -280,21 +280,17 @@ export function buildStatusPage({
 		</div>`;
 	}).join('\n');
 
-	const activeIncidentsHtml = activeIncidents.length > 0 ? `
-	<section class="section">
-		<h2 class="section-title">Active Incidents</h2>
-		${activeIncidents.map((inc) => {
-			const monName = monitors.find((m) => m.id === inc.monitor_id)?.name ?? inc.monitor_id;
-			const isWarn = inc.severity === 'warning';
-			return `<div style="background:${isWarn ? '#fffbeb' : '#fef2f2'};border:1px solid ${isWarn ? '#fde68a' : '#fecaca'};border-radius:8px;padding:14px 16px;margin-bottom:8px">
-				<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
-					<span style="font-size:14px;font-weight:600">${isWarn ? '🟡' : '🔴'} ${escHtml(monName)} — ${escHtml(inc.severity)}</span>
-					<span class="meta-text">started ${timeAgo(inc.started_at)}</span>
-				</div>
-				${inc.reason ? `<div class="incident-reason">${escHtml(inc.reason)}</div>` : ''}
-			</div>`;
-		}).join('\n')}
-	</section>` : '';
+	const activeIncidentsInHeaderHtml = activeIncidents.length > 0 ? `
+<div style="padding-top:16px;border-top:1px solid ${bannerBorder};margin-top:16px">
+	${activeIncidents.map((inc) => {
+		const monName = monitors.find((m) => m.id === inc.monitor_id)?.name ?? inc.monitor_id;
+		const isWarn = inc.severity === 'warning';
+		return `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:6px 0">
+			<span style="font-size:14px;font-weight:600;color:${bannerColor}">${isWarn ? '🟡' : '🔴'} ${escHtml(monName)} — ${escHtml(inc.severity)}</span>
+			<span class="meta-text">started ${timeAgo(inc.started_at)}${inc.reason ? ` · ${escHtml(inc.reason)}` : ''}</span>
+		</div>`;
+	}).join('\n')}
+</div>` : '';
 
 
 	function progressBar(label: string, value: string, limit: string, pct: number): string {
@@ -439,10 +435,10 @@ ${session
 	? `<div style="display:flex;align-items:center;gap:10px"><span class="meta-text" title="${escHtml(session.email)}">${escHtml(session.name)}</span><a href="/auth/logout" style="font-size:12px;font-weight:600;padding:5px 12px;border-radius:5px;border:1px solid #e4e4e7;background:#fff;color:#18181b;text-decoration:none">Sign out</a></div>`
 	: `<a href="/auth/login" style="font-size:12px;font-weight:600;padding:5px 12px;border-radius:5px;border:1px solid #18181b;background:#18181b;color:#fff;text-decoration:none">Sign in</a>`}
 </div>
+${activeIncidentsInHeaderHtml}
 </div>
 </header>
 <main class="container">
-${activeIncidentsHtml}
 <section class="section">
 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
 <div class="range-picker">

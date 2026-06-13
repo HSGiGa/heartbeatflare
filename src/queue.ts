@@ -10,7 +10,7 @@ function asNotificationMessage(value: unknown): NotificationMessage | null {
 		typeof msg.incidentId !== 'string' ||
 		typeof msg.monitorId !== 'string' ||
 		typeof msg.monitorName !== 'string' ||
-		(msg.eventType !== 'down' && msg.eventType !== 'recovered') ||
+		(msg.eventType !== 'down' && msg.eventType !== 'recovered' && msg.eventType !== 'escalation') ||
 		typeof msg.count !== 'number'
 	) {
 		return null;
@@ -44,6 +44,8 @@ export async function handleQueue(batch: MessageBatch<unknown>, env: Env): Promi
 			const text =
 				eventType === 'down'
 					? `🔴 **${monitorName} is DOWN** — ${count} consecutive failure${count !== 1 ? 's' : ''}${error ? `: ${error}` : ''}`
+					: eventType === 'escalation'
+					? `🔴 **${monitorName} STILL DOWN** — open for ${count >= 60 ? `${Math.floor(count / 60)}h ${count % 60}m` : `${count}m`}, no recovery yet`
 					: `🟢 **${monitorName} recovered** — back up after ${count} successful check${count !== 1 ? 's' : ''}`;
 			const outcomes = await Promise.allSettled(channels.map((ch) => sendToChannel(env, ch, incidentId, text, now, msg.attempts)));
 			const anyDelivered = outcomes.some((o) => o.status === 'fulfilled' && o.value === true);

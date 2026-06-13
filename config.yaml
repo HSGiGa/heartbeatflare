@@ -88,3 +88,17 @@ monitors:
         failures: 2
         recovery: 2
         cooldown: 300s
+  - name: Test Alert
+    type: http
+    mode: external
+    visibility: private
+    target: https://nonexistent-alert-test.invalid
+    interval: 60s
+    notification_channels: [ Mattermost ]
+    alerts:
+      - condition: "status != 200"
+        severity: critical
+        failures: 1
+        recovery: 2
+        cooldown: 300s
+        escalation: 5m

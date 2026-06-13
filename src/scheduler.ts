@@ -3,7 +3,7 @@
 // since the Free Plan allows few cron triggers per account.
 import { CONNECTIVITY_CLASS, evaluateAlerts, storeResult } from './alerts';
 import { dnsCheck, httpCheck, sslProbe, tcpCheck } from './probes';
-import type { ActiveIncident, ActiveIncidentRow, AlertRuleDbRow, MonitorRow } from './types';
+import type { ActiveIncident, ActiveIncidentRow, AlertRuleDbRow, MonitorRow, NotificationMessage } from './types';
 
 // Per-check hard timeout (probe timeouts are 10s; this is the outer safety net).
 const PER_UNIT_MS = 20_000;
@@ -138,6 +138,29 @@ export async function handleScheduled(env: Env): Promise<void> {
 	);
 
 	console.log(`[scheduler] done in ${Date.now() - t0}ms — ${dueExternal.length} checks`);
+
+	// Escalation: re-notify for open incidents that haven't been notified within escalation_seconds
+	const { results: escalations } = await env.DB.prepare(
+		`SELECT i.id, i.monitor_id, m.name AS monitor_name, i.started_at
+		 FROM incidents i
+		 JOIN monitors m ON m.id = i.monitor_id
+		 JOIN alert_rules ar ON ar.id = i.alert_rule_id
+		 WHERE i.status = 'open'
+		   AND ar.escalation_seconds IS NOT NULL
+		   AND (strftime('%s', ?) - strftime('%s', COALESCE(i.last_notified_at, i.started_at))) >= ar.escalation_seconds`,
+	).bind(now).all<{ id: string; monitor_id: string; monitor_name: string; started_at: string }>();
+
+	for (const inc of escalations) {
+		await env.DB.prepare(`UPDATE incidents SET last_notified_at = ? WHERE id = ?`).bind(now, inc.id).run();
+		const minutesOpen = Math.floor((new Date(now).getTime() - new Date(inc.started_at).getTime()) / 60_000);
+		await (env.NOTIFICATION_QUEUE as Queue<NotificationMessage>).send({
+			incidentId: inc.id,
+			monitorId: inc.monitor_id,
+			monitorName: inc.monitor_name,
+			eventType: 'escalation',
+			count: minutesOpen,
+		});
+	}
 
 	// Hourly: recompute uptime_daily for today and yesterday from uptime_hourly ground truth
 	if (new Date().getUTCMinutes() === 0) {
