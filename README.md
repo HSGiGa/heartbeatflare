@@ -10,7 +10,7 @@ Live example: [status.modem.by](https://status.modem.by)
 
 - **HTTP/HTTPS, TCP and DNS probes** with per-monitor intervals (60s minimum)
 - **SSL certificate expiry tracking** (best-effort, via external cert APIs)
-- **Incident management** — connectivity and SSL incidents tracked independently, with failure/recovery thresholds and cooldowns
+- **Incident management** — connectivity and SSL incidents tracked independently, with failure/recovery thresholds, cooldowns and optional escalation re-notifications
 - **Notifications** via Slack-compatible webhooks (e.g. Mattermost) and generic webhooks, delivered through Cloudflare Queues with retry
 - **Public + private status pages** — 90-day uptime bars, latency sparklines, incident history; the private view is protected by Cloudflare Access
 - **Configuration as code** — monitors, alerts, channels and access policy live in one `config.yaml`; CI provisions all Cloudflare resources automatically
@@ -20,9 +20,9 @@ Live example: [status.modem.by](https://status.modem.by)
 
 One Worker, three entry points:
 
-- **`scheduled()`** — cron tick every minute: selects due monitors (oldest-checked first), probes them with bounded concurrency, stores results in D1, evaluates alert rules, opens/resolves incidents and enqueues notifications. Also runs hourly uptime rollups and daily cleanup.
+- **`scheduled()`** — cron tick every minute: selects due monitors (oldest-checked first), probes them with bounded concurrency, stores results in D1, evaluates alert rules, opens/resolves incidents and enqueues notifications. Also re-enqueues escalation notifications for incidents still open past their `escalation` interval, and runs hourly uptime rollups and daily cleanup.
 - **`fetch()`** — serves `/public` and `/private` status pages plus a JSON API (`/api/status`, `/api/history`). Visibility is fail-closed: private monitors are only shown with a valid Cloudflare Access session. Public responses are edge-cached for 60s.
-- **`queue()`** — consumes the notification queue and delivers incident open/resolve messages to the configured channels.
+- **`queue()`** — consumes the notification queue and delivers incident open / resolve / escalation messages to the configured channels.
 
 Storage is Cloudflare D1 (state, incidents, time series, uptime aggregates). See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design, data model and free-plan budgets.
 
