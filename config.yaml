@@ -78,6 +78,7 @@ monitors:
     type: tcp
     mode: external
     visibility: public
+    enabled: false
     target: smtp.gmail.com:587
     interval: 60s
     notification_channels: [ Mattermost ]

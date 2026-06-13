@@ -33,7 +33,7 @@ async function fetchMonitorRows(env: Env, showAll: boolean): Promise<MonitorDbRo
 	const visFilter = showAll ? '' : `AND m.visibility = 'public'`;
 	const { results } = await env.DB.prepare(
 		`SELECT m.id, m.name, m.type, m.mode, m.visibility,
-		        m.scrape_url, m.interval_seconds, m.enabled,
+		        m.scrape_url, m.interval_seconds, m.enabled, m.paused,
 		        m.created_at, m.updated_at,
 		        ms.status, ms.last_check_at, ms.last_success_at,
 		        ms.consecutive_failures, ms.consecutive_successes,
@@ -78,6 +78,7 @@ async function handleStatusApi(env: Env, runtimeEnv: RuntimeEnv, showAll: boolea
 			target: showAll ? m.scrape_url : null,
 			interval_seconds: m.interval_seconds,
 			enabled: m.enabled === 1,
+			paused: m.paused === 1,
 			created_at: m.created_at,
 			updated_at: m.updated_at,
 			state: {

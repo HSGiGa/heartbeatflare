@@ -318,6 +318,11 @@
 						"$ref": "#/$defs/alert"
 					}
 				},
+				"enabled": {
+					"type": "boolean",
+					"default": true,
+					"description": "Set to false to pause this monitor: still visible on the status page but not probed."
+				},
 				"notification_channels": {
 					"type": "array",
 					"items": {

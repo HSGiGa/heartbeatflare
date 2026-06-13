@@ -9,6 +9,7 @@ export type MonitorDbRow = {
 	scrape_url: string | null;
 	interval_seconds: number;
 	enabled: number;
+	paused: number;
 	created_at: string;
 	updated_at: string;
 	status: string | null;

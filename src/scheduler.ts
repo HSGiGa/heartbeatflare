@@ -79,7 +79,7 @@ export async function handleScheduled(env: Env): Promise<void> {
 			        ms.ssl_not_after, ms.ssl_issuer
 			 FROM monitors m
 			 LEFT JOIN monitor_state ms ON ms.monitor_id = m.id
-			 WHERE m.enabled = 1`,
+			 WHERE m.enabled = 1 AND m.paused = 0`,
 		).all<MonitorRow & { mode: string; last_success_at: string | null }>(),
 		env.DB.prepare(
 			`SELECT id, monitor_id, metric_name, condition, threshold, severity,

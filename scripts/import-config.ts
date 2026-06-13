@@ -28,6 +28,7 @@ interface MonitorConfig {
 	mode: 'external' | 'internal';
 	visibility?: 'public' | 'private';
 	ssl?: boolean;
+	enabled?: boolean;
 	target: string;
 	interval?: string;
 	alerts?: AlertConfig[];
@@ -199,8 +200,8 @@ async function main() {
 		// through ON DELETE CASCADE and wipe monitor_state, incidents, executions and metric_series
 		// on every import. ON CONFLICT updates in place and preserves runtime data + created_at.
 		await d1Query(
-			`INSERT INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, ssl_check, enabled, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))
+			`INSERT INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, ssl_check, paused, enabled, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))
        ON CONFLICT(id) DO UPDATE SET
          name = excluded.name,
          type = excluded.type,
@@ -209,6 +210,7 @@ async function main() {
          scrape_url = excluded.scrape_url,
          interval_seconds = excluded.interval_seconds,
          ssl_check = excluded.ssl_check,
+         paused = excluded.paused,
          enabled = 1,
          updated_at = datetime('now')`,
 			[
@@ -220,6 +222,7 @@ async function main() {
 				target,
 				intervalSeconds,
 				(monitor.ssl ?? true) ? 1 : 0,
+				monitor.enabled === false ? 1 : 0,
 			],
 		);
 

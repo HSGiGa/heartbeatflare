@@ -191,14 +191,16 @@ export function buildStatusPage({
 		return Math.round(pts.reduce((a, b) => a + b, 0) / pts.length) + ' ms';
 	}
 
-	function statusDot(status: string | null): string {
+	function statusDot(status: string | null, paused: boolean): string {
+		if (paused) return `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#a1a1aa;flex-shrink:0;margin-top:4px"></span>`;
 		const s = status ?? 'unknown';
 		const c = s === 'up' ? '#22c55e' : s === 'degraded' ? '#f59e0b' : s === 'down' ? '#ef4444' : '#a1a1aa';
 		const pulse = s === 'down' ? ' class="dot-pulse"' : '';
 		return `<span${pulse} style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${c};flex-shrink:0;margin-top:4px"></span>`;
 	}
 
-	function statusLabel(status: string | null): string {
+	function statusLabel(status: string | null, paused: boolean): string {
+		if (paused) return `<span style="font-size:13px;font-weight:600;color:#71717a">Paused</span>`;
 		const s = status ?? 'unknown';
 		const [text, color] =
 			s === 'up' ? ['Operational', '#16a34a'] :
@@ -232,8 +234,8 @@ export function buildStatusPage({
 		const vA = a.visibility === 'public' ? 0 : 1;
 		const vB = b.visibility === 'public' ? 0 : 1;
 		if (vA !== vB) return vA - vB;
-		const sA = statusOrder[a.status ?? ''] ?? 3;
-		const sB = statusOrder[b.status ?? ''] ?? 3;
+		const sA = a.paused === 1 ? 4 : (statusOrder[a.status ?? ''] ?? 3);
+		const sB = b.paused === 1 ? 4 : (statusOrder[b.status ?? ''] ?? 3);
 		if (sA !== sB) return sA - sB;
 		return a.name.localeCompare(b.name);
 	});
@@ -252,7 +254,7 @@ export function buildStatusPage({
 		<div class="monitor-row">
 			<div class="monitor-header">
 				<div style="display:flex;align-items:flex-start;gap:9px">
-					${statusDot(m.status)}
+					${statusDot(m.status, m.paused === 1)}
 					<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
 						<span class="monitor-name">${escHtml(m.name)}</span>
 						${typeBadge(m.type)}
@@ -261,8 +263,8 @@ export function buildStatusPage({
 					</div>
 				</div>
 				<div style="display:flex;align-items:center;gap:14px">
-					${statusLabel(m.status)}
-					<span class="meta-text">checked ${timeAgo(m.last_check_at)}</span>
+					${statusLabel(m.status, m.paused === 1)}
+					<span class="meta-text">${m.paused === 1 ? `last checked ${timeAgo(m.last_check_at)}` : `checked ${timeAgo(m.last_check_at)}`}</span>
 				</div>
 			</div>
 			${inc ? `<div class="incident-inline">⚠ Incident ongoing · started ${timeAgo(inc.started_at)}${inc.reason ? ` · ${escHtml(inc.reason)}` : ''}</div>` : ''}
