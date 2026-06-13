@@ -18,6 +18,7 @@ Supported monitoring capabilities (implemented):
 - HTTP/HTTPS monitoring (status code, response time)
 - TCP port monitoring (reachability, connect latency)
 - DNS monitoring (resolution via DoH)
+- Heartbeat (push) monitoring — jobs POST to `/beat/<id>/<token>`; missed beats open incidents
 - SSL/TLS certificate expiry (via external CT/cert APIs — see SSL section)
 - Alerting and incident management (connectivity + SSL, independent)
 - Maintenance windows (planned work; affected monitors not probed while active)
@@ -76,6 +77,13 @@ delivers it). There are no Service Bindings and no separate Workers.
 - Probes inline (no Service Bindings, no separate Worker) with bounded
   concurrency (`MAX_CONCURRENT_CHECKS` = 5) and a per-check timeout
   (`PER_UNIT_MS`). Each probe writes results and evaluates alerts.
+- **Heartbeat (push) monitors are not probed.** The same tick checks each `heartbeat`
+  monitor for *missed* beats: the deadline is measured from the last beat received
+  (`monitor_state.last_check_at`, written by the `/beat` endpoint) or from `created_at`
+  if it has never beaten (a grace period). It records one synthetic `down` per newly-missed
+  interval — deduplicated on the stored failure count so uptime and the write budget stay
+  honest — then runs the normal alert evaluation, opening an incident once the misses reach
+  `failure_count`. These run inline, make no subrequest, and don't count toward the probe cap.
 - Hourly (`getUTCMinutes() === 0`): recomputes `uptime_daily` from `uptime_hourly`.
 - Daily (~04:30 UTC): cleanup (see Retention).
 
@@ -133,6 +141,13 @@ the notification is enqueued only after that batch commits.
 `monitor_state.active_incident_id` is a denormalised hint for the active
 *connectivity* incident only; SSL incidents live solely in the `incidents` table.
 
+**Writers.** For probe-based monitors the scheduler is the single writer (one evaluation per monitor
+per tick). `heartbeat` monitors add a second writer — the `/beat` endpoint, which records an `up`
+sample and runs recovery on an incoming beat while the scheduler still handles miss detection. The
+two never act on one monitor in the same instant in practice; the only shared-state hazard is
+`consecutive_successes` for heartbeat `recovery_count > 1` under concurrent beats, which may
+under/over-count by one — an accepted trade-off for a push monitor.
+
 ---
 
 ### Notification delivery (`queue()` in `src/queue.ts`)
@@ -162,16 +177,16 @@ Stores operational state and execution history.
 ```
 id                    -- slug derived from name
 name
-type                  -- http | tcp | dns (heartbeat | openmetrics reserved); plain TEXT, no CHECK
+type                  -- http | tcp | dns | heartbeat (openmetrics reserved); plain TEXT, no CHECK
 mode                  -- external | internal
 visibility            -- public | private  (controls status page exposure)
-scrape_url            -- target (URL / host:port / hostname)
-ssl_check             -- 1 = also probe TLS cert expiry for this monitor
-interval_seconds
+scrape_url            -- target (URL / host:port / hostname); NULL for heartbeat (push) monitors
+ssl_check             -- 1 = also probe TLS cert expiry for this monitor (0 for heartbeat)
+interval_seconds      -- probe interval; for heartbeat, the expected beat period
 enabled
 paused                -- 1 = temporarily not probed (still shown)
 group_id              -- nullable FK → monitor_groups (feature: components/groups; inert until built)
-heartbeat_token       -- nullable secret (feature: push heartbeat; inert until built)
+heartbeat_token       -- heartbeat monitors only: `secret:<NAME>` ref to the token's Worker Secret (never the value)
 created_at
 updated_at
 ```
@@ -362,7 +377,9 @@ so these future features need no schema migration:
   labels)` (raw key/value) plus `metric_sample_hourly` / `metric_sample_daily` aggregates
   (count/sum/min/max → avg), mirroring the uptime rollups. Result store is the only write point.
 - **Components/groups:** `monitor_groups` + `monitors.group_id` (nullable, `ON DELETE SET NULL`).
-- **Push heartbeat:** `monitors.heartbeat_token` (secret; `type=heartbeat` already allowed).
+- **Push heartbeat** (implemented): `monitors.heartbeat_token` holds the `secret:<NAME>` token
+  reference; `type=heartbeat` is a plain-`TEXT` value. The `/beat` endpoint and scheduler miss
+  detection landed with no schema migration.
 - **Maintenance windows** (implemented): `maintenance_windows` + `maintenance_window_monitors`;
   active windows are handled by skipping probes, so no per-sample "during maintenance" marker is needed.
 
@@ -371,7 +388,7 @@ These tables/columns exist in the baseline but are inert until the corresponding
 **Out of scope (single-account self-host).** Multi-tenancy / `account_id` is deferred (see Roadmap);
 it can be added additively (nullable) if ever needed. **Multi-region probing** is also deferred — it
 would add a region dimension to `monitor_state`/`uptime_*` primary keys (a rebuild), so it is left
-out of the baseline intentionally. Tracked in `current-plan.md`.
+out of the baseline intentionally. Tracked in `internal/current-plan.md`.
 
 ---
 
@@ -528,6 +545,26 @@ probe_tcp_connect_duration_seconds
 
 ### DNS (external)
 DoH query to `cloudflare-dns.com/dns-query`. Up = `Status 0` with a non-empty answer.
+
+### Heartbeat (push)
+Inverted: the monitored job calls the Worker, not the other way round. A job `POST`s to
+`/beat/<monitor-id>/<token>` (handled in `src/heartbeat.ts`, routed ahead of auth/cache in
+`src/routes.ts`); the scheduler raises an incident when beats stop. The endpoint is fail-closed and
+write-minimised:
+
+- **Token in a Worker Secret.** D1 stores only `secret:<NAME>` (NAME derived from the monitor id as
+  `HEARTBEAT_<ID>_TOKEN`); the value lives in a Cloudflare Worker Secret and is resolved from `env`
+  and compared in constant time at beat time. Same `${VAR}`-style indirection as webhook channels —
+  a D1 dump never contains the token.
+- **Rate limited before any D1 access** — per source IP (`BEAT_IP_RATE_LIMITER`, 60/60s) and per
+  monitor id (`BEAT_MONITOR_RATE_LIMITER`, 20/60s); over-limit → `429`.
+- **Write throttle.** While the monitor is already `up` with no open connectivity incident and was
+  beaten within `max(10, interval/4)` seconds, the beat returns `204` with **no** D1 write. Otherwise
+  it records an `up` sample (`storeResult`) and runs recovery evaluation (`evaluateAlerts`).
+- **Fail-closed responses.** `204` on a valid beat; `404` for unknown monitor / bad or missing token /
+  disabled monitor (never reveals existence); `405` for non-`POST`. The token is never logged.
+
+Miss detection lives in the scheduler (see Scheduler › Responsibilities).
 
 ### SSL/TLS expiry (external, opt-in via `ssl_check`)
 TLS introspection is unavailable in the Workers sandbox, so cert expiry is fetched
@@ -739,11 +776,11 @@ The import step is idempotent and runs on every push to main via CI/CD.
 - D1 storage (state, executions, metric_series, uptime aggregates)
 - Status pages: public (no auth) + private (Cloudflare Access), single Worker, fail-closed
 - Edge caching of public responses via the Cache API
+- Heartbeat (push) monitoring with secret tokens (`/beat` endpoint + scheduler miss detection)
 
 ### Phase 2
 - Internal OpenMetrics scraping via Cloudflare Tunnel (blackbox_exporter etc.)
 - Telegram + Email notification channels
-- Heartbeat (push) monitoring with secret tokens (see ROADMAP.md)
 - Separate cron expressions for rollup/cleanup (see ROADMAP.md)
 - Tags, Monitor Groups, Monitor Dependencies
 - Status page enhancements (component groups, uptime charts, subscriptions, SLA reporting)

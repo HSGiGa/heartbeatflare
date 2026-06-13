@@ -93,6 +93,36 @@ export async function storeResult(
 }
 
 /**
+ * Records a missed-heartbeat sample (push monitors). Unlike storeResult it deliberately does NOT
+ * update last_check_at: for a heartbeat that column holds the time of the last beat *received* —
+ * the reference point the scheduler uses to detect the next miss — and the cron evaluation must not
+ * move it. `missed` is the number of elapsed intervals with no beat and becomes consecutive_failures
+ * directly (the scheduler only calls this once per newly-missed interval, see scheduler.ts).
+ */
+export async function storeHeartbeatMiss(env: Env, monitor: MonitorRow, missed: number, executionId: string, now: string): Promise<void> {
+	const hour = now.slice(0, 13);
+	await env.DB.batch([
+		env.DB.prepare(
+			`INSERT INTO monitor_state (monitor_id, status, consecutive_failures, consecutive_successes)
+			 VALUES (?, 'down', ?, 0)
+			 ON CONFLICT(monitor_id) DO UPDATE SET
+			   status = 'down',
+			   consecutive_failures = excluded.consecutive_failures,
+			   consecutive_successes = 0`,
+		).bind(monitor.id, missed),
+		env.DB.prepare(upsertHourlySql).bind(monitor.id, hour, 0, null, 0),
+		env.DB.prepare(
+			`INSERT INTO metric_series (id, monitor_id, recorded_at, availability, latency_ms, tcp_connect_ms)
+			 VALUES (?, ?, ?, 0, 0, NULL)`,
+		).bind(executionId, monitor.id, now),
+		env.DB.prepare(
+			`INSERT INTO monitor_executions (id, monitor_id, started_at, completed_at, status, latency_ms, error)
+			 VALUES (?, ?, ?, ?, 'down', 0, 'Heartbeat missed')`,
+		).bind(executionId, monitor.id, now, now),
+	]);
+}
+
+/**
  * Evaluates alert rules against a check result. Connectivity (metric_name IS NULL) and
  * metric-class incidents (e.g. ssl_expiry) are tracked independently: an open SSL incident
  * no longer suppresses a connectivity down-incident, and vice versa.
@@ -102,7 +132,11 @@ export async function storeResult(
  * CONNECTIVITY_CLASS sentinel. `monitor_state.active_incident_id` is kept updated as a
  * denormalised hint for the active *connectivity* incident only; SSL incidents do not touch it.
  *
- * Single-writer: only the scheduler calls this (one evaluation per monitor per tick).
+ * Writers: the scheduler (one evaluation per monitor per tick) and — for `heartbeat` monitors only —
+ * the beat endpoint in heartbeat.ts (recovery on an incoming beat). The two never act on the same
+ * monitor in the same instant in practice; the only shared-state hazard is `consecutive_successes`
+ * for heartbeat recovery_count > 1 under concurrent beats, which may under/over-count by one — an
+ * accepted trade-off for a push monitor. Probe-based monitors remain single-writer (scheduler only).
  */
 export async function evaluateAlerts(
 	env: Env,

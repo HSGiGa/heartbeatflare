@@ -1,8 +1,9 @@
 import { env, createExecutionContext, waitOnExecutionContext, SELF } from 'cloudflare:test';
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import worker from '../src/index';
 import { _invalidateAuthCache } from '../src/auth';
 import { CONNECTIVITY_CLASS, evaluateAlerts } from '../src/alerts';
+import { handleScheduled } from '../src/scheduler';
 import type { AlertRuleDbRow, MonitorRow } from '../src/types';
 // Apply the single consolidated baseline so the test schema matches production. If the schema is
 // ever split into further migrations, import and apply each one here in order.
@@ -295,5 +296,146 @@ describe('maintenance windows, feed and badges', () => {
 		const html = await res.text();
 		expect(html).toContain('DB migration window');
 		expect(html).toContain('🔧');
+	});
+});
+
+describe('heartbeat (push) monitoring', () => {
+	const TOKEN = 'beat-secret-xyz'; // matches the TEST_BEAT_TOKEN binding in vitest.config.mts
+
+	// Distinct IPs per test isolate the per-IP rate limiter; distinct monitor ids isolate the
+	// per-monitor limiter — so no test trips another's bucket.
+	const beat = (id: string, token: string, ip: string, method = 'POST') =>
+		SELF.fetch(`https://example.com/beat/${id}/${token}`, { method, headers: { 'CF-Connecting-IP': ip } });
+
+	const mkHeartbeat = (id: string, name: string, intervalSeconds: number) =>
+		env.DB.prepare(
+			`INSERT OR IGNORE INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, ssl_check, heartbeat_token, enabled)
+			 VALUES (?, ?, 'heartbeat', 'external', 'private', NULL, ?, 0, 'secret:TEST_BEAT_TOKEN', 1)`,
+		)
+			.bind(id, name, intervalSeconds)
+			.run();
+
+	beforeAll(async () => {
+		await mkHeartbeat('hb-valid', 'HB Valid', 600);
+		await mkHeartbeat('hb-throttle', 'HB Throttle', 600);
+		await mkHeartbeat('hb-rate', 'HB Rate', 600);
+		await mkHeartbeat('hb-recover', 'HB Recover', 600);
+	});
+
+	it('valid beat returns 204 and records up', async () => {
+		const res = await beat('hb-valid', TOKEN, '203.0.113.10');
+		expect(res.status).toBe(204);
+		const st = await env.DB.prepare(`SELECT status FROM monitor_state WHERE monitor_id = 'hb-valid'`).first<{ status: string }>();
+		expect(st?.status).toBe('up');
+	});
+
+	it('bad token returns 404', async () => {
+		const res = await beat('hb-valid', 'wrong-token', '203.0.113.11');
+		expect(res.status).toBe(404);
+	});
+
+	it('unknown monitor returns 404', async () => {
+		const res = await beat('hb-nope', TOKEN, '203.0.113.12');
+		expect(res.status).toBe(404);
+	});
+
+	it('non-POST returns 405 with Allow: POST', async () => {
+		const res = await beat('hb-valid', TOKEN, '203.0.113.13', 'GET');
+		expect(res.status).toBe(405);
+		expect(res.headers.get('Allow')).toBe('POST');
+	});
+
+	it('spam within the throttle window returns 204 without an extra sample', async () => {
+		const count = async () =>
+			(await env.DB.prepare(`SELECT COUNT(*) AS n FROM metric_series WHERE monitor_id = 'hb-throttle'`).first<{ n: number }>())!.n;
+		const first = await beat('hb-throttle', TOKEN, '203.0.113.20');
+		expect(first.status).toBe(204);
+		const afterFirst = await count();
+		const second = await beat('hb-throttle', TOKEN, '203.0.113.20');
+		expect(second.status).toBe(204);
+		expect(await count()).toBe(afterFirst); // throttled: no new metric_series row
+	});
+
+	it('rate-limited beat returns 429', async () => {
+		let got429 = false;
+		for (let i = 0; i < 25; i++) {
+			const res = await beat('hb-rate', TOKEN, '203.0.113.30');
+			if (res.status === 429) {
+				got429 = true;
+				break;
+			}
+		}
+		expect(got429).toBe(true); // per-monitor limiter is 20/60s
+	});
+
+	it('a beat after a down incident resolves it (recovery)', async () => {
+		await env.DB.prepare(
+			`INSERT OR REPLACE INTO monitor_state (monitor_id, status, last_check_at, consecutive_failures, consecutive_successes, active_incident_id)
+			 VALUES ('hb-recover', 'down', '2026-01-01T00:00:00Z', 2, 0, 'hb-rec-inc')`,
+		).run();
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO alert_rules (id, monitor_id, metric_name, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled)
+			 VALUES ('hb-rec-rule', 'hb-recover', NULL, 'eq', 0, 'critical', 1, 1, 0, 1)`,
+		).run();
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, reason)
+			 VALUES ('hb-rec-inc', 'hb-recover', 'hb-rec-rule', 'open', 'critical', '2026-01-01T00:00:00Z', 'Heartbeat missed')`,
+		).run();
+
+		const res = await beat('hb-recover', TOKEN, '203.0.113.40');
+		expect(res.status).toBe(204);
+		const inc = await env.DB.prepare(`SELECT status FROM incidents WHERE id = 'hb-rec-inc'`).first<{ status: string }>();
+		expect(inc?.status).toBe('resolved');
+		const st = await env.DB
+			.prepare(`SELECT status, active_incident_id FROM monitor_state WHERE monitor_id = 'hb-recover'`)
+			.first<{ status: string; active_incident_id: string | null }>();
+		expect(st?.status).toBe('up');
+		expect(st?.active_incident_id).toBeNull();
+	});
+
+	describe('scheduler missed-heartbeat', () => {
+		// Pause probe-based monitors so handleScheduled does no outbound network during these tests.
+		beforeAll(async () => {
+			await env.DB.prepare(`UPDATE monitors SET paused = 1 WHERE type != 'heartbeat'`).run();
+		});
+		afterAll(async () => {
+			await env.DB.prepare(`UPDATE monitors SET paused = 0 WHERE type != 'heartbeat'`).run();
+		});
+
+		it('marks an overdue heartbeat as down', async () => {
+			await mkHeartbeat('hb-overdue', 'HB Overdue', 60);
+			await env.DB.prepare(
+				`INSERT OR REPLACE INTO monitor_state (monitor_id, status, last_check_at, consecutive_failures, consecutive_successes)
+				 VALUES ('hb-overdue', 'up', datetime('now', '-5 minutes'), 0, 1)`,
+			).run();
+
+			await handleScheduled(env);
+
+			const st = await env.DB
+				.prepare(`SELECT status, consecutive_failures FROM monitor_state WHERE monitor_id = 'hb-overdue'`)
+				.first<{ status: string; consecutive_failures: number }>();
+			expect(st?.status).toBe('down');
+			expect(st?.consecutive_failures).toBeGreaterThanOrEqual(1);
+		});
+
+		it('opens an incident after failure_count missed intervals', async () => {
+			await mkHeartbeat('hb-incident', 'HB Incident', 60);
+			await env.DB.prepare(
+				`INSERT OR IGNORE INTO alert_rules (id, monitor_id, metric_name, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled)
+				 VALUES ('hb-inc-rule', 'hb-incident', NULL, 'eq', 0, 'critical', 3, 1, 0, 1)`,
+			).run();
+			await env.DB.prepare(
+				`INSERT OR REPLACE INTO monitor_state (monitor_id, status, last_check_at, consecutive_failures, consecutive_successes)
+				 VALUES ('hb-incident', 'up', datetime('now', '-5 minutes'), 0, 1)`,
+			).run();
+
+			await handleScheduled(env);
+
+			const inc = await env.DB
+				.prepare(`SELECT severity FROM incidents WHERE monitor_id = 'hb-incident' AND status = 'open'`)
+				.first<{ severity: string }>();
+			expect(inc).not.toBeNull();
+			expect(inc?.severity).toBe('critical');
+		});
 	});
 });

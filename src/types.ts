@@ -39,7 +39,7 @@ export type AlertRuleDbRow = {
 export type MonitorRow = {
 	id: string;
 	name: string;
-	type: 'http' | 'tcp' | 'dns';
+	type: 'http' | 'tcp' | 'dns' | 'heartbeat';
 	scrape_url: string | null;
 	interval_seconds: number;
 	ssl_check: number;

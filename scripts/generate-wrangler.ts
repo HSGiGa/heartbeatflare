@@ -31,6 +31,8 @@ interface WranglerTemplate {
 		producers: { queue: string; binding: string }[];
 		consumers: { queue: string; max_batch_size: number; max_batch_timeout: number; max_retries: number }[];
 	};
+	// Preserved as-is from the template (heartbeat endpoint rate limiters); not generated.
+	ratelimits?: { name: string; namespace_id: string; simple: { limit: number; period: number } }[];
 }
 
 function main() {

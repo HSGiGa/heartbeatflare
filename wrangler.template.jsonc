@@ -40,5 +40,11 @@
 	"queues": {
 		"producers": [{ "queue": "", "binding": "NOTIFICATION_QUEUE" }], // generated: deploy.queue_name
 		"consumers": [{ "queue": "", "max_batch_size": 10, "max_batch_timeout": 5, "max_retries": 5 }] // generated: deploy.queue_name
-	}
+	},
+	// Rate limiters for the public heartbeat endpoint (POST /beat/<id>/<token>), checked before any
+	// D1 access. Best-effort per-colo limiting; namespace_ids are account-local identifiers.
+	"ratelimits": [
+		{ "name": "BEAT_IP_RATE_LIMITER", "namespace_id": "1001", "simple": { "limit": 60, "period": 60 } },
+		{ "name": "BEAT_MONITOR_RATE_LIMITER", "namespace_id": "1002", "simple": { "limit": 20, "period": 60 } }
+	]
 }

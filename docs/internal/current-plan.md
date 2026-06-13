@@ -8,7 +8,7 @@
 
 Перед v1 миграции 0001–0014 схлопнуты в один `migrations/0001_initial_schema.sql` (prod-D1
 пересоздаётся с нуля), и forward-proofing встроен прямо в baseline — в свежей схеме это бесплатно,
-без table-rebuild/`lint-ok`. Подробности — `ARCHITECTURE.md` → «Schema evolution under additive-only
+без table-rebuild/`lint-ok`. Подробности — `../ARCHITECTURE.md` → «Schema evolution under additive-only
 migrations».
 
 - **[x] A. `incidents.alert_rule_id` теперь nullable** (+ `acknowledged_at`/`acknowledged_by`/
@@ -41,11 +41,15 @@ connectivity vs `ssl_expiry`) вместо глобального `active_incide
 `auth_config` = «только публичное». В SQL-запросах фильтр `AND m.visibility = 'public'` для
 неаутентифицированных; `scrape_url`/правила/usage скрыты (`handleStatusApi`, `fetchMonitorRows`).
 
-### [x] 3. Удалить реализацию /beat (heartbeat-мониторинг) — сделано
+### [x] 3. Удалить реализацию /beat (heartbeat-мониторинг) — сделано, затем переработано и возвращено
 
-Роут `POST /beat` и `handleHeartbeat` удалены (`src/routes.ts` не содержит /beat); тип
-`heartbeat` убран из рантайма (`MonitorRow` = `http|tcp|dns`). Push-heartbeat перенесён в
-Phase 2 (`ARCHITECTURE.md` Roadmap).
+Старая (небезопасная) реализация была удалена. **Обновление:** heartbeat возвращён в
+безопасном виде — `src/heartbeat.ts` (`POST /beat/<id>/<token>`), тип `heartbeat` в рантайме
+(`MonitorRow` = `http|tcp|dns|heartbeat`), детект пропусков в `src/scheduler.ts`. Закрыты прошлые
+риски: секретный токен в Worker Secret (`secret:HEARTBEAT_<ID>_TOKEN`, constant-time сверка),
+rate-limit биндинги (`BEAT_IP_RATE_LIMITER`/`BEAT_MONITOR_RATE_LIMITER`), write-throttle
+(`max(10, interval/4)`), счётчик пропусков как `floor((now-last_beat)/interval)` без гонок.
+Подробности — `../ARCHITECTURE.md` (Heartbeat (push)), `../ROADMAP.md`.
 
 ### [x] 4. Ретеншн: monitor_executions, incidents, notification_deliveries — сделано
 
@@ -86,9 +90,9 @@ Phase 2 (`ARCHITECTURE.md` Roadmap).
 
 ## Средне (сделано)
 
-### [x] 10. Актуализировать ARCHITECTURE.md — сделано
+### [x] 10. Актуализировать ../ARCHITECTURE.md — сделано
 
-`ARCHITECTURE.md` приведён к реальности: один Worker (три входа), Queues для уведомлений,
+`../ARCHITECTURE.md` приведён к реальности: один Worker (три входа), Queues для уведомлений,
 типы `http|tcp|dns` (+ openmetrics Phase 2), path-роутинг, подстановка `${VAR}`, ретеншн
 48h/120d/7d, fail-closed. Дополнен разделом про эволюцию схемы под additive-only (по аудиту
 2026-06-13).

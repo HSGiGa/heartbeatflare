@@ -316,15 +316,26 @@
 		},
 		"monitor": {
 			"type": "object",
-			"required": ["name", "type", "mode", "target"],
+			"required": ["name", "type", "mode"],
 			"additionalProperties": false,
+			"description": "A monitor. `target` is required for all types except `heartbeat` (push); a heartbeat monitor is identified by its URL id and validated by a Cloudflare Worker Secret derived from its name.",
+			"allOf": [
+				{
+					"if": {
+						"properties": { "type": { "not": { "const": "heartbeat" } } }
+					},
+					"then": {
+						"required": ["target"]
+					}
+				}
+			],
 			"properties": {
 				"name": {
 					"type": "string"
 				},
 				"type": {
 					"type": "string",
-					"enum": ["http", "tcp", "dns", "openmetrics"]
+					"enum": ["http", "tcp", "dns", "heartbeat", "openmetrics"]
 				},
 				"mode": {
 					"type": "string",
@@ -345,9 +356,9 @@
 				},
 				"interval": {
 					"type": "string",
-					"pattern": "^((6[0-9]|[7-9][0-9]|[1-9][0-9]{2,})s|[1-9][0-9]*m)$",
+					"pattern": "^((6[0-9]|[7-9][0-9]|[1-9][0-9]{2,})s|[1-9][0-9]*[mhd])$",
 					"default": "5m",
-					"description": "Check interval, minimum 60s. Examples: \"60s\", \"5m\", \"300s\". Defaults to 5m."
+					"description": "Check interval (heartbeat: expected beat period), minimum 60s. Examples: \"60s\", \"5m\", \"300s\", \"6h\", \"1d\". Defaults to 5m."
 				},
 				"alerts": {
 					"type": "array",

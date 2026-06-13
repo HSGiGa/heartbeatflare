@@ -10,14 +10,23 @@
 // In GitLab CI, variables arrive as plain env vars and SECRETS_CONTEXT is not needed.
 import Cloudflare from 'cloudflare';
 import { readFileSync } from 'node:fs';
-import { loadConfig, resolveDeploy, requireEnv } from './lib/deploy-config';
+import { loadConfig, resolveDeploy, requireEnv, type DeployConfig } from './lib/deploy-config';
+import { heartbeatSecretName, slug } from './lib/naming';
 
 // Optional runtime secrets: warn-and-skip when absent instead of failing the deploy.
 const OPTIONAL_SECRETS = ['CLOUDFLARE_GRAPHQL_API_TOKEN'];
 
+// Required secret names: ${VAR} placeholders in config.yaml (notification channels, auth.aud) plus,
+// for each heartbeat monitor, its derived HEARTBEAT_<ID>_TOKEN. Heartbeat secrets are usually set
+// manually in the dashboard; when the value is also present in CI it gets synced, otherwise the
+// existing Worker secret is kept (handled below like any other required secret).
 function referencedVars(raw: string): string[] {
 	const names = new Set<string>();
 	for (const m of raw.matchAll(/\$\{([A-Z0-9_]+)\}/g)) names.add(m[1]);
+	const config = loadConfig<{ deploy?: DeployConfig; monitors?: { name: string; type: string }[] }>();
+	for (const monitor of config.monitors ?? []) {
+		if (monitor.type === 'heartbeat') names.add(heartbeatSecretName(slug(monitor.name)));
+	}
 	return [...names].sort();
 }
 
