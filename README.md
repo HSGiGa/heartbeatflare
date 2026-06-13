@@ -176,11 +176,24 @@ identifiers — you never type them in YAML, but you need both:
 | Worker Secret (uppercase, underscored) | `HEARTBEAT_BACKUP_JOB_TOKEN` | holds the token value |
 
 The token is **not** stored in `config.yaml` or D1 — only the reference `secret:HEARTBEAT_…_TOKEN`
-is imported. The value lives in a Cloudflare Worker Secret you set yourself. Set it in the dashboard
-under **Workers & Pages → heartbeatflare → production → Settings → Variables and Secrets**
-([direct link for this instance](https://dash.cloudflare.com/0a8f78933036db3025075e950a307acd/workers/services/view/heartbeatflare/production/settings)),
-or via `npx wrangler secret put HEARTBEAT_BACKUP_JOB_TOKEN`. A secret's value is **not shown again
-after creation** — if you lose the token, replace the secret with a new value.
+is imported. The value lives in a Cloudflare Worker Secret that is **generated automatically on
+deploy**: the `secrets:sync` step (part of `npm run deploy:prod` and CI) creates a random token for
+any heartbeat monitor that doesn't already have one, and **prints it once** in the deploy output —
+copy it from there into your job:
+
+```
+=== New heartbeat tokens generated — SAVE THESE NOW (not shown again) ===
+  Monitor:  Backup job
+  Secret:   HEARTBEAT_BACKUP_JOB_TOKEN = 9f3a…c21
+  Beat URL: curl -fsS -X POST "https://status.modem.by/beat/backup-job/9f3a…c21"
+```
+
+A secret's value is **not shown again** after creation. The secret's *name* is listed in the
+dashboard under **Workers & Pages → heartbeatflare → production → Settings → Variables and Secrets**
+([direct link for this instance](https://dash.cloudflare.com/0a8f78933036db3025075e950a307acd/workers/services/view/heartbeatflare/production/settings)).
+Existing tokens are left untouched across deploys; to **rotate**, delete the secret there and redeploy
+(a fresh token is generated and printed). You can also set your own value ahead of time via CI env or
+`npx wrangler secret put HEARTBEAT_BACKUP_JOB_TOKEN`, and it will be used instead of a generated one.
 
 Then have the job beat on each successful run:
 

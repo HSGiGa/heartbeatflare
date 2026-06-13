@@ -555,7 +555,10 @@ write-minimised:
 - **Token in a Worker Secret.** D1 stores only `secret:<NAME>` (NAME derived from the monitor id as
   `HEARTBEAT_<ID>_TOKEN`); the value lives in a Cloudflare Worker Secret and is resolved from `env`
   and compared in constant time at beat time. Same `${VAR}`-style indirection as webhook channels —
-  a D1 dump never contains the token.
+  a D1 dump never contains the token. The secret is **auto-generated on deploy** by `secrets:sync`
+  (`scripts/sync-secrets.ts`): generate-if-missing per heartbeat monitor, printed once to the deploy
+  output (Cloudflare never shows a secret value again); an existing token, or one supplied via CI
+  env, is used as-is. Rotation = delete the secret and redeploy.
 - **Rate limited before any D1 access** — per source IP (`BEAT_IP_RATE_LIMITER`, 60/60s) and per
   monitor id (`BEAT_MONITOR_RATE_LIMITER`, 20/60s); over-limit → `429`.
 - **Write throttle.** While the monitor is already `up` with no open connectivity incident and was

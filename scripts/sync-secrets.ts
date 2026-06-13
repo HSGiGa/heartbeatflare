@@ -1,14 +1,17 @@
-// Syncs runtime secrets to Cloudflare Worker secrets in one bulk call. Required names are
-// discovered from ${VAR} placeholders in config.yaml (notification channels, auth.aud);
-// optional names are a known list. A required secret may come from the environment or
-// already exist on the Worker (manual `wrangler secret put`); when it is found in neither,
-// a warning is printed and the deploy proceeds — the affected notification channel simply
-// stays broken until the secret is added. Runs after `wrangler deploy` (script must exist).
+// Syncs runtime secrets to Cloudflare Worker secrets in one bulk call. Two sources of names:
+//   • ${VAR} placeholders in config.yaml (notification channels, auth.aud) — required; a missing one
+//     is fine if it already exists on the Worker, otherwise a warning is printed and the deploy
+//     proceeds (the affected channel just stays broken until the secret is added).
+//   • heartbeat monitors — each needs a HEARTBEAT_<ID>_TOKEN. These are auto-managed: if the secret
+//     isn't supplied (CI env) and isn't already on the Worker, a random token is generated, uploaded,
+//     and printed ONCE in this output so you can wire it into the job. Existing tokens are left as-is.
+// Runs after `wrangler deploy` (the script must exist).
 //
 // In GitHub Actions, repository secrets are not enumerable from a step, so the workflow passes
 // them all as JSON in SECRETS_CONTEXT (`toJSON(secrets)`); plain env vars win when both exist.
 // In GitLab CI, variables arrive as plain env vars and SECRETS_CONTEXT is not needed.
 import Cloudflare from 'cloudflare';
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { loadConfig, resolveDeploy, requireEnv, type DeployConfig } from './lib/deploy-config';
 import { heartbeatSecretName, slug } from './lib/naming';
@@ -16,18 +19,24 @@ import { heartbeatSecretName, slug } from './lib/naming';
 // Optional runtime secrets: warn-and-skip when absent instead of failing the deploy.
 const OPTIONAL_SECRETS = ['CLOUDFLARE_GRAPHQL_API_TOKEN'];
 
-// Required secret names: ${VAR} placeholders in config.yaml (notification channels, auth.aud) plus,
-// for each heartbeat monitor, its derived HEARTBEAT_<ID>_TOKEN. Heartbeat secrets are usually set
-// manually in the dashboard; when the value is also present in CI it gets synced, otherwise the
-// existing Worker secret is kept (handled below like any other required secret).
+type HeartbeatMonitor = { name: string; id: string; secretName: string };
+
+// ${VAR} placeholders referenced in config.yaml (notification channels, auth.aud).
 function referencedVars(raw: string): string[] {
 	const names = new Set<string>();
 	for (const m of raw.matchAll(/\$\{([A-Z0-9_]+)\}/g)) names.add(m[1]);
-	const config = loadConfig<{ deploy?: DeployConfig; monitors?: { name: string; type: string }[] }>();
-	for (const monitor of config.monitors ?? []) {
-		if (monitor.type === 'heartbeat') names.add(heartbeatSecretName(slug(monitor.name)));
-	}
 	return [...names].sort();
+}
+
+// Heartbeat monitors and their derived secret names (one Worker Secret per heartbeat monitor).
+function heartbeatMonitors(): HeartbeatMonitor[] {
+	const config = loadConfig<{ deploy?: DeployConfig; monitors?: { name: string; type: string }[] }>();
+	return (config.monitors ?? [])
+		.filter((m) => m.type === 'heartbeat')
+		.map((m) => {
+			const id = slug(m.name);
+			return { name: m.name, id, secretName: heartbeatSecretName(id) };
+		});
 }
 
 function secretsContext(): Record<string, string> {
@@ -42,9 +51,10 @@ function secretsContext(): Record<string, string> {
 }
 
 async function main() {
-	const config = loadConfig();
+	const config = loadConfig<{ deploy?: DeployConfig }>();
 	const deploy = resolveDeploy(config);
 	const required = referencedVars(readFileSync('config.yaml', 'utf-8'));
+	const heartbeats = heartbeatMonitors();
 	const dryRun = process.argv.includes('--dry-run');
 
 	if (dryRun) {
@@ -52,6 +62,7 @@ async function main() {
 		console.log(`Worker:           ${deploy.name}`);
 		console.log(`Required (from config.yaml \${VAR} refs): ${required.join(', ') || '(none)'}`);
 		console.log(`Optional:         ${OPTIONAL_SECRETS.join(', ')}`);
+		console.log(`Heartbeat tokens (auto-generated if missing on the Worker): ${heartbeats.map((h) => h.secretName).join(', ') || '(none)'}`);
 		return;
 	}
 
@@ -61,13 +72,11 @@ async function main() {
 	const fallback = secretsContext();
 	const lookup = (name: string): string | undefined => process.env[name] || fallback[name] || undefined;
 
-	// A ${VAR} referenced in config.yaml but absent from the CI env is still fine if the
-	// secret already exists on the Worker (uploaded manually via `wrangler secret put`) —
-	// skip it, value stays unchanged. When it exists in neither place, warn (don't fail):
-	// the deploy proceeds, but notifications using that variable will not work until it's added.
-	const missing = required.filter((name) => !lookup(name));
-	if (missing.length > 0) {
-		const existing = new Set<string>();
+	// List existing Worker secrets once: needed both to decide whether a missing ${VAR} is already
+	// set and whether each heartbeat token needs generating.
+	const existing = new Set<string>();
+	const needExistingList = heartbeats.length > 0 || required.some((name) => !lookup(name));
+	if (needExistingList) {
 		try {
 			for await (const s of client.workers.scripts.secrets.list(deploy.name, { account_id: accountId })) {
 				if (s.name) existing.add(s.name);
@@ -75,28 +84,43 @@ async function main() {
 		} catch (err) {
 			console.warn(`Could not list existing Worker secrets: ${err instanceof Error ? err.message : String(err)}`);
 		}
-		for (const name of missing) {
-			if (existing.has(name)) {
-				console.log(`${name}: not in CI env, but already set on the Worker — keeping the existing value`);
-			} else {
-				console.warn(
-					`WARNING: \${${name}} is referenced in config.yaml but the secret exists neither in the environment ` +
-						'nor on the Worker. Notifications using it will fail — add it as a CI secret or run ' +
-						`\`npx wrangler secret put ${name}\`.`,
-				);
-			}
-		}
 	}
 
 	const secrets: Record<string, { name: string; text: string; type: 'secret_text' }> = {};
+	const add = (name: string, text: string) => {
+		secrets[name] = { name, text, type: 'secret_text' };
+	};
+
+	// ${VAR} secrets: upload from env when present; otherwise keep an existing Worker value or warn.
 	for (const name of required) {
 		const value = lookup(name);
-		if (value) secrets[name] = { name, text: value, type: 'secret_text' };
+		if (value) add(name, value);
+		else if (existing.has(name)) console.log(`${name}: not in CI env, but already set on the Worker — keeping the existing value`);
+		else
+			console.warn(
+				`WARNING: \${${name}} is referenced in config.yaml but the secret exists neither in the environment ` +
+					`nor on the Worker. Notifications using it will fail — add it as a CI secret or run \`npx wrangler secret put ${name}\`.`,
+			);
 	}
 	for (const name of OPTIONAL_SECRETS) {
 		const value = lookup(name);
-		if (value) secrets[name] = { name, text: value, type: 'secret_text' };
+		if (value) add(name, value);
 		else console.warn(`Optional secret ${name} not set — skipping (related feature stays disabled)`);
+	}
+
+	// Heartbeat tokens: env override > existing Worker secret (kept) > generate a new random token.
+	const generated: Array<HeartbeatMonitor & { value: string }> = [];
+	for (const hb of heartbeats) {
+		const provided = lookup(hb.secretName);
+		if (provided) {
+			add(hb.secretName, provided);
+		} else if (existing.has(hb.secretName)) {
+			console.log(`${hb.secretName}: already set on the Worker — keeping the existing token`);
+		} else {
+			const value = randomBytes(32).toString('hex');
+			add(hb.secretName, value);
+			generated.push({ ...hb, value });
+		}
 	}
 
 	if (Object.keys(secrets).length === 0) {
@@ -106,6 +130,18 @@ async function main() {
 
 	await client.workers.scripts.secrets.bulkUpdate(deploy.name, { account_id: accountId, secrets });
 	console.log(`Synced ${Object.keys(secrets).length} secret(s) to worker "${deploy.name}": ${Object.keys(secrets).join(', ')}`);
+
+	// Print freshly-generated heartbeat tokens ONCE — Cloudflare never shows a secret value again.
+	if (generated.length > 0) {
+		const base = deploy.domain ? `https://${deploy.domain}` : `https://<your-worker-domain>`;
+		console.log('\n=== New heartbeat tokens generated — SAVE THESE NOW (not shown again) ===');
+		for (const g of generated) {
+			console.log(`\n  Monitor:  ${g.name}`);
+			console.log(`  Secret:   ${g.secretName} = ${g.value}`);
+			console.log(`  Beat URL: curl -fsS -X POST "${base}/beat/${g.id}/${g.value}"`);
+		}
+		console.log('\nTo rotate a token, delete the secret in the Cloudflare dashboard and redeploy.\n');
+	}
 }
 
 main().catch((err) => {
