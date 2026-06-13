@@ -7,7 +7,7 @@
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { parse as parseJsonc } from 'jsonc-parser';
-import { loadConfig } from './lib/deploy-config';
+import { loadConfig, resolveDeploy } from './lib/deploy-config';
 
 const isDeployMode = process.argv.includes('--mode=deploy');
 
@@ -35,16 +35,7 @@ interface WranglerTemplate {
 
 function main() {
 	const config = loadConfig();
-	const deploy = config.deploy;
-	if (!deploy?.name) fail('deploy.name is required in config.yaml');
-
-	const { name, domain, databaseName, queueName, databaseId } = {
-		name: deploy.name,
-		domain: deploy.domain,
-		databaseName: deploy.database_name ?? `${deploy.name}-prod-db`,
-		queueName: deploy.queue_name ?? `${deploy.name}-notifications`,
-		databaseId: deploy.database_id ?? '',
-	};
+	const { name, domain, databaseName, queueName, databaseId } = resolveDeploy(config);
 
 	const accountId = process.env.CLOUDFLARE_ACCOUNT_ID ?? '';
 
