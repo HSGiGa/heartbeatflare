@@ -293,6 +293,7 @@ async function main() {
 	for (const id of removed) {
 		console.log(`Soft-deleting monitor: ${id}`);
 		await d1Query("UPDATE monitors SET enabled = 0, updated_at = datetime('now') WHERE id = ?", [id]);
+		await d1Query('UPDATE monitor_notification_channels SET enabled = 0 WHERE monitor_id = ?', [id]);
 	}
 
 	if (config.auth) {
@@ -306,6 +307,12 @@ async function main() {
 	} else {
 		await d1Query(`UPDATE auth_config SET enabled = 0, updated_at = datetime('now') WHERE id = 'default'`);
 	}
+
+	// Ensure channel assignments are disabled for any monitor that is disabled,
+	// regardless of when it was soft-deleted (catches pre-existing stale rows too).
+	await d1Query(
+		'UPDATE monitor_notification_channels SET enabled = 0 WHERE monitor_id IN (SELECT id FROM monitors WHERE enabled = 0)',
+	);
 
 	console.log(
 		`Import complete. ${config.monitors.length} monitor(s) imported, ${removed.length} soft-deleted, ${config.notification_channels?.length ?? 0} channel(s) imported, ${removedChannels.length} channel(s) soft-deleted.`,
