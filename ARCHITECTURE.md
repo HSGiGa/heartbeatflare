@@ -589,12 +589,12 @@ monitors:
         recovery: 2
         cooldown: 300s
 
-  - name: VPN modem.by
+  - name: VPN example.com
     type: tcp
     mode: external
     visibility: private                  # private status page only
     ssl: true                            # also probe TLS cert expiry
-    target: vpn.modem.by:443
+    target: vpn.example.com:443
     interval: 5m
     alerts:
       - condition: "connect != true"

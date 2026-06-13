@@ -70,7 +70,7 @@ The `deploy:` section is the single place to configure deployment:
 ```yaml
 deploy:
   name: heartbeatflare # worker name; D1/queue names derive from it
-  domain: status.modem.by # custom domain route; omit to serve on workers.dev only
+  domain: status.example.com # custom domain route; omit to serve on workers.dev only
   # database_name: ... # default: ${name}-prod-db
   # queue_name: ...    # default: ${name}-notifications
 ```

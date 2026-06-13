@@ -1,6 +1,6 @@
 # heartbeatflare
 
-[![Deploy to Cloudflare](https://github.com/HSGiGa/heartbeatflare/actions/workflows/deploy-cloudflare.yml/badge.svg)](https://github.com/HSGiGa/heartbeatflare/actions/workflows/deploy-cloudflare.yml)
+[![Deploy to Cloudflare](https://github.com/YOUR_USERNAME/heartbeatflare/actions/workflows/deploy-cloudflare.yml/badge.svg)](https://github.com/YOUR_USERNAME/heartbeatflare/actions/workflows/deploy-cloudflare.yml)
 
 Serverless uptime monitor and status page that runs entirely on the Cloudflare free tier. A single Worker probes your targets every minute, tracks incidents, sends notifications, and serves public/private status pages — no servers, no agents, no build step.
 
@@ -32,10 +32,10 @@ Prerequisites:
 
 - A Cloudflare account with the zone for your status domain
 - A Zero Trust identity provider (for the private page), set up in the Cloudflare dashboard
-- An API token with: Workers Scripts:Edit, D1:Edit, Queues:Edit, Access Apps & Policies:Edit, Access Organizations:Read
+- A deploy API token with the permissions listed in [Environment variables](#environment-variables)
 
 ```sh
-git clone https://github.com/HSGiGa/heartbeatflare.git && cd heartbeatflare
+git clone https://github.com/YOUR_USERNAME/heartbeatflare.git && cd heartbeatflare
 npm ci
 
 cp .env.example .env   # fill in CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID
@@ -45,7 +45,7 @@ set -a; . ./.env; set +a
 npm run deploy:prod
 ```
 
-`deploy:prod` runs the whole pipeline: tests → migration lint → **provision** (creates the D1 database and queue, auto-fills `wrangler.jsonc` with their IDs) → D1 migrations → Cloudflare Access app → config import → `wrangler deploy`. No resource IDs need to be entered by hand. Details in [DEPLOYMENT.md](DEPLOYMENT.md).
+`deploy:prod` runs the whole pipeline: tests → migration lint → **provision** (creates the D1 database and queue, writes the IDs back to `config.yaml`) → D1 migrations → Cloudflare Access app → config import → `wrangler deploy`. No resource IDs need to be entered by hand. Details in [DEPLOYMENT.md](DEPLOYMENT.md).
 
 Local development:
 
@@ -95,7 +95,7 @@ Notes:
 
 - Secrets never go into YAML or D1 — use `${VAR}` placeholders, resolved from the Worker's environment when a notification is sent.
 - `auth.team_domain` and `auth.aud` are written back automatically by the deploy pipeline.
-- [`wrangler.jsonc`](wrangler.jsonc) holds platform settings (compatibility date, cron, queue tuning); `npm run provision` patches the resource IDs into it — don't edit those by hand.
+- `wrangler.jsonc` is generated from [`wrangler.template.jsonc`](wrangler.template.jsonc) — run any npm script (dev, test, deploy) and it's created automatically. Don't edit it directly.
 - The import is idempotent: removing a monitor from YAML soft-disables it, runtime history is preserved.
 
 ### Environment variables
@@ -105,9 +105,17 @@ Two kinds of variables, both templated in [`.env.example`](.env.example):
 | Variable                       | Kind        | Purpose                                                                                                         |
 | ------------------------------ | ----------- | --------------------------------------------------------------------------------------------------------------- |
 | `CLOUDFLARE_API_TOKEN`         | deploy-time | Used by the deploy scripts and CI (provision, Access app, config import). Never reaches the Worker.             |
-| `CLOUDFLARE_ACCOUNT_ID`        | deploy-time | Same; also injected into `wrangler.jsonc` vars by `provision` for the usage block.                              |
+| `CLOUDFLARE_ACCOUNT_ID`        | deploy-time | Same; also injected into the generated `wrangler.jsonc` vars for the usage block.                               |
 | `CLOUDFLARE_GRAPHQL_API_TOKEN` | runtime     | Optional. Enables the Infrastructure Usage block on the private page (D1:Read + Account Analytics:Read).        |
 | `MATTERMOST_WEBHOOK_URL`, …    | runtime     | Custom notification variables — one per `${VAR}` placeholder in `config.yaml` notification channels, same name. |
+
+Recommended Cloudflare API token permissions:
+
+| Token                          | Required permissions                                                                                                                                                               | Notes                                                                                                                        |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `CLOUDFLARE_API_TOKEN`         | Workers Scripts:Edit, D1:Edit, Queues:Edit, Access Apps and Policies:Edit, Access Organizations:Read, Access Identity Providers:Read                                               | Used only by deploy/provision scripts and CI. Add Workers Routes:Edit and Zone:Read if deploying a custom domain route.      |
+| `CLOUDFLARE_GRAPHQL_API_TOKEN` | Account Analytics:Read, D1:Read                                                                                                                                                    | Optional runtime secret for the private Infrastructure Usage block. Add Account Billing:Read to detect Free vs Workers Paid. |
+| Webhook secrets                | None in Cloudflare                                                                                                                                                                 | Values like `MATTERMOST_WEBHOOK_URL` are third-party webhook credentials, stored as Worker secrets and resolved at send time. |
 
 Deploy-time credentials live in `.env` locally and in CI secrets. **Runtime** secrets are read from `.env` by `wrangler dev` and the test runner; for production there are two equivalent ways to get them into the Worker:
 
@@ -126,12 +134,12 @@ Adding a new notification channel with `url: ${MY_NEW_HOOK}` means adding a `MY_
 
 | Script                    | What it does                                                                     |
 | ------------------------- | -------------------------------------------------------------------------------- |
-| `npm run provision`       | Create D1 + queue if missing, auto-fill `wrangler.jsonc` (`--dry-run` supported) |
-| `npm run d1:migrate:prod` | Apply D1 migrations (additive-only, linted)                                      |
-| `npm run deploy:access`   | Create/update the Cloudflare Access app for `/private`                           |
-| `npm run config:import`   | Push `config.yaml` monitors/alerts/channels into D1                              |
-| `npm run deploy`          | `wrangler deploy`                                                                |
-| `npm run deploy:prod`     | All of the above, in order, with tests first                                     |
+| `npm run provision`       | Create D1 + queue if missing, write IDs to `config.yaml` (`--dry-run` supported) |
+| `npm run d1:migrate:prod` | Apply D1 migrations (additive-only, linted)                                       |
+| `npm run deploy:access`   | Create/update the Cloudflare Access app for `/private`                            |
+| `npm run config:import`   | Push `config.yaml` monitors/alerts/channels into D1                               |
+| `npm run deploy`          | Generate `wrangler.jsonc` then `wrangler deploy`                                  |
+| `npm run deploy:prod`     | All of the above, in order, with tests first                                      |
 
 CI does the same on every push to `main` (GitHub Actions and GitLab CI), finishing with a smoke test of the deployed Worker. Required CI secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`.
 

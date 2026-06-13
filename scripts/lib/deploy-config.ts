@@ -1,12 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { parse as parseYaml } from 'yaml';
-import { parse as parseJsonc } from 'jsonc-parser';
 
 export interface DeployConfig {
 	name: string;
 	domain?: string;
 	database_name?: string;
 	queue_name?: string;
+	database_id?: string; // auto-populated by provision
 }
 
 export interface ResolvedDeploy {
@@ -14,24 +14,7 @@ export interface ResolvedDeploy {
 	domain?: string;
 	databaseName: string;
 	queueName: string;
-}
-
-export interface WranglerD1Database {
-	binding: string;
-	database_name: string;
-	database_id: string;
-	migrations_dir?: string;
-}
-
-export interface WranglerConfig {
-	name?: string;
-	routes?: { pattern: string; custom_domain?: boolean }[];
-	vars?: Record<string, string>;
-	d1_databases?: WranglerD1Database[];
-	queues?: {
-		producers?: { queue: string; binding: string }[];
-		consumers?: { queue: string; [key: string]: unknown }[];
-	};
+	databaseId: string;
 }
 
 export function loadConfig<T extends { deploy?: DeployConfig }>(): T {
@@ -50,6 +33,7 @@ export function resolveDeploy(config: { deploy?: DeployConfig }): ResolvedDeploy
 		domain: deploy.domain,
 		databaseName: deploy.database_name ?? `${deploy.name}-prod-db`,
 		queueName: deploy.queue_name ?? `${deploy.name}-notifications`,
+		databaseId: deploy.database_id ?? '',
 	};
 }
 
@@ -60,9 +44,4 @@ export function requireEnv(name: string): string {
 		process.exit(1);
 	}
 	return value;
-}
-
-export function readWranglerConfig(): WranglerConfig {
-	const raw = readFileSync('wrangler.jsonc', 'utf-8');
-	return parseJsonc(raw) as WranglerConfig;
 }

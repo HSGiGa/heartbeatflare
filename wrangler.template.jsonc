@@ -1,0 +1,39 @@
+/**
+ * Wrangler template — committed to git, never edited manually.
+ * Run `npm run wrangler:generate` (or any script that calls it) to produce wrangler.jsonc.
+ * Values are sourced from config.yaml (deploy.*) and env (CLOUDFLARE_ACCOUNT_ID).
+ *
+ * For more details on Wrangler configuration:
+ * https://developers.cloudflare.com/workers/wrangler/configuration/
+ */
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "${WORKER_NAME}",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-06-07",
+	"compatibility_flags": ["nodejs_compat"],
+	"workers_dev": true,
+	"routes": [{ "pattern": "${STATUS_DOMAIN}", "custom_domain": true }],
+	"observability": {
+		"enabled": true
+	},
+	"vars": {
+		"CLOUDFLARE_ACCOUNT_ID": "${CLOUDFLARE_ACCOUNT_ID}",
+		"D1_DATABASE_ID": "${D1_DATABASE_ID}"
+	},
+	"triggers": {
+		"crons": ["* * * * *"]
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "${D1_DATABASE_NAME}",
+			"database_id": "${D1_DATABASE_ID}",
+			"migrations_dir": "migrations"
+		}
+	],
+	"queues": {
+		"producers": [{ "queue": "${NOTIFICATION_QUEUE_NAME}", "binding": "NOTIFICATION_QUEUE" }],
+		"consumers": [{ "queue": "${NOTIFICATION_QUEUE_NAME}", "max_batch_size": 10, "max_batch_timeout": 5, "max_retries": 5 }]
+	}
+}

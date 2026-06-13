@@ -47,7 +47,7 @@
 			"type": "object",
 			"required": ["name"],
 			"additionalProperties": false,
-			"description": "Deployment inputs. provision creates the D1 database and queue, then auto-populates wrangler.jsonc with the resulting IDs.",
+			"description": "Deployment inputs. provision creates the D1 database and queue, then auto-populates config.yaml with the resulting IDs.",
 			"properties": {
 				"name": {
 					"type": "string",
@@ -56,7 +56,11 @@
 				},
 				"domain": {
 					"type": "string",
-					"description": "Custom domain route, e.g. status.modem.by. Omit to serve on workers.dev only."
+					"description": "Custom domain route, e.g. status.example.com. Omit to serve on workers.dev only."
+				},
+				"database_id": {
+					"type": "string",
+					"description": "D1 database UUID. Auto-populated by provision — do not edit manually."
 				},
 				"database_name": {
 					"type": "string",
@@ -313,6 +317,13 @@
 					"items": {
 						"$ref": "#/$defs/alert"
 					}
+				},
+				"notification_channels": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Names of notification channels for this monitor. If omitted, falls back to is_default channels."
 				}
 			}
 		},

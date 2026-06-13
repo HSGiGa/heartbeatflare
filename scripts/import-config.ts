@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
-import { readWranglerConfig, requireEnv } from './lib/deploy-config';
+import { loadConfig, requireEnv } from './lib/deploy-config';
 
 const API_BASE = 'https://api.cloudflare.com/client/v4';
 
@@ -8,9 +8,9 @@ const token = requireEnv('CLOUDFLARE_API_TOKEN');
 const accountId = requireEnv('CLOUDFLARE_ACCOUNT_ID');
 
 // provision is the single writer of this field and runs earlier in every pipeline
-const DB_ID = readWranglerConfig().d1_databases?.find((d) => d.binding === 'DB')?.database_id;
+const DB_ID = loadConfig().deploy?.database_id;
 if (!DB_ID || !/^[0-9a-f-]{36}$/.test(DB_ID)) {
-	console.error('No valid database_id for binding "DB" in wrangler.jsonc — run `npm run provision` first');
+	console.error('No valid deploy.database_id in config.yaml — run `npm run provision` first');
 	process.exit(1);
 }
 
@@ -31,6 +31,7 @@ interface MonitorConfig {
 	target: string;
 	interval?: string;
 	alerts?: AlertConfig[];
+	notification_channels?: string[];
 }
 
 interface SlackChannelConfig {
@@ -155,6 +156,34 @@ async function main() {
 	const config = parse(raw) as Config;
 
 	const yamlIds = config.monitors.map((m) => slug(m.name));
+	const yamlChannelIds = new Set((config.notification_channels ?? []).map((c) => slug(c.name)));
+	const knownChannelNames = new Set((config.notification_channels ?? []).map((c) => c.name));
+
+	// Import channels before monitors so per-monitor assignments can reference valid channel IDs.
+	for (const channel of config.notification_channels ?? []) {
+		const id = slug(channel.name);
+		console.log(`Importing channel: ${channel.name} (${id})`);
+		const { name: _n, type: _t, is_default: _d, ...rest } = channel as unknown as Record<string, unknown>;
+		const configuration = JSON.stringify(rest);
+		await d1Query(
+			`INSERT INTO notification_channels (id, name, type, configuration, secret_name, is_default, enabled)
+       VALUES (?, ?, ?, ?, '', ?, 1)
+       ON CONFLICT(id) DO UPDATE SET
+         name = excluded.name,
+         type = excluded.type,
+         configuration = excluded.configuration,
+         is_default = excluded.is_default,
+         enabled = 1`,
+			[id, channel.name, channel.type, configuration, channel.is_default ? 1 : 0],
+		);
+	}
+
+	const existingChannels = await d1Query<{ id: string }>('SELECT id FROM notification_channels WHERE enabled = 1');
+	const removedChannels = existingChannels.filter((r) => !yamlChannelIds.has(r.id));
+	for (const r of removedChannels) {
+		console.log(`Soft-deleting channel: ${r.id}`);
+		await d1Query("UPDATE notification_channels SET enabled = 0 WHERE id = ?", [r.id]);
+	}
 
 	const existing = await d1Query<{ id: string }>('SELECT id FROM monitors WHERE enabled = 1');
 	const existingIds = new Set(existing.map((r) => r.id));
@@ -220,6 +249,29 @@ async function main() {
 			);
 		}
 
+		if (monitor.notification_channels !== undefined) {
+			for (const channelName of monitor.notification_channels) {
+				if (!knownChannelNames.has(channelName)) {
+					console.warn(`Warning: monitor "${monitor.name}" references unknown channel "${channelName}" — channel not found in notification_channels config`);
+				}
+				const channelId = slug(channelName);
+				await d1Query(
+					`INSERT INTO monitor_notification_channels (monitor_id, channel_id, notify_on, enabled)
+           VALUES (?, ?, '["incident_open","incident_resolved"]', 1)
+           ON CONFLICT(monitor_id, channel_id) DO UPDATE SET enabled = 1`,
+					[id, channelId],
+				);
+			}
+			if (monitor.notification_channels.length > 0) {
+				const placeholders = monitor.notification_channels.map(() => '?').join(', ');
+				const channelIds = monitor.notification_channels.map((n) => slug(n));
+				await d1Query(
+					`UPDATE monitor_notification_channels SET enabled = 0 WHERE monitor_id = ? AND channel_id NOT IN (${placeholders})`,
+					[id, ...channelIds],
+				);
+			}
+		}
+
 		// Add default SSL expiry rules if no ssl_expiry alerts are explicitly configured
 		const hasSslRule = alerts.some((a) => /ssl_expiry/i.test(a.condition));
 		const sslEnabled = monitor.ssl ?? true;
@@ -243,26 +295,6 @@ async function main() {
 		await d1Query("UPDATE monitors SET enabled = 0, updated_at = datetime('now') WHERE id = ?", [id]);
 	}
 
-	for (const channel of config.notification_channels ?? []) {
-		const id = slug(channel.name);
-		console.log(`Importing channel: ${channel.name} (${id})`);
-		const { name: _n, type: _t, is_default: _d, ...rest } = channel as unknown as Record<string, unknown>;
-		const configuration = JSON.stringify(rest);
-		// Upsert: monitor_notification_channels and notification_deliveries cascade off this row,
-		// so a REPLACE delete would wipe per-monitor assignments and delivery history.
-		await d1Query(
-			`INSERT INTO notification_channels (id, name, type, configuration, secret_name, is_default, enabled)
-       VALUES (?, ?, ?, ?, '', ?, 1)
-       ON CONFLICT(id) DO UPDATE SET
-         name = excluded.name,
-         type = excluded.type,
-         configuration = excluded.configuration,
-         is_default = excluded.is_default,
-         enabled = 1`,
-			[id, channel.name, channel.type, configuration, channel.is_default ? 1 : 0],
-		);
-	}
-
 	if (config.auth) {
 		console.log('Importing auth config...');
 		await d1Query(
@@ -276,7 +308,7 @@ async function main() {
 	}
 
 	console.log(
-		`Import complete. ${config.monitors.length} monitor(s) imported, ${removed.length} soft-deleted, ${config.notification_channels?.length ?? 0} channel(s) imported.`,
+		`Import complete. ${config.monitors.length} monitor(s) imported, ${removed.length} soft-deleted, ${config.notification_channels?.length ?? 0} channel(s) imported, ${removedChannels.length} channel(s) soft-deleted.`,
 	);
 }
 

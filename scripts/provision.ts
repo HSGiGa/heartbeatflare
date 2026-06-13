@@ -1,14 +1,7 @@
 import Cloudflare from 'cloudflare';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { applyEdits, modify, type JSONPath } from 'jsonc-parser';
-import { loadConfig, resolveDeploy, readWranglerConfig, requireEnv, type ResolvedDeploy } from './lib/deploy-config';
-
-// Tabs to match the existing wrangler.jsonc formatting (Prettier: tabs)
-const MODIFY_OPTIONS = { formattingOptions: { insertSpaces: false, tabSize: 1, eol: '\n' } };
-
-function patch(text: string, path: JSONPath, value: unknown): string {
-	return applyEdits(text, modify(text, path, value, MODIFY_OPTIONS));
-}
+import { parseDocument } from 'yaml';
+import { loadConfig, resolveDeploy, requireEnv } from './lib/deploy-config';
 
 async function ensureDatabase(client: Cloudflare, accountId: string, name: string): Promise<string> {
 	for await (const db of client.d1.database.list({ account_id: accountId, name })) {
@@ -35,32 +28,17 @@ async function ensureQueue(client: Cloudflare, accountId: string, name: string):
 	await client.queues.create({ account_id: accountId, queue_name: name });
 }
 
-function updateWranglerConfig(deploy: ResolvedDeploy, accountId: string, databaseId: string): void {
-	const previous = readWranglerConfig();
-	let text = readFileSync('wrangler.jsonc', 'utf-8');
-
-	text = patch(text, ['name'], deploy.name);
-
-	if (deploy.domain) {
-		if (previous.routes?.length) {
-			text = patch(text, ['routes', 0, 'pattern'], deploy.domain);
-			text = patch(text, ['routes', 0, 'custom_domain'], true);
-		} else {
-			text = patch(text, ['routes'], [{ pattern: deploy.domain, custom_domain: true }]);
-		}
-	} else if (previous.routes) {
-		text = patch(text, ['routes'], undefined);
+function updateConfigYaml(databaseId: string, previousDatabaseId: string): void {
+	const raw = readFileSync('config.yaml', 'utf-8');
+	const doc = parseDocument(raw);
+	if (previousDatabaseId && previousDatabaseId !== databaseId) {
+		console.warn(
+			`WARNING: A new D1 database was provisioned (previous ID: ${previousDatabaseId}). Existing data is not migrated.`,
+		);
 	}
-
-	text = patch(text, ['vars', 'CLOUDFLARE_ACCOUNT_ID'], accountId);
-	text = patch(text, ['vars', 'D1_DATABASE_ID'], databaseId);
-	text = patch(text, ['d1_databases', 0, 'database_name'], deploy.databaseName);
-	text = patch(text, ['d1_databases', 0, 'database_id'], databaseId);
-	text = patch(text, ['queues', 'producers', 0, 'queue'], deploy.queueName);
-	text = patch(text, ['queues', 'consumers', 0, 'queue'], deploy.queueName);
-
-	writeFileSync('wrangler.jsonc', text);
-	console.log('wrangler.jsonc updated.');
+	doc.setIn(['deploy', 'database_id'], databaseId);
+	writeFileSync('config.yaml', doc.toString());
+	console.log('config.yaml updated with deploy.database_id');
 }
 
 async function main() {
@@ -73,9 +51,7 @@ async function main() {
 		console.log(`Custom domain: ${deploy.domain ?? '(none — workers.dev only)'}`);
 		console.log(`D1 database:   ${deploy.databaseName}`);
 		console.log(`Queue:         ${deploy.queueName}`);
-		console.log(
-			'Managed wrangler.jsonc fields: name, routes, vars.CLOUDFLARE_ACCOUNT_ID, vars.D1_DATABASE_ID, d1_databases[0], queues.*.queue',
-		);
+		console.log('Managed config.yaml fields: deploy.database_id');
 		return;
 	}
 
@@ -83,18 +59,10 @@ async function main() {
 	const accountId = requireEnv('CLOUDFLARE_ACCOUNT_ID');
 	const client = new Cloudflare({ apiToken: token });
 
-	const previousDb = readWranglerConfig().d1_databases?.find((d) => d.binding === 'DB');
-	if (previousDb && previousDb.database_name !== deploy.databaseName) {
-		console.warn(
-			`WARNING: D1 database name changes from "${previousDb.database_name}" to "${deploy.databaseName}". ` +
-				'A new empty database will be provisioned; existing data is not migrated.',
-		);
-	}
-
 	const databaseId = await ensureDatabase(client, accountId, deploy.databaseName);
 	await ensureQueue(client, accountId, deploy.queueName);
 
-	updateWranglerConfig(deploy, accountId, databaseId);
+	updateConfigYaml(databaseId, deploy.databaseId);
 }
 
 main().catch((err) => {
