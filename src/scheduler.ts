@@ -1,7 +1,7 @@
 // Cron tick (every minute): select due monitors, probe them with bounded concurrency,
 // store results and evaluate alerts. Also hosts the hourly uptime rollup and daily cleanup,
 // since the Free Plan allows few cron triggers per account.
-import { CONNECTIVITY_CLASS, evaluateAlerts, storeResult } from './alerts';
+import { CONNECTIVITY_CLASS, evaluateAlerts, storeHeartbeatMiss, storeResult } from './alerts';
 import { log } from './log';
 import { dnsCheck, httpCheck, sslProbe, tcpCheck } from './probes';
 import type { ActiveIncident, ActiveIncidentRow, AlertRuleDbRow, MonitorRow, NotificationMessage } from './types';
@@ -78,7 +78,7 @@ export async function handleScheduled(env: Env): Promise<void> {
 	// windows — avoids N+2 DB round-trips per cron run
 	const [{ results: allMonitors }, { results: allRules }, { results: openIncidents }, { results: activeMaintenance }] = await Promise.all([
 		env.DB.prepare(
-			`SELECT m.id, m.name, m.type, m.mode, m.scrape_url, m.interval_seconds,
+			`SELECT m.id, m.name, m.type, m.mode, m.scrape_url, m.interval_seconds, m.created_at,
 			        COALESCE(m.ssl_check, 1) AS ssl_check,
 			        ms.status AS current_status, ms.last_check_at, ms.last_success_at,
 			        COALESCE(ms.consecutive_failures, 0) AS consecutive_failures,
@@ -88,7 +88,7 @@ export async function handleScheduled(env: Env): Promise<void> {
 			 FROM monitors m
 			 LEFT JOIN monitor_state ms ON ms.monitor_id = m.id
 			 WHERE m.enabled = 1 AND m.paused = 0`,
-		).all<MonitorRow & { mode: string; last_success_at: string | null }>(),
+		).all<MonitorRow & { mode: string; last_success_at: string | null; created_at: string }>(),
 		env.DB.prepare(
 			`SELECT id, monitor_id, metric_name, condition, threshold, severity,
 			        failure_count, recovery_count, cooldown_seconds, enabled
@@ -163,10 +163,45 @@ export async function handleScheduled(env: Env): Promise<void> {
 		MAX_CONCURRENT_CHECKS,
 	);
 
+	// Heartbeat (push) monitors: not probed. A beat updates last_check_at via the /beat endpoint; here
+	// we detect missed beats. The deadline is measured from the last beat, or from created_at when a
+	// monitor has never beaten (a grace period so a freshly-imported job isn't instantly down). We
+	// record one synthetic 'down' per newly-missed interval — deduped on the stored failure count so
+	// uptime and the D1 write budget stay honest — then let evaluateAlerts open an incident once the
+	// misses reach failure_count. These run inline (no subrequest) and don't count toward the probe cap.
+	const heartbeats = allMonitors.filter((m) => m.type === 'heartbeat' && !underMaintenance(m.id));
+	let heartbeatMisses = 0;
+	for (const m of heartbeats) {
+		const base = m.last_check_at ?? m.created_at;
+		const missed = Math.floor((Date.now() - new Date(base).getTime()) / (m.interval_seconds * 1000));
+		if (missed < 1) continue;
+		// Dedup: skip if we've already recorded this miss count (status already down with >= missed failures).
+		if (m.current_status === 'down' && m.consecutive_failures >= missed) continue;
+		try {
+			await storeHeartbeatMiss(env, m, missed, crypto.randomUUID(), now);
+			await evaluateAlerts(
+				env,
+				m,
+				{ status: 'down', latency_ms: 0, error: 'Heartbeat missed' },
+				missed,
+				0,
+				now,
+				rulesByMonitor.get(m.id) ?? [],
+				activeByMonitor.get(m.id) ?? new Map(),
+			);
+			heartbeatMisses++;
+			log('warn', 'heartbeat.missed', { monitorId: m.id, missed, intervalSeconds: m.interval_seconds });
+		} catch (err) {
+			log('error', 'check.error', { monitorId: m.id, error: err instanceof Error ? err.message : String(err) });
+		}
+	}
+
 	log('info', 'scheduler.tick', {
 		durationMs: Date.now() - t0,
 		due: dueExternal.length,
 		checked: Math.min(dueExternal.length, MAX_CHECKS_PER_RUN),
+		heartbeats: heartbeats.length,
+		heartbeatMisses,
 		maintenanceMonitors: maintenanceMonitorIds.size,
 		globalMaintenance,
 	});

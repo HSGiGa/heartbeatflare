@@ -3,6 +3,7 @@
 // enforced here in SQL WHERE clauses independently of the Cloudflare Access gate on /private.
 // Unauthenticated responses are edge-cached to absorb traffic spikes without touching D1.
 import { getAuth, handleLogout, resolveAuthConfig } from './auth';
+import { handleBeat } from './heartbeat';
 import { log } from './log';
 import { buildBadgeSvg } from './badge';
 import { buildAtomFeed } from './feed';
@@ -264,6 +265,13 @@ export async function handleFetch(request: Request, env: Env, ctx: ExecutionCont
 	const origin = new URL(request.url).origin;
 	const { pathname } = new URL(request.url);
 	const runtimeEnv = env as RuntimeEnv;
+
+	// Push heartbeat: handled before auth/cache. Never cached, no Cloudflare Access. The path itself
+	// is generic, so a wrong method returns 405 (not 404) — only the monitor id/token leak nothing.
+	if (pathname.startsWith('/beat/')) {
+		if (request.method !== 'POST') return new Response(null, { status: 405, headers: { Allow: 'POST' } });
+		return handleBeat(request, env);
+	}
 
 	if (pathname === '/auth/login') {
 		return Response.redirect(origin + '/private', 302);

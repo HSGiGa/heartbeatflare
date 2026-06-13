@@ -9,6 +9,7 @@ Live example: [status.modem.by](https://status.modem.by)
 ## Features
 
 - **HTTP/HTTPS, TCP and DNS probes** with per-monitor intervals (60s minimum)
+- **Heartbeat (push) monitors** — a cron job / backup script `POST`s to a per-monitor URL; an incident opens when the beats stop arriving (dead-man's switch)
 - **SSL certificate expiry tracking** (best-effort, via external cert APIs)
 - **Incident management** — connectivity and SSL incidents tracked independently, with failure/recovery thresholds, cooldowns and optional escalation re-notifications
 - **Notifications** via Slack-compatible webhooks (e.g. Mattermost) and generic webhooks, delivered through Cloudflare Queues with retry
@@ -27,7 +28,7 @@ One Worker, three entry points:
 - **`fetch()`** — serves `/public` and `/private` status pages, a JSON API (`/api/status`, `/api/history`), an Atom feed (`/feed.xml`) and SVG status badges (`/badge/<monitor>.svg`). Visibility is fail-closed: private monitors are only shown with a valid Cloudflare Access session, and feed/badges expose public monitors only. Public responses are edge-cached for 60s.
 - **`queue()`** — consumes the notification queue and delivers incident open / resolve / escalation messages to the configured channels.
 
-Storage is Cloudflare D1 (state, incidents, time series, uptime aggregates). See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design, data model and free-plan budgets.
+Storage is Cloudflare D1 (state, incidents, time series, uptime aggregates). See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design, data model and free-plan budgets.
 
 ## Quick start
 
@@ -48,7 +49,7 @@ set -a; . ./.env; set +a
 npm run deploy:prod
 ```
 
-`deploy:prod` runs the whole pipeline: tests → migration lint → **provision** (creates the D1 database and queue, writes the IDs back to `config.yaml`) → D1 migrations → Cloudflare Access app → config import → `wrangler deploy`. No resource IDs need to be entered by hand. Details in [DEPLOYMENT.md](DEPLOYMENT.md).
+`deploy:prod` runs the whole pipeline: tests → migration lint → **provision** (creates the D1 database and queue, writes the IDs back to `config.yaml`) → D1 migrations → Cloudflare Access app → config import → `wrangler deploy`. No resource IDs need to be entered by hand. Details in [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 Local development:
 
@@ -81,7 +82,7 @@ notification_channels:
 
 monitors:
   - name: Example API
-    type: http # http | tcp | dns
+    type: http # http | tcp | dns | heartbeat
     mode: external
     visibility: public # public | private
     target: https://api.example.com/health
@@ -113,7 +114,7 @@ Each entry under `alerts:` supports:
 | --------- | ------------- | ------- |
 | `status != 200` | http | HTTP response code is not 200 (any non-2xx is treated as down) |
 | `connect != true` | tcp | TCP connection could not be established |
-| `status != up` | dns | DNS query returned no records or timed out |
+| `status != up` | dns, heartbeat | DNS query returned no records / timed out; for a heartbeat, an expected beat was missed |
 | `latency >= 500` | http, tcp | Round-trip latency exceeded the threshold in milliseconds (`>`, `<`, `>=`, `<=` are all supported) |
 | `ssl_expiry < 14` | http, tcp (with ssl) | Days until certificate expiry is below the threshold. Two default rules (`< 7` warning, `< 1` critical) are added automatically unless you configure your own |
 
@@ -144,6 +145,68 @@ maintenance:
 Like everything else, windows are imported into D1 by `config:import` — declaring one is a config
 change (git commit + deploy). Removing a window from YAML deletes it.
 
+### Heartbeat (push) monitoring
+
+A `heartbeat` monitor is a dead-man's switch: instead of the Worker probing a target, your job calls
+the Worker. Each successful run sends `POST /beat/<monitor-id>/<token>`; if no beat arrives within
+the monitor's `interval`, the scheduler records a miss, and after `failures` consecutive misses it
+opens an incident — exactly like a failed probe. Use it for cron jobs, backups, queue workers and
+anything that should "check in" on a schedule.
+
+```yaml
+monitors:
+  - name: Backup job
+    type: heartbeat
+    mode: external
+    visibility: private
+    interval: 10m # the expected beat period (supports s / m / h / d)
+    alerts:
+      - condition: 'status != up'
+        severity: critical
+        failures: 1 # open an incident after this many missed intervals
+        recovery: 1
+```
+
+`target` is omitted (and ignored) for heartbeat monitors. The monitor name maps to **two** derived
+identifiers — you never type them in YAML, but you need both:
+
+| Form | Example | Where it's used |
+| ---- | ------- | --------------- |
+| Monitor id (lowercase, hyphenated) | `backup-job` | the beat URL path |
+| Worker Secret (uppercase, underscored) | `HEARTBEAT_BACKUP_JOB_TOKEN` | holds the token value |
+
+The token is **not** stored in `config.yaml` or D1 — only the reference `secret:HEARTBEAT_…_TOKEN`
+is imported. The value lives in a Cloudflare Worker Secret that is **generated automatically on
+deploy**: the `secrets:sync` step (part of `npm run deploy:prod` and CI) creates a random token for
+any heartbeat monitor that doesn't already have one, and **prints it once** in the deploy output —
+copy it from there into your job:
+
+```
+=== New heartbeat tokens generated — SAVE THESE NOW (not shown again) ===
+  Monitor:  Backup job
+  Secret:   HEARTBEAT_BACKUP_JOB_TOKEN = 9f3a…c21
+  Beat URL: curl -fsS -X POST "https://status.modem.by/beat/backup-job/9f3a…c21"
+```
+
+A secret's value is **not shown again** after creation. The secret's *name* is listed in the
+dashboard under **Workers & Pages → heartbeatflare → production → Settings → Variables and Secrets**
+([direct link for this instance](https://dash.cloudflare.com/0a8f78933036db3025075e950a307acd/workers/services/view/heartbeatflare/production/settings)).
+Existing tokens are left untouched across deploys; to **rotate**, delete the secret there and redeploy
+(a fresh token is generated and printed). You can also set your own value ahead of time via CI env or
+`npx wrangler secret put HEARTBEAT_BACKUP_JOB_TOKEN`, and it will be used instead of a generated one.
+
+Then have the job beat on each successful run:
+
+```sh
+curl -fsS -X POST "https://status.modem.by/beat/backup-job/$HEARTBEAT_BACKUP_JOB_TOKEN"
+```
+
+The endpoint is `POST`-only (other methods return `405`), never cached, and not behind Cloudflare
+Access. It returns `204` on a valid beat and `404` for an unknown monitor, a wrong/missing token, or
+a disabled monitor — so it never reveals whether a given monitor exists. Requests are rate-limited
+per source IP and per monitor (`429` when exceeded), and repeated beats well inside the interval are
+accepted without a D1 write to stay within the free-plan budget.
+
 ### Public endpoints
 
 | Endpoint | Description |
@@ -151,6 +214,7 @@ change (git commit + deploy). Removing a window from YAML deletes it.
 | `/public` | Public status page (public monitors only) |
 | `/feed.xml` | Atom 1.0 feed of incidents + maintenance windows (public monitors only) |
 | `/badge/<monitor>.svg` | SVG status badge for a public monitor; `?label=` overrides the left text. Private/unknown monitors return 404 |
+| `POST /beat/<monitor-id>/<token>` | Heartbeat ingest for `heartbeat` monitors. `204` on success, `404`/`405`/`429` otherwise. Not cached, no Access (see [Heartbeat](#heartbeat-push-monitoring)) |
 
 `<monitor>` is the slug of the monitor name (lowercased, non-alphanumerics → `-`). Embed a badge with:
 
@@ -208,8 +272,9 @@ CI does the same on every push to `main` (GitHub Actions and GitLab CI), finishi
 | Path                             | Purpose                                                          |
 | -------------------------------- | ---------------------------------------------------------------- |
 | `src/index.ts`                   | Worker entry point — dispatches fetch / scheduled / queue        |
-| `src/scheduler.ts`               | Cron tick: select due monitors, probe, rollup, cleanup           |
+| `src/scheduler.ts`               | Cron tick: select due monitors, probe, detect missed heartbeats, rollup, cleanup |
 | `src/probes.ts`                  | HTTP, TCP, DNS and SSL-expiry probe implementations              |
+| `src/heartbeat.ts`               | Heartbeat ingest endpoint (`POST /beat/<id>/<token>`)            |
 | `src/alerts.ts`                  | Result store (write-budget aware) + alert evaluation + incidents |
 | `src/queue.ts` / `src/notify.ts` | Notification delivery and channel resolution                     |
 | `src/routes.ts`                  | HTTP routing, edge caching, JSON API, feed + badge endpoints     |
@@ -223,6 +288,6 @@ CI does the same on every push to `main` (GitHub Actions and GitLab CI), finishi
 
 ## Documentation
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) — full system design, data model, free-plan budgets
-- [DEPLOYMENT.md](DEPLOYMENT.md) — deployment paths, token scopes, CI setup
-- [ROADMAP.md](ROADMAP.md) — planned features
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) — full system design, data model, free-plan budgets
+- [DEPLOYMENT.md](docs/DEPLOYMENT.md) — deployment paths, token scopes, CI setup
+- [ROADMAP.md](docs/ROADMAP.md) — planned features

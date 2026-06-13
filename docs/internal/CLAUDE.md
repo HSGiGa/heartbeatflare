@@ -16,7 +16,7 @@ It probes external targets (HTTP/HTTPS, TCP, DNS) plus best-effort SSL-certifica
 incidents, sends Slack/webhook notifications, and serves 90-day status pages — no servers, no
 agents, no build step. Live example: `status.modem.by`.
 
-> **The detailed system design lives in `ARCHITECTURE.md`** — read it before non-trivial changes.
+> **The detailed system design lives in `../ARCHITECTURE.md`** — read it before non-trivial changes.
 > It is kept current with the code. `current-plan.md` tracks open work.
 
 ## Common Commands
@@ -68,11 +68,14 @@ Dispatches the three Workers handlers to their modules: `fetch → routes.ts`,
   session, enforced in SQL `WHERE` clauses), edge caching of public responses
 - `status-page.ts` — server-rendered HTML/CSS/SVG for the status pages (no build step, no assets)
 - `scheduler.ts` — cron tick: select due monitors (oldest-checked-first, bounded concurrency),
-  probe, store, evaluate alerts, escalation re-notifications, hourly rollup, daily cleanup
+  probe, store, evaluate alerts, detect missed heartbeats, escalation re-notifications, hourly
+  rollup, daily cleanup
 - `probes.ts` — `httpCheck` / `tcpCheck` (`cloudflare:sockets`) / `dnsCheck` (DoH) / `sslProbe`
   (external cert API, cached)
-- `alerts.ts` — `storeResult()` (write-minimised persistence) and `evaluateAlerts()` (per-class
-  incidents: connectivity vs `ssl_expiry`)
+- `heartbeat.ts` — push-heartbeat ingest (`POST /beat/<id>/<token>`): rate limit, Worker-Secret
+  token check (constant-time), write-throttled `up` sample + recovery
+- `alerts.ts` — `storeResult()` (write-minimised persistence), `storeHeartbeatMiss()` and
+  `evaluateAlerts()` (per-class incidents: connectivity vs `ssl_expiry`)
 - `queue.ts` / `notify.ts` — notification delivery + channel resolution; retry on total failure
 - `auth.ts` — Cloudflare Access JWT verification; `usage.ts` — Cloudflare GraphQL usage metrics
 - `types.ts` — shared D1 row types, probe results, queue messages
@@ -81,7 +84,7 @@ Dispatches the three Workers handlers to their modules: `fetch → routes.ts`,
 Raw parameterised SQL (no ORM), batched via `DB.batch()`. Tables: `monitors` + `monitor_state`,
 `alert_rules`, `incidents`, `notification_channels` + `monitor_notification_channels` +
 `notification_deliveries`, `metric_series` (raw, actionable-only), `uptime_hourly`/`uptime_daily`
-(pre-aggregated), `auth_config`. See `ARCHITECTURE.md` for the full schema and the **Free Plan
+(pre-aggregated), `auth_config`. See `../ARCHITECTURE.md` for the full schema and the **Free Plan
 write budget** (~2 writes/check; ~30 monitors at 60s).
 
 ## Writing D1 Migrations

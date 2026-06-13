@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
 import { loadConfig, requireEnv } from './lib/deploy-config';
+import { heartbeatSecretName, slug } from './lib/naming';
 
 const API_BASE = 'https://api.cloudflare.com/client/v4';
 
@@ -25,12 +26,12 @@ interface AlertConfig {
 
 interface MonitorConfig {
 	name: string;
-	type: 'http' | 'tcp' | 'dns' | 'openmetrics';
+	type: 'http' | 'tcp' | 'dns' | 'heartbeat' | 'openmetrics';
 	mode: 'external' | 'internal';
 	visibility?: 'public' | 'private';
 	ssl?: boolean;
 	enabled?: boolean;
-	target: string;
+	target?: string; // required for all types except heartbeat (push)
 	interval?: string;
 	alerts?: AlertConfig[];
 	notification_channels?: string[];
@@ -95,19 +96,12 @@ interface Config {
 	maintenance?: MaintenanceConfig[];
 }
 
-function slug(name: string): string {
-	return name
-		.toLowerCase()
-		.replace(/[^a-z0-9]+/g, '-')
-		.replace(/^-|-$/g, '');
-}
-
 function parseInterval(interval: string): number {
-	const sMatch = interval.match(/^(\d+)s$/);
-	if (sMatch) return parseInt(sMatch[1]);
-	const mMatch = interval.match(/^(\d+)m$/);
-	if (mMatch) return parseInt(mMatch[1]) * 60;
-	throw new Error(`Unknown interval format: ${interval}`);
+	const m = interval.match(/^(\d+)([smhd])$/);
+	if (!m) throw new Error(`Unknown interval format: ${interval}`);
+	const n = parseInt(m[1], 10);
+	const unit: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 };
+	return n * unit[m[2]];
 }
 
 function parseCondition(condition: string): { dbCondition: string; threshold: number; metricName?: string } {
@@ -145,6 +139,7 @@ function parseEscalation(escalation?: string): number | null {
 }
 
 function normalizeTarget(monitor: MonitorConfig): string {
+	if (!monitor.target) throw new Error(`Monitor "${monitor.name}" of type ${monitor.type} requires a target`);
 	if (monitor.type !== 'tcp') return monitor.target;
 
 	const normalized = monitor.target.startsWith('tcp://') ? monitor.target : `tcp://${monitor.target}`;
@@ -213,17 +208,23 @@ async function main() {
 
 	for (const monitor of config.monitors) {
 		const id = slug(monitor.name);
+		if (!id) throw new Error(`Monitor "${monitor.name}" produces an empty id — give it a name with letters or digits`);
 		const intervalSeconds = parseInterval(monitor.interval ?? '5m');
-		const target = normalizeTarget(monitor);
+		const isHeartbeat = monitor.type === 'heartbeat';
+		// Heartbeat is push-based: no probe target, no SSL probe. Its token lives in a Worker Secret;
+		// D1 stores only the reference `secret:<NAME>`, with NAME derived from the monitor id.
+		const scrapeUrl = isHeartbeat ? null : normalizeTarget(monitor);
+		const sslCheck = isHeartbeat ? 0 : (monitor.ssl ?? true) ? 1 : 0;
+		const heartbeatToken = isHeartbeat ? `secret:${heartbeatSecretName(id)}` : null;
 
-		console.log(`Importing monitor: ${monitor.name} (${id})`);
+		console.log(`Importing monitor: ${monitor.name} (${id})${isHeartbeat ? ` [heartbeat secret: ${heartbeatSecretName(id)}]` : ''}`);
 
 		// Upsert (not INSERT OR REPLACE): REPLACE deletes the row first, which would cascade
 		// through ON DELETE CASCADE and wipe monitor_state, incidents, executions and metric_series
 		// on every import. ON CONFLICT updates in place and preserves runtime data + created_at.
 		await d1Query(
-			`INSERT INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, ssl_check, paused, enabled, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))
+			`INSERT INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, ssl_check, heartbeat_token, paused, enabled, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))
        ON CONFLICT(id) DO UPDATE SET
          name = excluded.name,
          type = excluded.type,
@@ -232,6 +233,7 @@ async function main() {
          scrape_url = excluded.scrape_url,
          interval_seconds = excluded.interval_seconds,
          ssl_check = excluded.ssl_check,
+         heartbeat_token = excluded.heartbeat_token,
          paused = excluded.paused,
          enabled = 1,
          updated_at = datetime('now')`,
@@ -241,9 +243,10 @@ async function main() {
 				monitor.type,
 				monitor.mode,
 				monitor.visibility ?? 'private',
-				target,
+				scrapeUrl,
 				intervalSeconds,
-				(monitor.ssl ?? true) ? 1 : 0,
+				sslCheck,
+				heartbeatToken,
 				monitor.enabled === false ? 1 : 0,
 			],
 		);
