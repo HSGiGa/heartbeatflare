@@ -3,7 +3,7 @@
 deploy:
   name: heartbeatflare # worker name; D1/queue names derive from it unless overridden
   domain: status.modem.by # custom domain route; omit to serve on workers.dev only
-  database_id: "fe16be42-154e-47ed-bd63-a54cf5d5cd53" # auto-populated by provision
+  database_id: "8f199a5c-363a-441e-8b48-a750e4c5a2be" # auto-populated by provision
   # database_name: heartbeatflare-prod-db   # default: ${name}-prod-db
   # queue_name: heartbeatflare-notifications # default: ${name}-notifications
 

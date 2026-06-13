@@ -162,13 +162,16 @@ Stores operational state and execution history.
 ```
 id                    -- slug derived from name
 name
-type                  -- http | tcp | dns  (CHECK also permits openmetrics, Phase 2)
+type                  -- http | tcp | dns (heartbeat | openmetrics reserved); plain TEXT, no CHECK
 mode                  -- external | internal
 visibility            -- public | private  (controls status page exposure)
 scrape_url            -- target (URL / host:port / hostname)
 ssl_check             -- 1 = also probe TLS cert expiry for this monitor
 interval_seconds
 enabled
+paused                -- 1 = temporarily not probed (still shown)
+group_id              -- nullable FK → monitor_groups (feature: components/groups; inert until built)
+heartbeat_token       -- nullable secret (feature: push heartbeat; inert until built)
 created_at
 updated_at
 ```
@@ -226,13 +229,21 @@ worker_region
 ```
 id
 monitor_id
-alert_rule_id         -- rule that opened this incident
+alert_rule_id         -- nullable FK → alert_rules; NULL for manual / maintenance incidents
 status                -- open | resolved
-severity              -- copied from alert_rules.severity at open time
+severity              -- plain TEXT (rule severity, or operator input for manual incidents)
 started_at
 resolved_at
 reason
+last_notified_at      -- last notification time (escalation re-notify cadence)
+acknowledged_at       -- nullable (feature: acknowledge; inert until built)
+acknowledged_by       -- nullable (feature: acknowledge)
+created_by            -- nullable operator id for manual incidents; NULL = system-generated
 ```
+
+The `incident_updates(id, incident_id, created_at, status, message)` table holds the incident
+timeline (investigating → identified → resolved) for the manual-incidents feature — also inert
+until that code lands.
 
 Incident visibility is inherited from the monitor (`monitors.visibility`) — there is no separate column. The public status page shows incidents only for public monitors.
 
@@ -338,30 +349,29 @@ Used for:
 Migrations are **additive-only** (`npm run migration:lint` blocks `DROP`/`RENAME`). In SQLite,
 changing a `CHECK` constraint or dropping `NOT NULL` is impossible via `ALTER` — it requires a full
 table rebuild (`CREATE …_new` → `INSERT … SELECT` → `DROP TABLE` → `RENAME` under
-`PRAGMA foreign_keys=OFF`, with a `-- lint-ok:` override, as in `0002_remove_ping_type.sql`). So
-every `CHECK (… IN (…))` enum and every `NOT NULL` column is effectively a **one-way door**. This
-shapes how the schema should grow:
+`PRAGMA foreign_keys=OFF`, with a `-- lint-ok:` override). So every `CHECK (… IN (…))` enum and every
+`NOT NULL` column is effectively a **one-way door**. The v1 baseline is forward-proofed accordingly
+so these future features need no schema migration:
 
-- **Prefer not baking growable enums into `CHECK`.** `monitors.type`, `notification_channels.type`,
-  `alert_rules.condition`, `severity` will gain values over time (e.g. `openmetrics`, new channels).
-  Input is already validated by `config.schema.json` at import; the DB `CHECK` adds little but
-  rebuild cost later. New enum-like values should be addable without a rebuild.
-- **`incidents.alert_rule_id` is `NOT NULL`.** That blocks rule-less incidents — manual incidents
-  and maintenance-driven incidents. Relaxing it later is a rebuild; cheaper to make nullable while
-  history is small.
-- **Generic metrics for OpenMetrics (Phase 2).** `metric_series` has fixed metric columns
-  (`latency_ms`, `response_time_ms`, `tcp_connect_ms`); scraped, arbitrarily-named metrics don't
-  fit. A key/value `metric_samples(monitor_id, metric_name, value, recorded_at, labels)` table
-  (with its own hourly/daily rollups and retention) should be designed before the scraper lands,
-  rather than adding a column per metric.
-- **Maintenance windows.** A `maintenance_windows(id, monitor_id NULL=global, starts_at, ends_at,
-  reason, recurrence NULL)` table, plus a way to mark a sample/incident as "during maintenance" so
-  uptime aggregation can exclude it. Designing the marker now avoids rewriting aggregation later.
+- **Growable enums carry no `CHECK`.** `monitors.type`, `alert_rules.condition`/`severity`,
+  `incidents.severity`, `notification_channels.type` are plain `TEXT` — input is validated at import
+  by `config.schema.json`. New monitor types, conditions, severities or channel types add no rebuild.
+- **`incidents.alert_rule_id` is nullable**, plus `acknowledged_at` / `acknowledged_by` / `created_by`
+  columns and an `incident_updates` timeline table — for manual incidents and acknowledge/timeline.
+- **OpenMetrics / arbitrary metrics:** `metric_samples(monitor_id, metric_name, value, recorded_at,
+  labels)` (raw key/value) plus `metric_sample_hourly` / `metric_sample_daily` aggregates
+  (count/sum/min/max → avg), mirroring the uptime rollups. Result store is the only write point.
+- **Components/groups:** `monitor_groups` + `monitors.group_id` (nullable, `ON DELETE SET NULL`).
+- **Push heartbeat:** `monitors.heartbeat_token` (secret; `type=heartbeat` already allowed).
+- **Maintenance windows** (implemented): `maintenance_windows` + `maintenance_window_monitors`;
+  active windows are handled by skipping probes, so no per-sample "during maintenance" marker is needed.
+
+These tables/columns exist in the baseline but are inert until the corresponding feature code lands.
 
 **Out of scope (single-account self-host).** Multi-tenancy / `account_id` is deferred (see Roadmap);
-it can be added additively (nullable) if ever needed. Monitor groups/components, incident timelines,
-ack/assignee, and status-page subscribers are also future, additive-only work — no schema hooks
-needed now. Tracked in `current-plan.md`.
+it can be added additively (nullable) if ever needed. **Multi-region probing** is also deferred — it
+would add a region dimension to `monitor_state`/`uptime_*` primary keys (a rebuild), so it is left
+out of the baseline intentionally. Tracked in `current-plan.md`.
 
 ---
 

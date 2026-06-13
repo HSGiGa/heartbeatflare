@@ -4,48 +4,26 @@
 Сверен с кодом 2026-06-13 — все пункты 1–10 реализованы (см. ссылки на строки).
 Статусы: `[ ]` — не начато, `[x]` — сделано.
 
-## Forward-proofing схемы БД (новое, открыто — по итогам аудита 2026-06-13)
+## Forward-proofing схемы БД — закрыто в v1 baseline (2026-06-13)
 
-Контекст: миграции строго additive-only (`npm run migration:lint`). Каждый
-`CHECK (... IN (...))`-enum и каждый `NOT NULL`-столбец — дверь в одну сторону: изменение
-требует полного rebuild таблицы под `PRAGMA foreign_keys=OFF` (как уже было в
-`0002_remove_ping_type.sql`). Целевые фичи на радаре: **maintenance windows** и
-**openmetrics/произвольные метрики**. Tenancy — вне скоупа (single-account self-host).
-Подробности и обоснование — в `ARCHITECTURE.md` → «Schema evolution under additive-only
-migrations». Пункт D (maintenance) реализован миграцией `0014_maintenance_windows.sql`;
-A–C остаются открытыми (потребуют table-rebuild по образцу `0002`, делать когда понадобятся).
+Перед v1 миграции 0001–0014 схлопнуты в один `migrations/0001_initial_schema.sql` (prod-D1
+пересоздаётся с нуля), и forward-proofing встроен прямо в baseline — в свежей схеме это бесплатно,
+без table-rebuild/`lint-ok`. Подробности — `ARCHITECTURE.md` → «Schema evolution under additive-only
+migrations».
 
-### [ ] A. Снять `NOT NULL` с `incidents.alert_rule_id`
+- **[x] A. `incidents.alert_rule_id` теперь nullable** (+ `acknowledged_at`/`acknowledged_by`/
+  `created_by`, таблица `incident_updates`) — под ручные инциденты и acknowledge/timeline.
+- **[x] B. Сняты `CHECK`-enum'ы с растущих полей** (`monitors.type`, `alert_rules.condition`/
+  `severity`, `incidents.severity`, `notification_channels.type`) — валидация на входе через
+  `config.schema.json`.
+- **[x] C. Generic-метрики под OpenMetrics** — `metric_samples` + `metric_sample_hourly`/`_daily`.
+- **[x] D. Maintenance windows** — `maintenance_windows` + `maintenance_window_monitors` (реализованы
+  фичей; во время окна мониторы не пробятся).
+- Также заложены **группы/компоненты** (`monitor_groups` + `monitors.group_id`) и **push-heartbeat**
+  (`monitors.heartbeat_token`). Все фич-таблицы/столбцы инертны до реализации соответствующего кода.
+- **Multi-region** осознанно НЕ заложен (потребовал бы региональное измерение в PK
+  `monitor_state`/`uptime_*` = rebuild) — отдельной миграцией, если/когда понадобится.
 
-Сейчас `alert_rule_id TEXT NOT NULL REFERENCES alert_rules(id)`. Блокирует инциденты без
-правила: maintenance-инциденты и ручные пометки. Снять `NOT NULL` в SQLite — только rebuild;
-дешевле сейчас (история мала), чем потом. Сделать в `0014` по образцу `0002`.
-
-### [ ] B. Ослабить `CHECK`-enum'ы на растущих полях
-
-`monitors.type`, `notification_channels.type`, `alert_rules.condition`, `severity` (и др.) —
-убрать `CHECK (... IN (...))`, оставив валидацию на уровне `config.schema.json` (она уже есть на
-входе). Тогда новые типы мониторов/каналов/условий не требуют rebuild. Делать в том же `0014`.
-
-### [ ] C. Generic-метрики под OpenMetrics
-
-`metric_series` имеет фиксированные столбцы (`latency_ms`, `response_time_ms`, `tcp_connect_ms`).
-Для скрейпа произвольных именованных метрик (Phase 2) ввести
-`metric_samples(monitor_id, metric_name, value, recorded_at, labels)` + аналог hourly/daily
-агрегации и retention. Спроектировать ДО реализации openmetrics-скрейпа.
-
-### [x] D. Maintenance windows — сделано (2026-06-13)
-
-Реализовано фичей status-page (миграция `0014_maintenance_windows.sql`): таблицы
-`maintenance_windows` + `maintenance_window_monitors` (пустой набор мониторов = глобальное окно).
-Объявляются в `config.yaml` (секция `maintenance:`) → импорт в D1. Поведение «skip probing»:
-во время активного окна планировщик (`src/scheduler.ts`) не пробит затронутые мониторы — нет
-пробы → нет инцидента, uptime не страдает; эскалации по ним подавляются. Статус-страница
-показывает баннер и метку «Maintenance», Atom-feed включает окна. Пункты A–C не понадобились
-(окна реализованы без incident-ов и без rebuild — миграция чисто additive).
-
-> Группы/компоненты, incident-timeline, ack/assignee, подписчики статус-страницы — вне текущего
-> скоупа; все добавляются additively позже без боли (зафиксировано в `ARCHITECTURE.md`, Roadmap).
 
 ---
 

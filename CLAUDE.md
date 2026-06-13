@@ -75,18 +75,22 @@ write budget** (~2 writes/check; ~30 monitors at 60s).
 
 ## Writing D1 Migrations
 
-- Migrations live in `migrations/` and run via `npm run d1:migrate:prod`. Each file runs exactly
-  once; **there is no rollback** — design schemas to be additive.
+- The v1 schema is a **single consolidated baseline**, `migrations/0001_initial_schema.sql` — the
+  whole schema in one file (the earlier 0002–0014 dev migrations were squashed into it before
+  release). New schema changes go in new numbered files (`0002_*.sql`, …).
+- Migrations run via `npm run d1:migrate:prod`. Each file runs exactly once; **there is no
+  rollback** — design schemas to be additive.
 - **Migrations are additive-only.** `npm run migration:lint` fails the build on
-  `DROP TABLE/COLUMN` or `RENAME TABLE/COLUMN`. A genuine table rebuild (the only way to change a
-  `CHECK` constraint or drop `NOT NULL` in SQLite) must be done with the
-  `CREATE …_new` → `INSERT … SELECT` → `DROP TABLE` → `RENAME` pattern under
-  `PRAGMA foreign_keys=OFF`, with a `-- lint-ok:` comment on the destructive line (see
-  `0002_remove_ping_type.sql`). Avoid this: prefer not baking growable enums into `CHECK`.
-- **Always include a backfill when adding a derived/aggregate table** so existing rows are
-  populated immediately (e.g. `INSERT INTO uptime_daily … SELECT … FROM metric_series`).
-- The test suite (`test/index.spec.ts`) applies the full migration chain so test schema matches
-  production — a broken migration fails tests.
+  `DROP TABLE/COLUMN` or `RENAME TABLE/COLUMN`. In SQLite, changing a `CHECK` constraint or dropping
+  `NOT NULL` requires a full table rebuild (`CREATE …_new` → `INSERT … SELECT` → `DROP TABLE` →
+  `RENAME` under `PRAGMA foreign_keys=OFF`, with a `-- lint-ok:` comment on the destructive line).
+  The baseline is forward-proofed to avoid this: growable enum fields (`monitors.type`,
+  `alert_rules.condition`/`severity`, `incidents.severity`, `notification_channels.type`) carry **no
+  `CHECK`** (validated at import via `config.schema.json`), and `incidents.alert_rule_id` is nullable.
+- **Always include a backfill when adding a derived/aggregate table** to a *non-empty* database so
+  existing rows are populated immediately (e.g. `INSERT INTO uptime_daily … SELECT … FROM metric_series`).
+- The test suite (`test/index.spec.ts`) applies the baseline so test schema matches production — a
+  broken migration fails tests.
 
 ## Adding Features
 
