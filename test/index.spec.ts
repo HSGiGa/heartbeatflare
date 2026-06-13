@@ -33,6 +33,8 @@ import m11 from '../migrations/0011_latency_count.sql?raw';
 import m12 from '../migrations/0012_add_monitor_paused.sql?raw';
 // @ts-expect-error vite ?raw import
 import m13 from '../migrations/0013_alert_escalation.sql?raw';
+// @ts-expect-error vite ?raw import
+import m14 from '../migrations/0014_maintenance_windows.sql?raw';
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 
@@ -54,7 +56,7 @@ async function applyMigration(sql: string) {
 }
 
 beforeAll(async () => {
-	for (const sql of [m01, m02, m03, m04, m05, m06, m07, m08, m09, m10, m11, m12, m13]) {
+	for (const sql of [m01, m02, m03, m04, m05, m06, m07, m08, m09, m10, m11, m12, m13, m14]) {
 		await applyMigration(sql as string);
 	}
 	await env.DB.prepare(
@@ -240,5 +242,85 @@ describe('auth visibility filtering', () => {
 		expect(res.status).toBe(302);
 		expect(res.headers.get('Location')).toBe('http://example.com/public');
 		expect(res.headers.get('Set-Cookie')).toContain('CF_Authorization=;');
+	});
+});
+
+describe('maintenance windows, feed and badges', () => {
+	beforeAll(async () => {
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, enabled)
+			 VALUES ('badge-pub', 'Badge Public', 'http', 'external', 'public', 'https://pub.example.com', 60, 1)`,
+		).run();
+		await env.DB.prepare(`INSERT OR IGNORE INTO monitor_state (monitor_id, status) VALUES ('badge-pub', 'up')`).run();
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, enabled)
+			 VALUES ('badge-priv', 'Badge Private', 'http', 'external', 'private', 'https://priv.example.com', 60, 1)`,
+		).run();
+		// Alert rules referenced by the incidents below (incidents.alert_rule_id is a NOT NULL FK).
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO alert_rules (id, monitor_id, metric_name, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled)
+			 VALUES ('badge-pub-rule', 'badge-pub', NULL, 'eq', 0, 'critical', 1, 1, 0, 1)`,
+		).run();
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO alert_rules (id, monitor_id, metric_name, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled)
+			 VALUES ('badge-priv-rule', 'badge-priv', NULL, 'eq', 0, 'critical', 1, 1, 0, 1)`,
+		).run();
+		// A public incident (for the feed) and a private incident (must be excluded from the feed).
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, reason)
+			 VALUES ('feed-pub-inc', 'badge-pub', 'badge-pub-rule', 'open', 'critical', '2026-06-12T00:00:00Z', 'pub boom')`,
+		).run();
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, reason)
+			 VALUES ('feed-priv-inc', 'badge-priv', 'badge-priv-rule', 'open', 'critical', '2026-06-12T00:00:00Z', 'priv secret boom')`,
+		).run();
+		// An active maintenance window (started in the past, ends far in the future) on the public monitor.
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO maintenance_windows (id, title, body, starts_at, ends_at, enabled)
+			 VALUES ('db-migration', 'DB migration window', 'upgrading postgres', '2026-01-01T00:00:00Z', '2099-01-01T00:00:00Z', 1)`,
+		).run();
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO maintenance_window_monitors (window_id, monitor_id) VALUES ('db-migration', 'badge-pub')`,
+		).run();
+	});
+
+	it('serves an SVG badge for a public monitor', async () => {
+		const res = await SELF.fetch('https://example.com/badge/badge-pub.svg');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('image/svg+xml');
+		const svg = await res.text();
+		expect(svg).toContain('<svg');
+		expect(svg).toContain('Operational');
+	});
+
+	it('returns 404 for a private monitor badge (no leak)', async () => {
+		const res = await SELF.fetch('https://example.com/badge/badge-priv.svg');
+		expect(res.status).toBe(404);
+	});
+
+	it('returns 404 for an unknown monitor badge', async () => {
+		const res = await SELF.fetch('https://example.com/badge/does-not-exist.svg');
+		expect(res.status).toBe(404);
+	});
+
+	it('serves an Atom feed with public incidents but not private ones', async () => {
+		const res = await SELF.fetch('https://example.com/feed.xml');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('application/atom+xml');
+		const xml = await res.text();
+		expect(xml).toContain('<feed');
+		expect(xml).toContain('Badge Public');
+		expect(xml).toContain('Maintenance: DB migration window');
+		expect(xml).not.toContain('priv secret boom');
+		expect(xml).not.toContain('Badge Private');
+	});
+
+	it('shows a maintenance banner on the public status page', async () => {
+		// Cache-busting query so we never hit an earlier cached /public render without the window.
+		const res = await SELF.fetch(`https://example.com/public?t=${Date.now()}`);
+		expect(res.status).toBe(200);
+		const html = await res.text();
+		expect(html).toContain('DB migration window');
+		expect(html).toContain('🔧');
 	});
 });

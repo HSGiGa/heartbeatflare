@@ -80,10 +80,19 @@ interface AuthConfig {
 	aud: string;
 }
 
+interface MaintenanceConfig {
+	title: string;
+	body?: string;
+	starts_at: string;
+	ends_at: string;
+	monitors?: string[];
+}
+
 interface Config {
 	monitors: MonitorConfig[];
 	notification_channels?: NotificationChannelConfig[];
 	auth?: AuthConfig;
+	maintenance?: MaintenanceConfig[];
 }
 
 function slug(name: string): string {
@@ -326,6 +335,37 @@ async function main() {
 		await d1Query(`UPDATE auth_config SET enabled = 0, updated_at = datetime('now') WHERE id = 'default'`);
 	}
 
+	// Maintenance windows: upsert each window (id = slug(title)) and re-sync its affected
+	// monitors, then hard-delete windows no longer in YAML (CASCADE clears their monitor links).
+	const windows = config.maintenance ?? [];
+	const windowIds = windows.map((w) => slug(w.title));
+	for (const w of windows) {
+		const id = slug(w.title);
+		console.log(`Importing maintenance window: ${w.title} (${id})`);
+		await d1Query(
+			`INSERT INTO maintenance_windows (id, title, body, starts_at, ends_at, enabled, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))
+       ON CONFLICT(id) DO UPDATE SET
+         title = excluded.title,
+         body = excluded.body,
+         starts_at = excluded.starts_at,
+         ends_at = excluded.ends_at,
+         enabled = 1,
+         updated_at = datetime('now')`,
+			[id, w.title, w.body ?? null, w.starts_at, w.ends_at],
+		);
+		// Re-sync affected monitors: clear then insert the configured set (empty = global window).
+		await d1Query('DELETE FROM maintenance_window_monitors WHERE window_id = ?', [id]);
+		for (const monitorName of w.monitors ?? []) {
+			await d1Query('INSERT OR IGNORE INTO maintenance_window_monitors (window_id, monitor_id) VALUES (?, ?)', [id, slug(monitorName)]);
+		}
+	}
+	const existingWindows = await d1Query<{ id: string }>('SELECT id FROM maintenance_windows');
+	for (const r of existingWindows.filter((row) => !windowIds.includes(row.id))) {
+		console.log(`Deleting maintenance window: ${r.id}`);
+		await d1Query('DELETE FROM maintenance_windows WHERE id = ?', [r.id]);
+	}
+
 	// Ensure channel assignments are disabled for any monitor that is disabled,
 	// regardless of when it was soft-deleted (catches pre-existing stale rows too).
 	await d1Query(
@@ -333,7 +373,7 @@ async function main() {
 	);
 
 	console.log(
-		`Import complete. ${config.monitors.length} monitor(s) imported, ${removed.length} soft-deleted, ${config.notification_channels?.length ?? 0} channel(s) imported, ${removedChannels.length} channel(s) soft-deleted.`,
+		`Import complete. ${config.monitors.length} monitor(s) imported, ${removed.length} soft-deleted, ${config.notification_channels?.length ?? 0} channel(s) imported, ${removedChannels.length} channel(s) soft-deleted, ${windows.length} maintenance window(s) imported.`,
 	);
 }
 

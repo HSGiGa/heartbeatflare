@@ -67,8 +67,9 @@ export async function handleScheduled(env: Env): Promise<void> {
 	const now = new Date().toISOString();
 	const t0 = Date.now();
 
-	// Single query for all monitors + preload all alert rules + open incidents — avoids N+2 DB round-trips per cron run
-	const [{ results: allMonitors }, { results: allRules }, { results: openIncidents }] = await Promise.all([
+	// Single query for all monitors + preload all alert rules + open incidents + active maintenance
+	// windows — avoids N+2 DB round-trips per cron run
+	const [{ results: allMonitors }, { results: allRules }, { results: openIncidents }, { results: activeMaintenance }] = await Promise.all([
 		env.DB.prepare(
 			`SELECT m.id, m.name, m.type, m.mode, m.scrape_url, m.interval_seconds,
 			        COALESCE(m.ssl_check, 1) AS ssl_check,
@@ -93,7 +94,23 @@ export async function handleScheduled(env: Env): Promise<void> {
 			 LEFT JOIN alert_rules ar ON ar.id = i.alert_rule_id
 			 WHERE i.status = 'open'`,
 		).all<ActiveIncidentRow>(),
+		// Currently-active maintenance windows + their affected monitors (NULL monitor_id = global).
+		env.DB.prepare(
+			`SELECT mwm.monitor_id
+			 FROM maintenance_windows mw
+			 LEFT JOIN maintenance_window_monitors mwm ON mwm.window_id = mw.id
+			 WHERE mw.enabled = 1 AND mw.starts_at <= ? AND mw.ends_at > ?`,
+		).bind(now, now).all<{ monitor_id: string | null }>(),
 	]);
+
+	// A row with a NULL monitor_id is a global window → every monitor is under maintenance this tick.
+	const maintenanceMonitorIds = new Set<string>();
+	let globalMaintenance = false;
+	for (const row of activeMaintenance) {
+		if (row.monitor_id === null) globalMaintenance = true;
+		else maintenanceMonitorIds.add(row.monitor_id);
+	}
+	const underMaintenance = (monitorId: string) => globalMaintenance || maintenanceMonitorIds.has(monitorId);
 
 	const rulesByMonitor = new Map<string, AlertRuleDbRow[]>();
 	for (const r of allRules) {
@@ -117,6 +134,8 @@ export async function handleScheduled(env: Env): Promise<void> {
 		(m) =>
 			['http', 'tcp', 'dns'].includes(m.type) &&
 			m.mode === 'external' &&
+			// Skip monitors under an active maintenance window: no probe → no incident, uptime unaffected.
+			!underMaintenance(m.id) &&
 			(!m.last_check_at ||
 				new Date(m.last_check_at).getTime() + m.interval_seconds * 1000 <= Date.now()),
 	);
@@ -151,6 +170,8 @@ export async function handleScheduled(env: Env): Promise<void> {
 	).bind(now).all<{ id: string; monitor_id: string; monitor_name: string; started_at: string }>();
 
 	for (const inc of escalations) {
+		// Don't re-notify for incidents on monitors that are under active maintenance.
+		if (underMaintenance(inc.monitor_id)) continue;
 		await env.DB.prepare(`UPDATE incidents SET last_notified_at = ? WHERE id = ?`).bind(now, inc.id).run();
 		const minutesOpen = Math.floor((new Date(now).getTime() - new Date(inc.started_at).getTime()) / 60_000);
 		await (env.NOTIFICATION_QUEUE as Queue<NotificationMessage>).send({

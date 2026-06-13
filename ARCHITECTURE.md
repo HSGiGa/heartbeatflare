@@ -20,7 +20,9 @@ Supported monitoring capabilities (implemented):
 - DNS monitoring (resolution via DoH)
 - SSL/TLS certificate expiry (via external CT/cert APIs — see SSL section)
 - Alerting and incident management (connectivity + SSL, independent)
+- Maintenance windows (planned work; affected monitors not probed while active)
 - Public + private status pages (one Worker, path-based routing)
+- Atom feed (`/feed.xml`) and embeddable SVG status badges (`/badge/<monitor>.svg`)
 
 Planned (Phase 2, not implemented): OpenMetrics collection from internal services
 via Cloudflare Tunnel.
@@ -300,6 +302,18 @@ cron rolls `uptime_hourly` up into `uptime_daily`. The status page reads these
 aggregates (≈900 rows for 90 days) instead of scanning `metric_series`.
 `uptime_hourly` retention: 48 hours; `uptime_daily` is retained for the 90-day view.
 
+**maintenance_windows / maintenance_window_monitors** — planned-work windows
+```
+maintenance_windows:          id, title, body, starts_at, ends_at, enabled, created_at, updated_at
+maintenance_window_monitors:  (window_id, monitor_id)   -- empty set for a window = global (all monitors)
+```
+Declared in `config.yaml` and imported into D1 like monitors/channels (the Worker never writes
+them). While a window is active (`starts_at <= now < ends_at`) the scheduler **skips probing** the
+affected monitors — no probe means no check result, so no connectivity incident is opened and uptime
+isn't dragged down by expected downtime; escalations for those monitors are also suppressed. The
+status page renders a maintenance banner and marks affected monitors "Maintenance"; the Atom feed
+includes windows as entries. Bars during a window show as "no data" (grey).
+
 **Free Plan write budget (D1: 100k writes/day):**
 ```
 Per check:  1 monitor_state upsert + 1 uptime_hourly upsert = 2 writes
@@ -316,6 +330,38 @@ Used for:
 - Trend analysis
 
 **Phase 2 upgrade path:** when Analytics Engine availability on Free Plan is confirmed or the project moves to a paid plan, `metric_series` writes can be migrated to Analytics Engine with no changes to the rest of the system — Result Store is the only write point.
+
+---
+
+### Schema evolution under additive-only migrations
+
+Migrations are **additive-only** (`npm run migration:lint` blocks `DROP`/`RENAME`). In SQLite,
+changing a `CHECK` constraint or dropping `NOT NULL` is impossible via `ALTER` — it requires a full
+table rebuild (`CREATE …_new` → `INSERT … SELECT` → `DROP TABLE` → `RENAME` under
+`PRAGMA foreign_keys=OFF`, with a `-- lint-ok:` override, as in `0002_remove_ping_type.sql`). So
+every `CHECK (… IN (…))` enum and every `NOT NULL` column is effectively a **one-way door**. This
+shapes how the schema should grow:
+
+- **Prefer not baking growable enums into `CHECK`.** `monitors.type`, `notification_channels.type`,
+  `alert_rules.condition`, `severity` will gain values over time (e.g. `openmetrics`, new channels).
+  Input is already validated by `config.schema.json` at import; the DB `CHECK` adds little but
+  rebuild cost later. New enum-like values should be addable without a rebuild.
+- **`incidents.alert_rule_id` is `NOT NULL`.** That blocks rule-less incidents — manual incidents
+  and maintenance-driven incidents. Relaxing it later is a rebuild; cheaper to make nullable while
+  history is small.
+- **Generic metrics for OpenMetrics (Phase 2).** `metric_series` has fixed metric columns
+  (`latency_ms`, `response_time_ms`, `tcp_connect_ms`); scraped, arbitrarily-named metrics don't
+  fit. A key/value `metric_samples(monitor_id, metric_name, value, recorded_at, labels)` table
+  (with its own hourly/daily rollups and retention) should be designed before the scraper lands,
+  rather than adding a column per metric.
+- **Maintenance windows.** A `maintenance_windows(id, monitor_id NULL=global, starts_at, ends_at,
+  reason, recurrence NULL)` table, plus a way to mark a sample/incident as "during maintenance" so
+  uptime aggregation can exclude it. Designing the marker now avoids rewriting aggregation later.
+
+**Out of scope (single-account self-host).** Multi-tenancy / `account_id` is deferred (see Roadmap);
+it can be added additively (nullable) if ever needed. Monitor groups/components, incident timelines,
+ack/assignee, and status-page subscribers are also future, additive-only work — no schema hooks
+needed now. Tracked in `current-plan.md`.
 
 ---
 
@@ -360,6 +406,8 @@ routed by **path** (not hostname).
    GET /private     → private view (requires a valid Cloudflare Access session)
    GET /api/status  → JSON; public-scoped unless authenticated
    GET /api/history → JSON; paginated incident history
+   GET /feed.xml    → Atom 1.0 feed of incidents + maintenance (public monitors only)
+   GET /badge/<m>.svg → SVG status badge (public monitors only; 404 otherwise)
    /auth/login | /auth/logout
 ```
 
@@ -441,7 +489,7 @@ The private page is low-traffic (operators behind Access) and is not cached, so 
 
 ### Out of scope (MVP)
 
-Component groups, dependencies, maintenance windows, subscriptions, email updates, status page API, SLA reporting, uptime charts, custom incident messages, multiple status pages.
+Component groups, dependencies, subscriptions, email updates, status page API, SLA reporting, uptime charts, custom incident messages, multiple status pages. (Maintenance windows, an Atom feed and SVG status badges are now implemented.)
 
 ## OpenMetrics Model — Phase 2 (not implemented)
 
@@ -664,7 +712,7 @@ The import step is idempotent and runs on every push to main via CI/CD.
 - Telegram + Email notification channels
 - Heartbeat (push) monitoring with secret tokens (see ROADMAP.md)
 - Separate cron expressions for rollup/cleanup (see ROADMAP.md)
-- Maintenance Windows, Tags, Monitor Groups, Monitor Dependencies
+- Tags, Monitor Groups, Monitor Dependencies
 - Status page enhancements (component groups, uptime charts, subscriptions, SLA reporting)
 - Multi-region probing
 - Migrate `metric_series` to Analytics Engine when monitor count nears the D1 write ceiling (~30 at 60s)

@@ -40,9 +40,46 @@
 			"items": {
 				"$ref": "#/$defs/monitor"
 			}
+		},
+		"maintenance": {
+			"type": "array",
+			"description": "Planned maintenance windows. Shown on the status page; affected monitors are not probed while a window is active.",
+			"items": {
+				"$ref": "#/$defs/maintenance_window"
+			}
 		}
 	},
 	"$defs": {
+		"maintenance_window": {
+			"type": "object",
+			"required": ["title", "starts_at", "ends_at"],
+			"additionalProperties": false,
+			"properties": {
+				"title": {
+					"type": "string",
+					"description": "Short headline shown on the status page banner. Must be unique (used to derive the window id)."
+				},
+				"body": {
+					"type": "string",
+					"description": "Optional longer description of the planned work."
+				},
+				"starts_at": {
+					"type": "string",
+					"description": "Start time, ISO 8601 UTC, e.g. \"2026-06-20T02:00:00Z\"."
+				},
+				"ends_at": {
+					"type": "string",
+					"description": "End time, ISO 8601 UTC, e.g. \"2026-06-20T04:00:00Z\"."
+				},
+				"monitors": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Names of affected monitors. Omit for a global window (all monitors)."
+				}
+			}
+		},
 		"deploy_config": {
 			"type": "object",
 			"required": ["name"],

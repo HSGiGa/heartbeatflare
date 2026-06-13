@@ -2,7 +2,7 @@
 // active incidents and (when authenticated) the usage block. Plain HTML built inline — no
 // build step, no assets binding. Reads only the uptime_daily/uptime_hourly aggregates and
 // incidents, never raw metric_series.
-import type { MonitorDbRow, UptimeDayRow, LatencyRow, IncidentRow, Session, UsageSnapshot } from './types';
+import type { MonitorDbRow, UptimeDayRow, LatencyRow, IncidentRow, MaintenanceWindowRow, Session, UsageSnapshot } from './types';
 import { usageResetsIn, workersFreeLimit } from './usage';
 
 function escHtml(s: string): string {
@@ -66,6 +66,7 @@ export function buildStatusPage({
 	latencyPoints,
 	activeIncidents,
 	allIncidents,
+	maintenanceWindows,
 	d1Usage,
 	session,
 	authEnabled,
@@ -76,6 +77,7 @@ export function buildStatusPage({
 	latencyPoints: LatencyRow[];
 	activeIncidents: IncidentRow[];
 	allIncidents: IncidentRow[];
+	maintenanceWindows: MaintenanceWindowRow[];
 	d1Usage: UsageSnapshot | null;
 	session: Session | null;
 	authEnabled: boolean;
@@ -94,6 +96,25 @@ export function buildStatusPage({
 
 	const activeByMonitor = new Map<string, IncidentRow>();
 	for (const inc of activeIncidents) activeByMonitor.set(inc.monitor_id, inc);
+
+	// Partition maintenance windows into active (now within range) and upcoming; a window with no
+	// affected monitors is global (covers every monitor).
+	const maintActiveMonitorIds = new Set<string>();
+	let maintGlobalActive = false;
+	const activeWindows: MaintenanceWindowRow[] = [];
+	const upcomingWindows: MaintenanceWindowRow[] = [];
+	for (const w of maintenanceWindows) {
+		const start = new Date(w.starts_at).getTime();
+		const end = new Date(w.ends_at).getTime();
+		if (start <= nowMs && nowMs < end) {
+			activeWindows.push(w);
+			if (w.monitor_ids.length === 0) maintGlobalActive = true;
+			else for (const id of w.monitor_ids) maintActiveMonitorIds.add(id);
+		} else if (start > nowMs) {
+			upcomingWindows.push(w);
+		}
+	}
+	const monitorUnderMaintenance = (id: string) => maintGlobalActive || maintActiveMonitorIds.has(id);
 
 	// Expand each incident onto every UTC day it spans ("monitorId:YYYY-MM-DD" keys), so the
 	// 90-day bars can colour a day by the incidents that touched it, not just uptime ratio.
@@ -240,9 +261,13 @@ export function buildStatusPage({
 		return a.name.localeCompare(b.name);
 	});
 
+	const maintDot = `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#3b82f6;flex-shrink:0;margin-top:4px"></span>`;
+	const maintLabel = `<span style="font-size:13px;font-weight:600;color:#1e40af">🔧 Maintenance</span>`;
+
 	const monitorsHtml = sortedMonitors.map((m, i) => {
 		const pts = latencyByMonitor.get(m.id) ?? [];
 		const inc = activeByMonitor.get(m.id);
+		const inMaint = monitorUnderMaintenance(m.id);
 		const sparkline = pts.length >= 3 ? renderSparkline(pts.slice(-40)) : '';
 		const divider = (m.visibility === 'private' && (i === 0 || sortedMonitors[i - 1].visibility === 'public'))
 			? `<div style="margin:24px 0 16px;display:flex;align-items:center;gap:12px">
@@ -254,7 +279,7 @@ export function buildStatusPage({
 		<div class="monitor-row">
 			<div class="monitor-header">
 				<div style="display:flex;align-items:flex-start;gap:9px">
-					${statusDot(m.status, m.paused === 1)}
+					${inMaint ? maintDot : statusDot(m.status, m.paused === 1)}
 					<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
 						<span class="monitor-name">${escHtml(m.name)}</span>
 						${typeBadge(m.type)}
@@ -263,7 +288,7 @@ export function buildStatusPage({
 					</div>
 				</div>
 				<div style="display:flex;align-items:center;gap:14px">
-					${statusLabel(m.status, m.paused === 1)}
+					${inMaint ? maintLabel : statusLabel(m.status, m.paused === 1)}
 					<span class="meta-text">${m.paused === 1 ? `last checked ${timeAgo(m.last_check_at)}` : `checked ${timeAgo(m.last_check_at)}`}</span>
 				</div>
 			</div>
@@ -288,6 +313,26 @@ export function buildStatusPage({
 		return `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:6px 0">
 			<span style="font-size:14px;font-weight:600;color:${bannerColor}">${isWarn ? '🟡' : '🔴'} ${escHtml(monName)} — ${escHtml(inc.severity)}</span>
 			<span class="meta-text">started ${timeAgo(inc.started_at)}${inc.reason ? ` · ${escHtml(inc.reason)}` : ''}</span>
+		</div>`;
+	}).join('\n')}
+</div>` : '';
+
+	const fmtWhen = (s: string) => new Date(s).toUTCString().replace(' GMT', ' UTC');
+	const monitorName = (id: string) => monitors.find((m) => m.id === id)?.name ?? id;
+	const bannerWindows = [
+		...activeWindows.map((w) => ({ w, active: true })),
+		...upcomingWindows.map((w) => ({ w, active: false })),
+	];
+	const maintenanceInHeaderHtml = bannerWindows.length > 0 ? `
+<div style="padding-top:16px;border-top:1px solid ${bannerBorder};margin-top:16px">
+	${bannerWindows.map(({ w, active }) => {
+		const scope = w.monitor_ids.length === 0 ? 'All services' : w.monitor_ids.map((id) => escHtml(monitorName(id))).join(', ');
+		const when = active
+			? `in progress · until ${escHtml(fmtWhen(w.ends_at))}`
+			: `scheduled · ${escHtml(fmtWhen(w.starts_at))} → ${escHtml(fmtWhen(w.ends_at))}`;
+		return `<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;padding:6px 0">
+			<span style="font-size:14px;font-weight:600;color:#1e40af">🔧 ${escHtml(w.title)}${w.body ? ` <span style="font-weight:400;color:#52525b">— ${escHtml(w.body)}</span>` : ''}</span>
+			<span class="meta-text">${when} · ${scope}</span>
 		</div>`;
 	}).join('\n')}
 </div>` : '';
@@ -436,6 +481,7 @@ ${session
 	: `<a href="/auth/login" style="font-size:12px;font-weight:600;padding:5px 12px;border-radius:5px;border:1px solid #18181b;background:#18181b;color:#fff;text-decoration:none">Sign in</a>`}
 </div>
 ${activeIncidentsInHeaderHtml}
+${maintenanceInHeaderHtml}
 </div>
 </header>
 <main class="container">

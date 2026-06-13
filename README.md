@@ -13,7 +13,10 @@ Live example: [status.modem.by](https://status.modem.by)
 - **Incident management** — connectivity and SSL incidents tracked independently, with failure/recovery thresholds, cooldowns and optional escalation re-notifications
 - **Notifications** via Slack-compatible webhooks (e.g. Mattermost) and generic webhooks, delivered through Cloudflare Queues with retry
 - **Public + private status pages** — 90-day uptime bars, latency sparklines, incident history; the private view is protected by Cloudflare Access
-- **Configuration as code** — monitors, alerts, channels and access policy live in one `config.yaml`; CI provisions all Cloudflare resources automatically
+- **Maintenance windows** — announce planned work in `config.yaml`; the status page shows a banner and affected monitors aren't probed (no false incidents, uptime unaffected) while a window is active
+- **Atom feed** — `/feed.xml` publishes incidents and maintenance windows for any feed reader / Slack-RSS bridge; no email, no subscriber database
+- **Status badges** — embeddable SVG (`/badge/<monitor>.svg`) showing a public monitor's state in a README, docs or dashboard
+- **Configuration as code** — monitors, alerts, channels, maintenance and access policy live in one `config.yaml`; CI provisions all Cloudflare resources automatically
 - **Free-plan native** — designed around D1 write budgets, subrequest limits and edge caching (~30 monitors at 60s intervals)
 
 ## How it works
@@ -21,7 +24,7 @@ Live example: [status.modem.by](https://status.modem.by)
 One Worker, three entry points:
 
 - **`scheduled()`** — cron tick every minute: selects due monitors (oldest-checked first), probes them with bounded concurrency, stores results in D1, evaluates alert rules, opens/resolves incidents and enqueues notifications. Also re-enqueues escalation notifications for incidents still open past their `escalation` interval, and runs hourly uptime rollups and daily cleanup.
-- **`fetch()`** — serves `/public` and `/private` status pages plus a JSON API (`/api/status`, `/api/history`). Visibility is fail-closed: private monitors are only shown with a valid Cloudflare Access session. Public responses are edge-cached for 60s.
+- **`fetch()`** — serves `/public` and `/private` status pages, a JSON API (`/api/status`, `/api/history`), an Atom feed (`/feed.xml`) and SVG status badges (`/badge/<monitor>.svg`). Visibility is fail-closed: private monitors are only shown with a valid Cloudflare Access session, and feed/badges expose public monitors only. Public responses are edge-cached for 60s.
 - **`queue()`** — consumes the notification queue and delivers incident open / resolve / escalation messages to the configured channels.
 
 Storage is Cloudflare D1 (state, incidents, time series, uptime aggregates). See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design, data model and free-plan budgets.
@@ -123,6 +126,38 @@ Notes:
 - `wrangler.jsonc` is generated from [`wrangler.template.jsonc`](wrangler.template.jsonc) — run any npm script (dev, test, deploy) and it's created automatically. Don't edit it directly.
 - The import is idempotent: removing a monitor from YAML soft-disables it, runtime history is preserved.
 
+### Maintenance windows
+
+Announce planned work with an optional top-level `maintenance:` list. While a window is active the
+affected monitors are **not probed** (so there's no false incident and uptime isn't dragged down),
+and the status page shows a banner. Times are ISO 8601 UTC. Omit `monitors:` for a global window.
+
+```yaml
+maintenance:
+  - title: 'Database migration'
+    body: 'Upgrading the primary Postgres cluster.'
+    starts_at: '2026-06-20T02:00:00Z'
+    ends_at: '2026-06-20T04:00:00Z'
+    monitors: [Example API] # omit for all monitors
+```
+
+Like everything else, windows are imported into D1 by `config:import` — declaring one is a config
+change (git commit + deploy). Removing a window from YAML deletes it.
+
+### Public endpoints
+
+| Endpoint | Description |
+| -------- | ----------- |
+| `/public` | Public status page (public monitors only) |
+| `/feed.xml` | Atom 1.0 feed of incidents + maintenance windows (public monitors only) |
+| `/badge/<monitor>.svg` | SVG status badge for a public monitor; `?label=` overrides the left text. Private/unknown monitors return 404 |
+
+`<monitor>` is the slug of the monitor name (lowercased, non-alphanumerics → `-`). Embed a badge with:
+
+```markdown
+![status](https://status.example.com/badge/example-api.svg)
+```
+
 ### Environment variables
 
 Two kinds of variables, both templated in [`.env.example`](.env.example):
@@ -177,8 +212,10 @@ CI does the same on every push to `main` (GitHub Actions and GitLab CI), finishi
 | `src/probes.ts`                  | HTTP, TCP, DNS and SSL-expiry probe implementations              |
 | `src/alerts.ts`                  | Result store (write-budget aware) + alert evaluation + incidents |
 | `src/queue.ts` / `src/notify.ts` | Notification delivery and channel resolution                     |
-| `src/routes.ts`                  | HTTP routing, edge caching, JSON API                             |
-| `src/status-page.ts`             | Server-rendered status page (uptime bars, sparklines)            |
+| `src/routes.ts`                  | HTTP routing, edge caching, JSON API, feed + badge endpoints     |
+| `src/status-page.ts`             | Server-rendered status page (uptime bars, sparklines, maintenance) |
+| `src/feed.ts`                    | Atom feed builder (`/feed.xml`)                                  |
+| `src/badge.ts` / `src/status-meta.ts` | SVG status badge + shared status→label/colour mapping       |
 | `src/auth.ts`                    | Cloudflare Access JWT verification (fail-closed)                 |
 | `src/usage.ts`                   | Account usage block (Cloudflare GraphQL API)                     |
 | `scripts/`                       | Provisioning, Access setup, config import (deploy-time, Node)    |

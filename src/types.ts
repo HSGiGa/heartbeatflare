@@ -84,6 +84,16 @@ export type NotificationChannelDbRow = {
 export type ActiveIncidentRow = { monitor_id: string; class: string; incident_id: string; severity: string };
 export type ActiveIncident = { id: string; severity: string };
 
+// A maintenance window plus the ids of the monitors it affects (empty = global, all monitors).
+export type MaintenanceWindowRow = {
+	id: string;
+	title: string;
+	body: string | null;
+	starts_at: string;
+	ends_at: string;
+	monitor_ids: string[];
+};
+
 export type UptimeDayRow = { monitor_id: string; day: string; avg_up: number };
 export type LatencyRow = { monitor_id: string; latency_ms: number };
 export type IncidentRow = {

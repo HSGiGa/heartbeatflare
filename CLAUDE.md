@@ -4,125 +4,112 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**heartbeatflare** is a Cloudflare Workers application built with TypeScript. It's a minimal, production-ready edge worker that handles HTTP requests globally across Cloudflare's network. The project is currently a "Hello World" starter but designed to scale into full APIs, webhooks, data processors, and microservices.
+**heartbeatflare** is a serverless uptime monitor and status page that runs entirely on the
+Cloudflare free tier. It is a **single Cloudflare Worker** (TypeScript) with three entry points:
+
+- `fetch()` — public/private status pages and a JSON API
+- `scheduled()` — a cron trigger (every minute) that probes targets, evaluates alerts, rolls up
+  uptime aggregates and runs retention cleanup
+- `queue()` — a Cloudflare Queue consumer that delivers incident notifications
+
+It probes external targets (HTTP/HTTPS, TCP, DNS) plus best-effort SSL-certificate expiry, tracks
+incidents, sends Slack/webhook notifications, and serves 90-day status pages — no servers, no
+agents, no build step. Live example: `status.modem.by`.
+
+> **The detailed system design lives in `ARCHITECTURE.md`** — read it before non-trivial changes.
+> It is kept current with the code. `current-plan.md` tracks open work.
 
 ## Common Commands
 
 ### Development
-- `npm run dev` - Start local development server (http://localhost:8787)
-- `npm run test` - Run test suite with Vitest
-- `npm run test -- --watch` - Run tests in watch mode
-- `npm run test -- src/` - Run tests for specific module
+- `npm run dev` — local dev server at http://localhost:8787 (generates a local `wrangler.jsonc` first)
+- `npm run test` — Vitest suite under the Workers runtime (applies the full migration chain first)
+- `npm run test -- --watch` — watch mode
+- `npm run cf-typegen` — regenerate the `Env` type after binding changes
 
-### Deployment & Configuration
-- `npm run deploy` - Deploy Worker to Cloudflare (requires Wrangler login)
-- `npm run cf-typegen` - Regenerate TypeScript types for bindings after modifying `wrangler.jsonc`
+### Configuration & Deployment
+- **Config is code.** `config.yaml` (validated by `config.schema.json`) is the source of truth for
+  monitors, alert rules and notification channels. The Worker **never reads YAML** — config is
+  imported into D1.
+- `wrangler.jsonc` is **generated** from `config.yaml` by `scripts/generate-wrangler.ts` — do not
+  hand-edit it; change `config.yaml` (or the generator) instead.
+- `npm run config:import` — import `config.yaml` into D1 (idempotent: `ON CONFLICT DO UPDATE`,
+  preserves runtime state; removed monitors are soft-deleted via `enabled = 0`)
+- `npm run d1:migrate:prod` — apply D1 migrations (`wrangler d1 migrations apply DB --remote`)
+- `npm run deploy` — generate wrangler config + `wrangler deploy`
+- `npm run deploy:prod` — full pipeline: `test → migration:lint → provision → d1:migrate:prod →
+  deploy:access → config:import → deploy → secrets:sync`
+- `npm run provision` / `deploy:access` / `secrets:sync` — create D1+queue, configure Cloudflare
+  Access, sync secrets
 
 ### Debugging
-- Use `npm run dev` to access the local Worker at `http://localhost:8787` with auto-reload
-- Add `console.log()` statements; output appears in the terminal and Cloudflare dashboard
-- Check `wrangler.jsonc` settings - Observability is enabled for monitoring
+- `npm run dev`, then hit `/public`, `/private`, `/api/status`, `/api/history`
+- `console.log()` output appears in the terminal and the Cloudflare dashboard (observability is on)
 
 ## Architecture & Code Structure
 
-### Entry Point: `src/index.ts`
-- Single file containing the Worker handler (pattern: `ExportedHandler<Env>`)
-- Receives all HTTP requests via the `fetch()` function
-- Receives three parameters:
-  - `request`: The incoming HTTP Request
-  - `env`: Environment with bindings (databases, KV stores, secrets, variables)
-  - `ctx`: Execution context for background tasks and caching
+### Entry point: `src/index.ts`
+Dispatches the three Workers handlers to their modules: `fetch → routes.ts`,
+`scheduled → scheduler.ts`, `queue → queue.ts`.
 
-**Current Implementation**: Returns a static "Hello World!" response. Ready to extend with routing, middleware, and business logic.
+### Module map (`src/`)
+- `routes.ts` — HTTP routing, JSON API, **fail-closed** visibility (private data needs a valid
+  session, enforced in SQL `WHERE` clauses), edge caching of public responses
+- `status-page.ts` — server-rendered HTML/CSS/SVG for the status pages (no build step, no assets)
+- `scheduler.ts` — cron tick: select due monitors (oldest-checked-first, bounded concurrency),
+  probe, store, evaluate alerts, escalation re-notifications, hourly rollup, daily cleanup
+- `probes.ts` — `httpCheck` / `tcpCheck` (`cloudflare:sockets`) / `dnsCheck` (DoH) / `sslProbe`
+  (external cert API, cached)
+- `alerts.ts` — `storeResult()` (write-minimised persistence) and `evaluateAlerts()` (per-class
+  incidents: connectivity vs `ssl_expiry`)
+- `queue.ts` / `notify.ts` — notification delivery + channel resolution; retry on total failure
+- `auth.ts` — Cloudflare Access JWT verification; `usage.ts` — Cloudflare GraphQL usage metrics
+- `types.ts` — shared D1 row types, probe results, queue messages
 
-### Testing: `test/index.spec.ts`
-- Uses Vitest + `@cloudflare/vitest-pool-workers` for realistic Workers testing
-- **Unit Tests**: Direct handler invocation with mocked environment
-- **Integration Tests**: Real request simulation using the `SELF` binding
-- Type-safe test environment (`env.d.ts` auto-generated)
+### Data layer: D1 (binding `DB`)
+Raw parameterised SQL (no ORM), batched via `DB.batch()`. Tables: `monitors` + `monitor_state`,
+`alert_rules`, `incidents`, `notification_channels` + `monitor_notification_channels` +
+`notification_deliveries`, `metric_series` (raw, actionable-only), `uptime_hourly`/`uptime_daily`
+(pre-aggregated), `auth_config`. See `ARCHITECTURE.md` for the full schema and the **Free Plan
+write budget** (~2 writes/check; ~30 monitors at 60s).
 
-**Pattern**: Tests demonstrate both isolation and integration approaches. Add new test cases as features are implemented.
+## Writing D1 Migrations
 
-### Configuration Files
-
-**`wrangler.jsonc`** (Cloudflare Workers Configuration)
-- `main`: Points to `src/index.ts`
-- `compatibility_date`: "2025-06-07" (pins JavaScript API version)
-- `observability.enabled`: true (enables monitoring)
-- Commented-out sections for optional features:
-  - Smart Placement (global edge optimization)
-  - Bindings (D1 Database, R2 Object Storage, AI, KV, etc.)
-  - Environment variables and secrets
-  - Static assets serving
-  - Service bindings for multi-Worker communication
-
-**`tsconfig.json`**
-- Strict mode enabled for type safety
-- Target: ES2021
-- Module system: ES2022 with bundler resolution
-- `noEmit: true` - Type checking only; Wrangler handles bundling
-
-**`vitest.config.mts`**
-- Configured for Workers-specific testing via the Cloudflare pool
-- Reads from `wrangler.jsonc` during test execution
-
-### Code Quality & Style
-- **Formatting**: Prettier (140 char width, single quotes, tabs, semicolons)
-- **EditorConfig**: Tab indentation, LF line endings, UTF-8 charset
+- Migrations live in `migrations/` and run via `npm run d1:migrate:prod`. Each file runs exactly
+  once; **there is no rollback** — design schemas to be additive.
+- **Migrations are additive-only.** `npm run migration:lint` fails the build on
+  `DROP TABLE/COLUMN` or `RENAME TABLE/COLUMN`. A genuine table rebuild (the only way to change a
+  `CHECK` constraint or drop `NOT NULL` in SQLite) must be done with the
+  `CREATE …_new` → `INSERT … SELECT` → `DROP TABLE` → `RENAME` pattern under
+  `PRAGMA foreign_keys=OFF`, with a `-- lint-ok:` comment on the destructive line (see
+  `0002_remove_ping_type.sql`). Avoid this: prefer not baking growable enums into `CHECK`.
+- **Always include a backfill when adding a derived/aggregate table** so existing rows are
+  populated immediately (e.g. `INSERT INTO uptime_daily … SELECT … FROM metric_series`).
+- The test suite (`test/index.spec.ts`) applies the full migration chain so test schema matches
+  production — a broken migration fails tests.
 
 ## Adding Features
 
-### Adding Bindings (Database, KV Store, etc.)
-1. Uncomment or add binding in `wrangler.jsonc` (see Cloudflare docs for syntax)
-2. Run `npm run cf-typegen` to regenerate the `Env` type
-3. Use the binding in `src/index.ts` via `env.MY_BINDING`
-4. Add tests for the new binding interaction in `test/index.spec.ts`
+### Adding a monitor / alert / channel
+Edit `config.yaml` (conform to `config.schema.json`), then `npm run config:import`. Probe logic
+for new monitor types goes in `src/probes.ts` and is dispatched in `src/scheduler.ts`.
 
-### Adding Routes/Routing
-The current handler is request-agnostic. To add routing:
-- Parse `request.method` (GET, POST, etc.)
-- Parse `request.url` for path matching
-- Consider adding a routing library (e.g., `hono`, `itty-router`) or simple if/switch logic
-- Each route handler should be testable separately
+### Adding bindings / env vars / secrets
+Bindings derive from `config.yaml` via `scripts/generate-wrangler.ts`; run `npm run cf-typegen`
+after changes. Secrets are referenced as `${VAR}` placeholders in config/D1 and resolved from the
+Worker env at send time — never write credential literals to `config.yaml` or D1.
 
-### Adding Environment Variables/Secrets
-- Variables: Add to `vars` in `wrangler.jsonc`, access via `env.MY_VAR`
-- Secrets: Define in Cloudflare dashboard (not in code), access via `env.MY_SECRET`
-- Run `npm run cf-typegen` after adding to regenerate types
-
-### Writing D1 Migrations
-
-- Migrations live in `migrations/` and run via `npx wrangler d1 migrations apply DB --remote` (binding name resolves via `wrangler.jsonc`)
-- Each migration file runs exactly once; there is no rollback — design schemas to be additive
-- **Always include a backfill when adding a derived/aggregate table.** If the new table is computed from existing data, add `INSERT INTO … SELECT …` in the same migration file so existing rows are populated immediately and no historical data is silently lost:
-
-```sql
--- Example: new aggregate table with backfill
-CREATE TABLE uptime_daily ( … );
-
-INSERT INTO uptime_daily (monitor_id, day, total_checks, up_checks, avg_latency_ms)
-SELECT monitor_id, DATE(recorded_at), COUNT(*), SUM(availability), AVG(NULLIF(latency_ms, 0))
-FROM metric_series
-GROUP BY monitor_id, DATE(recorded_at);
-```
-
-### Deploying to Production
-- Ensure all tests pass: `npm run test`
-- Run `npm run deploy` (requires `wrangler login`)
-- Verifies configuration and deploys to `heartbeatflare.<your-account>.workers.dev`
-- Changes are live globally within seconds
+## Code Quality & Style
+- Prettier (140 char width, single quotes, tabs, semicolons); EditorConfig: tabs, LF, UTF-8
+- TypeScript strict mode; `noEmit` (Wrangler bundles)
 
 ## Project Philosophy
-
-**Minimal by design**: No unnecessary dependencies. Workers are faster and cheaper when lightweight.
-
-**Type-first**: TypeScript catches errors at compile time. Strict mode prevents runtime surprises.
-
-**Edge-native**: Built for global distribution from day one. Think in terms of low latency, distributed state, and edge caching.
-
-**Test-driven**: Integration tests verify real Worker behavior under the Workers runtime.
-
-**Scalable from simple**: Grows from a webhook handler to a complex API gateway without architectural changes.
+- **Free-Plan native**: stay within Workers/D1/Queues free limits; introduce new Cloudflare
+  services only for a demonstrated scaling problem.
+- **Config as code**: `config.yaml` is the single source of truth; the Worker only touches D1.
+- **Write-minimised & incident-based**: ~2 D1 writes/check; alerting is incident-based, tracked
+  per metric class, with the `incidents` table as the source of truth.
+- **Fail-closed**: private data requires a valid session, enforced independently of Cloudflare Access.
 
 ## Resources
 - [Cloudflare Workers Docs](https://developers.cloudflare.com/workers/)

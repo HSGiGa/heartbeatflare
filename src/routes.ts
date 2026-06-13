@@ -3,8 +3,10 @@
 // enforced here in SQL WHERE clauses independently of the Cloudflare Access gate on /private.
 // Unauthenticated responses are edge-cached to absorb traffic spikes without touching D1.
 import { getAuth, handleLogout, resolveAuthConfig } from './auth';
+import { buildBadgeSvg } from './badge';
+import { buildAtomFeed } from './feed';
 import { buildStatusPage } from './status-page';
-import type { AlertRuleDbRow, IncidentRow, LatencyRow, MonitorDbRow, RuntimeEnv, Session, UptimeDayRow } from './types';
+import type { AlertRuleDbRow, IncidentRow, LatencyRow, MaintenanceWindowRow, MonitorDbRow, RuntimeEnv, Session, UptimeDayRow } from './types';
 import { fetchUsage, usageResetsIn } from './usage';
 
 // Edge-cache TTL for unauthenticated responses (status page + public API).
@@ -44,6 +46,36 @@ async function fetchMonitorRows(env: Env, showAll: boolean): Promise<MonitorDbRo
 		 ORDER BY m.name`,
 	).all<MonitorDbRow>();
 	return results;
+}
+
+// Maintenance windows with their affected monitor ids (empty = global). Public scope shows only
+// global windows or windows touching at least one public monitor; `endedAfterIso` filters out
+// windows that have already finished (pass `now` for the status page, an older cutoff for the feed).
+async function fetchMaintenanceWindows(env: Env, showAll: boolean, endedAfterIso: string): Promise<MaintenanceWindowRow[]> {
+	const visClause = showAll
+		? ''
+		: `AND ( NOT EXISTS (SELECT 1 FROM maintenance_window_monitors x WHERE x.window_id = mw.id)
+		        OR EXISTS (SELECT 1 FROM maintenance_window_monitors x JOIN monitors m2 ON m2.id = x.monitor_id
+		                   WHERE x.window_id = mw.id AND m2.visibility = 'public') )`;
+	const { results: rows } = await env.DB.prepare(
+		`SELECT mw.id, mw.title, mw.body, mw.starts_at, mw.ends_at
+		 FROM maintenance_windows mw
+		 WHERE mw.enabled = 1 AND mw.ends_at > ? ${visClause}
+		 ORDER BY mw.starts_at`,
+	).bind(endedAfterIso).all<Omit<MaintenanceWindowRow, 'monitor_ids'>>();
+	if (rows.length === 0) return [];
+
+	const { results: links } = await env.DB.prepare(`SELECT window_id, monitor_id FROM maintenance_window_monitors`).all<{
+		window_id: string;
+		monitor_id: string;
+	}>();
+	const byWindow = new Map<string, string[]>();
+	for (const l of links) {
+		const list = byWindow.get(l.window_id) ?? [];
+		list.push(l.monitor_id);
+		byWindow.set(l.window_id, list);
+	}
+	return rows.map((r) => ({ ...r, monitor_ids: byWindow.get(r.id) ?? [] }));
 }
 
 async function handleStatusApi(env: Env, runtimeEnv: RuntimeEnv, showAll: boolean): Promise<Response> {
@@ -149,6 +181,7 @@ async function handleStatusPage(
 		{ results: latencyPoints },
 		{ results: activeIncidents },
 		{ results: allIncidents },
+		maintenanceWindows,
 		d1Usage,
 	] = await Promise.all([
 		fetchMonitorRows(env, showAll),
@@ -178,14 +211,52 @@ async function handleStatusPage(
 			 ORDER BY i.started_at
 			 LIMIT 2000`,
 		).bind(new Date(nowMs).toISOString().slice(0, 10)).all<IncidentRow>(),
+		fetchMaintenanceWindows(env, showAll, new Date(nowMs).toISOString()),
 		showAll ? fetchUsage(runtimeEnv) : Promise.resolve(null),
 	]);
 
-	const html = buildStatusPage({ nowMs, monitors, uptimeDays, latencyPoints, activeIncidents, allIncidents, d1Usage, session, authEnabled });
+	const html = buildStatusPage({ nowMs, monitors, uptimeDays, latencyPoints, activeIncidents, allIncidents, maintenanceWindows, d1Usage, session, authEnabled });
 
 	// Unauthenticated (public) renders are cacheable at the edge; authenticated views are always fresh.
 	const cacheControl = session ? 'no-store' : `public, max-age=${PUBLIC_MAXAGE}`;
 	return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': cacheControl } });
+}
+
+// Public Atom feed of incidents + maintenance windows (public monitors only).
+async function handleFeed(env: Env, origin: string): Promise<Response> {
+	const nowMs = Date.now();
+	const [{ results: incidents }, maintenanceWindows] = await Promise.all([
+		env.DB.prepare(
+			`SELECT i.id, i.monitor_id, i.severity, i.status, i.started_at, i.resolved_at, i.reason, m.name AS monitor_name
+			 FROM incidents i JOIN monitors m ON m.id = i.monitor_id
+			 WHERE m.visibility = 'public'
+			 ORDER BY COALESCE(i.resolved_at, i.started_at) DESC
+			 LIMIT 50`,
+		).all<IncidentRow>(),
+		// Include recently-finished windows (last 30 days) so the feed carries some history.
+		fetchMaintenanceWindows(env, false, new Date(nowMs - 30 * 86_400_000).toISOString()),
+	]);
+	const xml = buildAtomFeed({ origin, nowMs, incidents, maintenanceWindows });
+	return new Response(xml, {
+		headers: { 'Content-Type': 'application/atom+xml; charset=utf-8', 'Cache-Control': `public, max-age=${PUBLIC_MAXAGE}` },
+	});
+}
+
+// Embeddable SVG status badge for a public monitor. Private/unknown monitors return 404 so the
+// badge endpoint never reveals the existence of a private monitor (fail-closed).
+async function handleBadge(env: Env, pathname: string, searchParams: URLSearchParams): Promise<Response> {
+	const id = decodeURIComponent(pathname.slice('/badge/'.length, -'.svg'.length));
+	const row = await env.DB.prepare(
+		`SELECT m.name, m.paused, ms.status
+		 FROM monitors m LEFT JOIN monitor_state ms ON ms.monitor_id = m.id
+		 WHERE m.id = ? AND m.enabled = 1 AND m.visibility = 'public'`,
+	).bind(id).first<{ name: string; paused: number; status: string | null }>();
+	if (!row) return new Response(null, { status: 404 });
+	const label = searchParams.get('label') ?? row.name;
+	const svg = buildBadgeSvg(label, row.status, row.paused === 1);
+	return new Response(svg, {
+		headers: { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': `public, max-age=${PUBLIC_MAXAGE}` },
+	});
 }
 
 export async function handleFetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -208,6 +279,15 @@ export async function handleFetch(request: Request, env: Env, ctx: ExecutionCont
 
 	if (request.method === 'GET' && pathname === '/public') {
 		return withPublicEdgeCache(request, ctx, () => handleStatusPage(env, runtimeEnv, false, null, true));
+	}
+
+	if (request.method === 'GET' && pathname === '/feed.xml') {
+		return withPublicEdgeCache(request, ctx, () => handleFeed(env, origin));
+	}
+
+	if (request.method === 'GET' && pathname.startsWith('/badge/') && pathname.endsWith('.svg')) {
+		const searchParams = new URL(request.url).searchParams;
+		return withPublicEdgeCache(request, ctx, () => handleBadge(env, pathname, searchParams));
 	}
 
 	let session: Session | null;
