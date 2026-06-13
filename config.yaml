@@ -2,25 +2,25 @@
 
 deploy:
   name: heartbeatflare # worker name; D1/queue names derive from it unless overridden
-  domain: status.example.com # custom domain route; omit to serve on workers.dev only
-  database_id: "" # auto-populated by provision
+  domain: status.modem.by # custom domain route; omit to serve on workers.dev only
+  database_id: "fe16be42-154e-47ed-bd63-a54cf5d5cd53" # auto-populated by provision
   # database_name: heartbeatflare-prod-db   # default: ${name}-prod-db
   # queue_name: heartbeatflare-notifications # default: ${name}-notifications
 
 auth:
   provider: cloudflare_access
-  team_domain: your-team # auto-populated by deploy:access
-  aud: "" # auto-populated by deploy:access
+  team_domain: modem-by # auto-populated by deploy:access
+  aud: "c837d4695c934df64d4c02856e1a2db466fe3f486f2c133b2afa166c2f526b20" # auto-populated by deploy:access
 
 access:
   app_name: heartbeatflare
   # domain defaults to ${deploy.domain}/private
   session_duration: 24h
-  identity_provider: "login.example.com"
+  identity_provider: "login.modem.by"
   policy:
     name: Allow team
     emails:
-      - you@example.com
+      - vbondarenko@modem.by
 
 notification_channels:
   - name: Mattermost
@@ -36,7 +36,7 @@ monitors:
     visibility: public
     target: https://www.google.com/generate_204
     interval: 60s
-    notification_channels: [Mattermost]
+    notification_channels: [ Mattermost ]
     alerts:
       - condition: "status != 200"
         severity: critical
@@ -49,21 +49,21 @@ monitors:
     visibility: public
     target: google.com
     interval: 60s
-    notification_channels: [Mattermost]
+    notification_channels: [ Mattermost ]
     alerts:
       - condition: "status != up"
         severity: critical
         failures: 2
         recovery: 2
         cooldown: 300s
-  - name: VPN example.com
+  - name: VPN modem.by
     type: tcp
     mode: external
     visibility: private
     ssl: true
-    target: vpn.example.com:443
+    target: vpn.modem.by:443
     interval: 5m
-    notification_channels: [Mattermost]
+    notification_channels: [ Mattermost ]
     alerts:
       - condition: "connect != true"
         severity: critical
@@ -80,7 +80,7 @@ monitors:
     visibility: public
     target: smtp.gmail.com:587
     interval: 60s
-    notification_channels: [Mattermost]
+    notification_channels: [ Mattermost ]
     alerts:
       - condition: "connect != true"
         severity: critical
