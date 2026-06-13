@@ -4,20 +4,35 @@ import worker from '../src/index';
 import { _invalidateAuthCache } from '../src/auth';
 import { CONNECTIVITY_CLASS, evaluateAlerts } from '../src/alerts';
 import type { AlertRuleDbRow, MonitorRow } from '../src/types';
+// Apply the full migration chain in order so the test schema always matches production —
+// add each new migration here when it lands, or columns added later (paused, escalation, …)
+// will be missing and queries against them will fail.
 // @ts-expect-error vite ?raw import
-import migrationSql from '../migrations/0001_initial_schema.sql?raw';
+import m01 from '../migrations/0001_initial_schema.sql?raw';
 // @ts-expect-error vite ?raw import
-import migration2Sql from '../migrations/0002_remove_ping_type.sql?raw';
+import m02 from '../migrations/0002_remove_ping_type.sql?raw';
 // @ts-expect-error vite ?raw import
-import migration3Sql from '../migrations/0003_add_ssl_check.sql?raw';
+import m03 from '../migrations/0003_add_ssl_check.sql?raw';
 // @ts-expect-error vite ?raw import
-import migration4Sql from '../migrations/0004_uptime_aggregates.sql?raw';
+import m04 from '../migrations/0004_uptime_aggregates.sql?raw';
 // @ts-expect-error vite ?raw import
-import migration5Sql from '../migrations/0005_auth_config.sql?raw';
+import m05 from '../migrations/0005_auth_config.sql?raw';
 // @ts-expect-error vite ?raw import
-import migration6Sql from '../migrations/0006_ssl_cert_state.sql?raw';
+import m06 from '../migrations/0006_ssl_cert_state.sql?raw';
 // @ts-expect-error vite ?raw import
-import migration11Sql from '../migrations/0011_latency_count.sql?raw';
+import m07 from '../migrations/0007_alert_rules_ssl_expiry.sql?raw';
+// @ts-expect-error vite ?raw import
+import m08 from '../migrations/0008_drop_metric_series_ssl_expiry.sql?raw';
+// @ts-expect-error vite ?raw import
+import m09 from '../migrations/0009_default_ssl_alert_rules.sql?raw';
+// @ts-expect-error vite ?raw import
+import m10 from '../migrations/0010_fix_ssl_crit_default_rules.sql?raw';
+// @ts-expect-error vite ?raw import
+import m11 from '../migrations/0011_latency_count.sql?raw';
+// @ts-expect-error vite ?raw import
+import m12 from '../migrations/0012_add_monitor_paused.sql?raw';
+// @ts-expect-error vite ?raw import
+import m13 from '../migrations/0013_alert_escalation.sql?raw';
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 
@@ -39,13 +54,9 @@ async function applyMigration(sql: string) {
 }
 
 beforeAll(async () => {
-	await applyMigration(migrationSql as string);
-	await applyMigration(migration2Sql as string);
-	await applyMigration(migration3Sql as string);
-	await applyMigration(migration4Sql as string);
-	await applyMigration(migration5Sql as string);
-	await applyMigration(migration6Sql as string);
-	await applyMigration(migration11Sql as string);
+	for (const sql of [m01, m02, m03, m04, m05, m06, m07, m08, m09, m10, m11, m12, m13]) {
+		await applyMigration(sql as string);
+	}
 	await env.DB.prepare(
 		`INSERT INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, enabled)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
