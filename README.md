@@ -91,6 +91,31 @@ monitors:
         cooldown: 300s
 ```
 
+### Alert parameters
+
+Each entry under `alerts:` supports:
+
+| Field        | Required | Description |
+| ------------ | -------- | ----------- |
+| `condition`  | yes      | What triggers the alert — see below |
+| `severity`   | yes      | `critical` or `warning` |
+| `failures`   | yes      | Consecutive failing checks before an incident opens |
+| `recovery`   | yes      | Consecutive successful checks before the incident resolves |
+| `cooldown`   | no       | Minimum pause between two incidents on the same monitor (e.g. `300s`, `5m`). Prevents notification spam from a flapping target. Measured from when the previous incident **closed**. Default: `0` (no cooldown) |
+| `escalation` | no       | Re-send a "STILL DOWN" notification if the incident stays open longer than this interval (e.g. `15m`, `2h`). Repeats every interval until resolved. Default: disabled (one alert only) |
+
+#### condition
+
+| Condition | Monitor types | Meaning |
+| --------- | ------------- | ------- |
+| `status != 200` | http | HTTP response code is not 200 (any non-2xx is treated as down) |
+| `connect != true` | tcp | TCP connection could not be established |
+| `status != up` | dns | DNS query returned no records or timed out |
+| `latency >= 500` | http, tcp | Round-trip latency exceeded the threshold in milliseconds (`>`, `<`, `>=`, `<=` are all supported) |
+| `ssl_expiry < 14` | http, tcp (with ssl) | Days until certificate expiry is below the threshold. Two default rules (`< 7` warning, `< 1` critical) are added automatically unless you configure your own |
+
+A monitor can have multiple alert rules (e.g. one for connectivity, one for SSL expiry). Each rule tracks incidents independently — an SSL incident does not suppress a connectivity incident and vice versa.
+
 Notes:
 
 - Secrets never go into YAML or D1 — use `${VAR}` placeholders, resolved from the Worker's environment when a notification is sent.
