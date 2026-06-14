@@ -36,19 +36,13 @@ export async function handleQueue(batch: MessageBatch<unknown>, env: Env): Promi
 				return;
 			}
 
-			const { incidentId, monitorId, monitorName, eventType, count, error } = body;
+			const { incidentId, monitorId } = body;
 			const channels = await fetchNotificationChannels(env, monitorId);
 			if (channels.length === 0) {
 				msg.ack(); // nothing to deliver to — retrying would never succeed
 				return;
 			}
-			const text =
-				eventType === 'down'
-					? `🔴 **${monitorName} is DOWN** — ${count} consecutive failure${count !== 1 ? 's' : ''}${error ? `: ${error}` : ''}`
-					: eventType === 'escalation'
-					? `🔴 **${monitorName} STILL DOWN** — open for ${count >= 60 ? `${Math.floor(count / 60)}h ${count % 60}m` : `${count}m`}, no recovery yet`
-					: `🟢 **${monitorName} recovered** — back up after ${count} successful check${count !== 1 ? 's' : ''}`;
-			const outcomes = await Promise.allSettled(channels.map((ch) => sendToChannel(env, ch, incidentId, text, now, msg.attempts)));
+			const outcomes = await Promise.allSettled(channels.map((ch) => sendToChannel(env, ch, body, now, msg.attempts)));
 			const anyDelivered = outcomes.some((o) => o.status === 'fulfilled' && o.value === true);
 			// Retry only on total failure: re-delivering would double-notify already-successful channels.
 			// The queue's max_retries bound (wrangler.jsonc) caps attempts before the message is dropped.

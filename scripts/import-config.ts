@@ -37,11 +37,18 @@ interface MonitorConfig {
 	notification_channels?: string[];
 }
 
+interface NotificationTemplatesConfig {
+	down?: string;
+	recovered?: string;
+	escalation?: string;
+}
+
 interface SlackChannelConfig {
 	name: string;
 	type: 'slack';
 	url: string;
 	channel?: string;
+	templates?: NotificationTemplatesConfig;
 	is_default?: boolean;
 }
 
@@ -50,6 +57,7 @@ interface WebhookChannelConfig {
 	type: 'webhook';
 	url: string;
 	headers?: Record<string, string>;
+	templates?: NotificationTemplatesConfig;
 	is_default?: boolean;
 }
 
@@ -70,6 +78,7 @@ interface TelegramChannelConfig {
 	type: 'telegram';
 	bot_token: string;
 	chat_id: string;
+	templates?: NotificationTemplatesConfig;
 	is_default?: boolean;
 }
 
@@ -279,27 +288,35 @@ async function main() {
 			);
 		}
 
-		if (monitor.notification_channels !== undefined) {
-			for (const channelName of monitor.notification_channels) {
-				if (!knownChannelNames.has(channelName)) {
-					console.warn(`Warning: monitor "${monitor.name}" references unknown channel "${channelName}" — channel not found in notification_channels config`);
-				}
-				const channelId = slug(channelName);
-				await d1Query(
-					`INSERT INTO monitor_notification_channels (monitor_id, channel_id, notify_on, enabled)
-           VALUES (?, ?, '["incident_open","incident_resolved"]', 1)
-           ON CONFLICT(monitor_id, channel_id) DO UPDATE SET enabled = 1`,
-					[id, channelId],
-				);
+		// Per-monitor channel routing. An explicit list pins the monitor to those channels;
+		// omitting the key (or giving an empty list) clears any per-monitor assignment so the
+		// monitor falls back to the is_default channels. We always fully reconcile D1 with the
+		// YAML — including the omitted case — so stale assignments never linger after a list is
+		// removed (otherwise fetchNotificationChannels keeps using the old per-monitor rows and
+		// the default fallback never kicks in).
+		const channelNames = monitor.notification_channels ?? [];
+		for (const channelName of channelNames) {
+			if (!knownChannelNames.has(channelName)) {
+				console.warn(`Warning: monitor "${monitor.name}" references unknown channel "${channelName}" — channel not found in notification_channels config`);
 			}
-			if (monitor.notification_channels.length > 0) {
-				const placeholders = monitor.notification_channels.map(() => '?').join(', ');
-				const channelIds = monitor.notification_channels.map((n) => slug(n));
-				await d1Query(
-					`UPDATE monitor_notification_channels SET enabled = 0 WHERE monitor_id = ? AND channel_id NOT IN (${placeholders})`,
-					[id, ...channelIds],
-				);
-			}
+			const channelId = slug(channelName);
+			await d1Query(
+				`INSERT INTO monitor_notification_channels (monitor_id, channel_id, notify_on, enabled)
+         VALUES (?, ?, '["incident_open","incident_resolved"]', 1)
+         ON CONFLICT(monitor_id, channel_id) DO UPDATE SET enabled = 1`,
+				[id, channelId],
+			);
+		}
+		// Disable every assignment not in the YAML list. Empty list → disable all → use defaults.
+		if (channelNames.length > 0) {
+			const placeholders = channelNames.map(() => '?').join(', ');
+			const channelIds = channelNames.map((n) => slug(n));
+			await d1Query(
+				`UPDATE monitor_notification_channels SET enabled = 0 WHERE monitor_id = ? AND channel_id NOT IN (${placeholders})`,
+				[id, ...channelIds],
+			);
+		} else {
+			await d1Query(`UPDATE monitor_notification_channels SET enabled = 0 WHERE monitor_id = ?`, [id]);
 		}
 
 		// Add default SSL expiry rules if no ssl_expiry alerts are explicitly configured

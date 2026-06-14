@@ -28,6 +28,11 @@ notification_channels:
     url: ${MATTERMOST_WEBHOOK_URL}
     channel: "#alerts"
     is_default: true
+  - name: Telegram Ops
+    type: telegram
+    bot_token: ${TELEGRAM_BOT_TOKEN}   # Worker Secret; never commit the real token
+    chat_id: "-5554311491"             # «💓HeartBeatFlare» group
+    is_default: true
 
 monitors:
   - name: Google
@@ -36,7 +41,6 @@ monitors:
     visibility: public
     target: https://www.google.com/generate_204
     interval: 60s
-    notification_channels: [ Mattermost ]
     alerts:
       - condition: "status != 200"
         severity: critical
@@ -49,7 +53,6 @@ monitors:
     visibility: public
     target: google.com
     interval: 60s
-    notification_channels: [ Mattermost ]
     alerts:
       - condition: "status != up"
         severity: critical
@@ -63,7 +66,6 @@ monitors:
     ssl: true
     target: vpn.modem.by:443
     interval: 5m
-    notification_channels: [ Mattermost ]
     alerts:
       - condition: "connect != true"
         severity: critical
@@ -81,7 +83,6 @@ monitors:
     enabled: false
     target: smtp.gmail.com:587
     interval: 60s
-    notification_channels: [ Mattermost ]
     alerts:
       - condition: "connect != true"
         severity: critical
@@ -94,7 +95,6 @@ monitors:
     visibility: private
     target: https://nonexistent-alert-test.invalid
     interval: 60s
-    notification_channels: [ Mattermost ]
     alerts:
       - condition: "status != 200"
         severity: critical
