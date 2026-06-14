@@ -12,7 +12,7 @@ Live example: [status.modem.by](https://status.modem.by)
 - **Heartbeat (push) monitors** — a cron job / backup script `POST`s to a per-monitor URL; an incident opens when the beats stop arriving (dead-man's switch)
 - **SSL certificate expiry tracking** (best-effort, via external cert APIs)
 - **Incident management** — connectivity and SSL incidents tracked independently, with failure/recovery thresholds, cooldowns and optional escalation re-notifications
-- **Notifications** via Slack-compatible webhooks (e.g. Mattermost) and generic webhooks, delivered through Cloudflare Queues with retry
+- **Notifications** via Slack-compatible webhooks (e.g. Mattermost), generic webhooks and Telegram, delivered through Cloudflare Queues with retry
 - **Public + private status pages** — 90-day uptime bars, latency sparklines, incident history; the private view is protected by Cloudflare Access
 - **Maintenance windows** — announce planned work in `config.yaml`; the status page shows a banner and affected monitors aren't probed (no false incidents, uptime unaffected) while a window is active
 - **Atom feed** — `/feed.xml` publishes incidents and maintenance windows for any feed reader / Slack-RSS bridge; no email, no subscriber database
@@ -79,6 +79,11 @@ notification_channels:
     type: slack
     url: ${MATTERMOST_WEBHOOK_URL} # resolved from Worker env at send time
     is_default: true
+  # - name: Telegram Ops
+  #   type: telegram
+  #   bot_token: ${TELEGRAM_BOT_TOKEN} # Worker Secret
+  #   chat_id: "-1001234567890" # chat/group/channel id, or ${TELEGRAM_CHAT_ID}
+  #   is_default: false
 
 monitors:
   - name: Example API
@@ -122,7 +127,8 @@ A monitor can have multiple alert rules (e.g. one for connectivity, one for SSL 
 
 Notes:
 
-- Secrets never go into YAML or D1 — use `${VAR}` placeholders, resolved from the Worker's environment when a notification is sent.
+- Notification channels support Slack-compatible webhooks (`type: slack`), generic webhooks (`type: webhook`) and Telegram (`type: telegram` with `bot_token` and `chat_id`).
+- Secrets never go into YAML or D1 — use `${VAR}` placeholders, resolved from the Worker's environment when a notification is sent. `scripts/sync-secrets.ts` discovers referenced placeholders during deploy, so a Telegram bot token can be provided as `TELEGRAM_BOT_TOKEN` in CI secrets or via `npx wrangler secret put TELEGRAM_BOT_TOKEN`.
 - `auth.team_domain` and `auth.aud` are written back automatically by the deploy pipeline.
 - `wrangler.jsonc` is generated from [`wrangler.template.jsonc`](wrangler.template.jsonc) — run any npm script (dev, test, deploy) and it's created automatically. Don't edit it directly.
 - The import is idempotent: removing a monitor from YAML soft-disables it, runtime history is preserved.
@@ -239,7 +245,7 @@ Recommended Cloudflare API token permissions:
 | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | `CLOUDFLARE_API_TOKEN`         | Workers Scripts:Edit, D1:Edit, Queues:Edit, Access Apps and Policies:Edit, Access Organizations:Read, Access Identity Providers:Read                                               | Used only by deploy/provision scripts and CI. Add Workers Routes:Edit and Zone:Read if deploying a custom domain route.      |
 | `CLOUDFLARE_GRAPHQL_API_TOKEN` | Account Analytics:Read, D1:Read                                                                                                                                                    | Optional runtime secret for the private Infrastructure Usage block. Add Account Billing:Read to detect Free vs Workers Paid. |
-| Webhook secrets                | None in Cloudflare                                                                                                                                                                 | Values like `MATTERMOST_WEBHOOK_URL` are third-party webhook credentials, stored as Worker secrets and resolved at send time. |
+| Notification secrets           | None in Cloudflare                                                                                                                                                                 | Values like `MATTERMOST_WEBHOOK_URL` or `TELEGRAM_BOT_TOKEN` are third-party credentials, stored as Worker secrets and resolved at send time. |
 
 Deploy-time credentials live in `.env` locally and in CI secrets. **Runtime** secrets are read from `.env` by `wrangler dev` and the test runner; for production there are two equivalent ways to get them into the Worker:
 
@@ -252,7 +258,7 @@ Deploy-time credentials live in `.env` locally and in CI secrets. **Runtime** se
    npx wrangler secret put MATTERMOST_WEBHOOK_URL
    ```
 
-Adding a new notification channel with `url: ${MY_NEW_HOOK}` means adding a `MY_NEW_HOOK` secret the same way (CI secret or `wrangler secret put`) — the Worker substitutes it at send time, so the value never appears in YAML, D1 or git.
+Adding a new notification channel with a placeholder such as `url: ${MY_NEW_HOOK}` or `bot_token: ${TELEGRAM_BOT_TOKEN}` means adding that secret the same way (CI secret or `wrangler secret put`) — the Worker substitutes it at send time, so the value never appears in YAML, D1 or git.
 
 ## Deployment
 

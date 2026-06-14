@@ -28,6 +28,11 @@ notification_channels:
     url: ${MATTERMOST_WEBHOOK_URL}
     channel: "#alerts"
     is_default: true
+  # - name: Telegram Ops
+  #   type: telegram
+  #   bot_token: ${TELEGRAM_BOT_TOKEN}   # Worker Secret; never commit the real token
+  #   chat_id: "-1001234567890"          # chat/group/channel id, or ${TELEGRAM_CHAT_ID}
+  #   is_default: false
 
 monitors:
   - name: Google

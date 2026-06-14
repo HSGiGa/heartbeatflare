@@ -13,7 +13,7 @@ Cloudflare free tier. It is a **single Cloudflare Worker** (TypeScript) with thr
 - `queue()` — a Cloudflare Queue consumer that delivers incident notifications
 
 It probes external targets (HTTP/HTTPS, TCP, DNS) plus best-effort SSL-certificate expiry, tracks
-incidents, sends Slack/webhook notifications, and serves 90-day status pages — no servers, no
+incidents, sends Slack/webhook/Telegram notifications, and serves 90-day status pages — no servers, no
 agents, no build step. Live example: `status.modem.by`.
 
 > **The detailed system design lives in `../ARCHITECTURE.md`** — read it before non-trivial changes.

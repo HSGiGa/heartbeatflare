@@ -23,6 +23,27 @@ function resolveVars(env: Env, value: string): string {
 	return value.replace(/\$\{([^}]+)\}/g, (_, key) => (env as unknown as Record<string, string | undefined>)[key] ?? '');
 }
 
+const TELEGRAM_TEXT_LIMIT = 4096;
+
+function escapeAndBold(text: string): string {
+	const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+	return escaped.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+}
+
+function toTelegramHtml(text: string): string {
+	const full = escapeAndBold(text);
+	if (full.length <= TELEGRAM_TEXT_LIMIT) return full;
+
+	let lo = 0;
+	let hi = text.length;
+	while (lo < hi) {
+		const mid = Math.ceil((lo + hi) / 2);
+		if (escapeAndBold(`${text.slice(0, mid)}...`).length <= TELEGRAM_TEXT_LIMIT) lo = mid;
+		else hi = mid - 1;
+	}
+	return escapeAndBold(`${text.slice(0, lo)}...`);
+}
+
 // Attempts delivery to a single channel, records the outcome, and reports whether it succeeded.
 // `attemptCount` is the queue message's attempt number, so retried deliveries are tracked accurately.
 export async function sendToChannel(
@@ -47,6 +68,30 @@ export async function sendToChannel(
 			}
 			const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ text }) });
 			if (!res.ok) error = `HTTP ${res.status}`;
+		} else if (channel.type === 'telegram') {
+			const botToken = resolve(cfg.bot_token);
+			const chatId = resolve(cfg.chat_id);
+			if (!botToken || !chatId) throw new Error('missing bot_token or chat_id in channel configuration');
+			const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					chat_id: chatId,
+					text: toTelegramHtml(text),
+					parse_mode: 'HTML',
+					disable_web_page_preview: true,
+				}),
+			});
+			if (!res.ok) {
+				let detail = '';
+				try {
+					const body = (await res.json()) as { description?: string };
+					if (typeof body?.description === 'string') detail = `: ${body.description.slice(0, 200)}`;
+				} catch {
+					// Non-JSON Telegram responses are not logged to avoid persisting unexpected bodies.
+				}
+				error = `HTTP ${res.status}${detail}`;
+			}
 		} else {
 			error = `${channel.type} notifications not yet implemented`;
 		}

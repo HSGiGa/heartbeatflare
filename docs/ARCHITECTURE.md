@@ -45,7 +45,8 @@ via Cloudflare Tunnel.
 |                     concurrency), store results               |
 |                   • evaluate alerts → open/resolve incidents  |
 |                   • hourly uptime rollup, daily cleanup       |
-|  queue()      → deliver notifications (Slack/webhook)         |
+|  queue()      → deliver notifications                         |
+|                   (Slack/webhook/Telegram)                    |
 |                                                               |
 +----------------+--------------------------+-------------------+
                  |                          ^
@@ -155,9 +156,10 @@ under/over-count by one — an accepted trade-off for a push monitor.
 Consumes the `NOTIFICATION_QUEUE`. For each message, resolves the monitor's
 channels (per-monitor assignments, else defaults) and delivers.
 
-- **Implemented channels:** Slack and generic Webhook (HTTP POST `{ text }`).
-- Telegram/Email are **not implemented** and would record a `failed` delivery —
-  do not configure them (email was removed from `config.yaml`).
+- **Implemented channels:** Slack and generic Webhook (HTTP POST `{ text }`), plus
+  Telegram (`sendMessage` with HTML formatting).
+- Email is **not implemented** and would record a `failed` delivery —
+  do not configure it (email was removed from `config.yaml`).
 - Each attempt is recorded in `notification_deliveries` with the real attempt
   count (`msg.attempts`).
 - **Retry:** if no channel succeeds, `msg.retry()` (the queue's `max_retries`
@@ -270,7 +272,7 @@ would degrade the UI. **Open incidents are never purged**, regardless of age.
 ```
 id
 name
-type                  -- slack | webhook  (telegram/email defined but not implemented)
+type                  -- slack | webhook | telegram  (email defined but not implemented)
 configuration         -- JSON; string values may contain ${VAR} env references
 is_default            -- fallback channel when monitor has no explicit channels
 enabled
@@ -604,7 +606,8 @@ queue() consumer
         |
         +-- Slack
         +-- Webhook
-        (Telegram/Email not implemented)
+        +-- Telegram
+        (Email not implemented)
 ```
 
 ## Observability & Logging
@@ -691,7 +694,7 @@ config.yaml  +  Cloudflare Secrets
 ```yaml
 notification_channels:
   - name: Mattermost
-    type: slack                          # slack | webhook (telegram/email not implemented)
+    type: slack                          # slack | webhook | telegram (email not implemented)
     is_default: true
     url: ${MATTERMOST_WEBHOOK_URL}       # ${VAR} resolved from Worker env at send time
     channel: "#alerts"
@@ -775,7 +778,7 @@ The import step is idempotent and runs on every push to main via CI/CD.
 - SSL/TLS cert-expiry monitoring (external API, best-effort)
 - Inline probing in the cron tick (no Queues, no Service Bindings)
 - Incident management: independent connectivity + SSL incidents
-- Slack + Webhook notifications, with queue-based retry
+- Slack + Webhook + Telegram notifications, with queue-based retry
 - D1 storage (state, executions, metric_series, uptime aggregates)
 - Status pages: public (no auth) + private (Cloudflare Access), single Worker, fail-closed
 - Edge caching of public responses via the Cache API
@@ -783,7 +786,7 @@ The import step is idempotent and runs on every push to main via CI/CD.
 
 ### Phase 2
 - Internal OpenMetrics scraping via Cloudflare Tunnel (blackbox_exporter etc.)
-- Telegram + Email notification channels
+- Email notification channels
 - Separate cron expressions for rollup/cleanup (see ROADMAP.md)
 - Tags, Monitor Groups, Monitor Dependencies
 - Status page enhancements (component groups, uptime charts, subscriptions, SLA reporting)
