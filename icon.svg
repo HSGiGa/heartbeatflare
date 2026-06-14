@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1254 1254" role="img" aria-label="Heartbeat Flare icon">
+  <defs>
+    <radialGradient id="cloud" cx="728" cy="392" r="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffd02d"/>
+      <stop offset="0.42" stop-color="#ff7a00"/>
+      <stop offset="1" stop-color="#e52110"/>
+    </radialGradient>
+    <linearGradient id="cloudShade" x1="560" y1="640" x2="560" y2="904" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8e1608" stop-opacity="0"/>
+      <stop offset="1" stop-color="#8e1608" stop-opacity=".28"/>
+    </linearGradient>
+    <clipPath id="cloudClip">
+      <path d="M316 904c-88 0-158-70-158-158s70-164 158-164c-5-73 49-135 114-135 17 0 33 3 46 8 34-87 121-148 220-148 127 0 232 101 237 228 12-2 24-3 37-3 86 0 154 69 154 154 0 119-88 218-196 218H316Z"/>
+    </clipPath>
+    <linearGradient id="bolt" x1="1028" y1="532" x2="740" y2="790" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffcf28"/>
+      <stop offset="0.58" stop-color="#ff6a00"/>
+      <stop offset="1" stop-color="#e9170e"/>
+    </linearGradient>
+    <filter id="softShadow" x="-8%" y="-8%" width="116%" height="116%">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#000" flood-opacity=".28"/>
+    </filter>
+    <filter id="lineShadow" x="-8%" y="-18%" width="116%" height="136%">
+      <feDropShadow dx="0" dy="7" stdDeviation="7" flood-color="#5a1108" flood-opacity=".32"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#softShadow)">
+    <path
+      fill="url(#cloud)"
+      d="M316 904c-88 0-158-70-158-158s70-164 158-164c-5-73 49-135 114-135 17 0 33 3 46 8 34-87 121-148 220-148 127 0 232 101 237 228 12-2 24-3 37-3 86 0 154 69 154 154 0 119-88 218-196 218H316Z"
+    />
+    <rect x="158" y="620" width="966" height="284" fill="url(#cloudShade)" clip-path="url(#cloudClip)"/>
+    <path
+      fill="url(#bolt)"
+      d="M935 535 733 716l119-29-14 98 190-187-123 78 30-141Z"
+    />
+  </g>
+
+  <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" filter="url(#lineShadow)">
+    <path
+      d="M166 759h198c10 0 19-4 25-12l24-32 55 75 80-277 73 349 64-190 47 87h187"
+      stroke-width="31"
+    />
+    <circle cx="962" cy="759" r="32" stroke-width="31"/>
+  </g>
+</svg>

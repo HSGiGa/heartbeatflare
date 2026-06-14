@@ -297,6 +297,25 @@ describe('maintenance windows, feed and badges', () => {
 		expect(html).toContain('DB migration window');
 		expect(html).toContain('🔧');
 	});
+
+	it('renders active incidents in a card outside the header', async () => {
+		const res = await SELF.fetch(`https://example.com/public?t=${Date.now()}-incidents`);
+		expect(res.status).toBe(200);
+		const html = await res.text();
+		const header = html.slice(html.indexOf('<header>'), html.indexOf('</header>'));
+		const footer = html.slice(html.indexOf('<footer>'), html.indexOf('</footer>'));
+		const activeIncidents = html.slice(html.indexOf('<section class="incident-card"'), html.indexOf('<section class="section">'));
+		expect(html).toContain('Active Incidents');
+		expect(html).toContain('pub boom');
+		expect(html).not.toContain('id="range-picker"');
+		expect(html).not.toContain('data-days=');
+		expect(html.indexOf('Active Incidents')).toBeGreaterThan(html.indexOf('</header>'));
+		expect(header).not.toContain('Updated ');
+		expect(header).not.toContain('pub boom');
+		expect(footer).toContain('Updated ');
+		expect(activeIncidents).toContain('incident-monitor-card');
+		expect(activeIncidents).not.toContain('Partial Outage');
+	});
 });
 
 describe('heartbeat (push) monitoring', () => {
