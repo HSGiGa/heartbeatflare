@@ -42,6 +42,8 @@ function formatBytes(bytes: number): string {
 	return bytes + ' B';
 }
 
+const brandIconSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1254 1254" aria-hidden="true" focusable="false"><defs><radialGradient id="hbf-cloud" cx="728" cy="392" r="640" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#ffd02d"/><stop offset=".42" stop-color="#ff7a00"/><stop offset="1" stop-color="#e52110"/></radialGradient><linearGradient id="hbf-shade" x1="560" y1="640" x2="560" y2="904" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#8e1608" stop-opacity="0"/><stop offset="1" stop-color="#8e1608" stop-opacity=".28"/></linearGradient><clipPath id="hbf-clip"><path d="M316 904c-88 0-158-70-158-158s70-164 158-164c-5-73 49-135 114-135 17 0 33 3 46 8 34-87 121-148 220-148 127 0 232 101 237 228 12-2 24-3 37-3 86 0 154 69 154 154 0 119-88 218-196 218H316Z"/></clipPath><linearGradient id="hbf-bolt" x1="1028" y1="532" x2="740" y2="790" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#ffcf28"/><stop offset=".58" stop-color="#ff6a00"/><stop offset="1" stop-color="#e9170e"/></linearGradient></defs><path fill="url(#hbf-cloud)" d="M316 904c-88 0-158-70-158-158s70-164 158-164c-5-73 49-135 114-135 17 0 33 3 46 8 34-87 121-148 220-148 127 0 232 101 237 228 12-2 24-3 37-3 86 0 154 69 154 154 0 119-88 218-196 218H316Z"/><rect x="158" y="620" width="966" height="284" fill="url(#hbf-shade)" clip-path="url(#hbf-clip)"/><path fill="url(#hbf-bolt)" d="M935 535 733 716l119-29-14 98 190-187-123 78 30-141Z"/><g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round"><path d="M166 759h198c10 0 19-4 25-12l24-32 55 75 80-277 73 349 64-190 47 87h187" stroke-width="31"/><circle cx="962" cy="759" r="32" stroke-width="31"/></g></svg>`;
+
 function renderSparkline(points: number[]): string {
 	if (points.length < 2) return '';
 	const w = 80, h = 24, pad = 2;
@@ -305,17 +307,46 @@ export function buildStatusPage({
 		</div>`;
 	}).join('\n');
 
-	const activeIncidentsInHeaderHtml = activeIncidents.length > 0 ? `
-<div style="padding-top:16px;border-top:1px solid ${bannerBorder};margin-top:16px">
-	${activeIncidents.map((inc) => {
-		const monName = monitors.find((m) => m.id === inc.monitor_id)?.name ?? inc.monitor_id;
-		const isWarn = inc.severity === 'warning';
-		return `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:6px 0">
-			<span style="font-size:14px;font-weight:600;color:${bannerColor}">${isWarn ? '🟡' : '🔴'} ${escHtml(monName)} — ${escHtml(inc.severity)}</span>
-			<span class="meta-text">started ${timeAgo(inc.started_at)}${inc.reason ? ` · ${escHtml(inc.reason)}` : ''}</span>
-		</div>`;
+	const activeIncidentsByMonitor = new Map<string, IncidentRow[]>();
+	for (const inc of activeIncidents) {
+		const list = activeIncidentsByMonitor.get(inc.monitor_id) ?? [];
+		list.push(inc);
+		activeIncidentsByMonitor.set(inc.monitor_id, list);
+	}
+
+	const activeIncidentsCardHtml = activeIncidents.length > 0 ? `
+<section class="incident-card" aria-label="Active incidents">
+	<div class="incident-card-header">
+		<div>
+			<h2 class="incident-title">Active Incidents</h2>
+			<div class="incident-subtitle">${activeIncidents.length} ongoing ${activeIncidents.length === 1 ? 'incident' : 'incidents'}</div>
+		</div>
+	</div>
+	<div class="incident-list">
+	${[...activeIncidentsByMonitor.entries()].map(([monitorId, incidents]) => {
+		const monName = monitors.find((m) => m.id === monitorId)?.name ?? monitorId;
+		return `<article class="incident-monitor-card">
+			<div class="incident-monitor-card-head">
+				<div class="incident-monitor">${escHtml(monName)}</div>
+				<span class="incident-count">${incidents.length} active</span>
+			</div>
+			${incidents.map((inc) => {
+				const isWarn = inc.severity === 'warning';
+				const sevClass = isWarn ? 'warning' : 'critical';
+				return `<div class="incident-row">
+					<div class="incident-row-main">
+						<span class="incident-severity ${sevClass}"></span>
+						<div>
+							<div><span class="incident-severity-label">${escHtml(inc.severity)}</span> <span class="meta-text">started ${timeAgo(inc.started_at)}</span></div>
+							${inc.reason ? `<div class="incident-reason">${escHtml(inc.reason)}</div>` : ''}
+						</div>
+					</div>
+				</div>`;
+			}).join('\n')}
+		</article>`;
 	}).join('\n')}
-</div>` : '';
+	</div>
+</section>` : '';
 
 	const fmtWhen = (s: string) => new Date(s).toUTCString().replace(' GMT', ' UTC');
 	const monitorName = (id: string) => monitors.find((m) => m.id === id)?.name ?? id;
@@ -393,12 +424,14 @@ export function buildStatusPage({
 	})() : '';
 
 	const nowDisplay = new Date(nowMs).toUTCString().replace(' GMT', ' UTC');
+	const faviconHref = `data:image/svg+xml,${encodeURIComponent(brandIconSvg)}`;
 
 	return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="${escHtml(faviconHref)}">
 <title>HeartbeatFlare Status</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -407,12 +440,30 @@ a{color:inherit;text-decoration:none}
 .container{max-width:780px;margin:0 auto;padding:0 20px}
 header{background:${bannerBg};border-bottom:1px solid ${bannerBorder};padding:28px 0 24px;margin-bottom:32px}
 .header-inner{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
-.logo{font-size:17px;font-weight:700;color:#18181b;display:flex;align-items:center;gap:7px}
+.logo{font-size:17px;font-weight:700;color:#18181b;display:flex;align-items:center;gap:9px}
+.brand-icon{width:30px;height:30px;border-radius:7px;display:block;flex-shrink:0}
+.brand-icon svg{width:100%;height:100%;display:block}
 .overall-badge{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:700;color:${bannerColor}}
 .overall-dot{width:11px;height:11px;border-radius:50%;background:${bannerColor};flex-shrink:0}
 .meta-text{font-size:12px;color:#a1a1aa}
 .section{margin-bottom:28px}
 .section-title{font-size:11px;font-weight:700;color:#a1a1aa;text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px}
+.incident-card{background:#fff;border:1px solid #e4e4e7;border-radius:10px;padding:16px 18px;margin:-12px 0 24px}
+.incident-card-header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+.incident-title{font-size:14px;font-weight:700;color:#18181b;margin:0}
+.incident-subtitle{font-size:12px;color:#a1a1aa;margin-top:2px}
+.incident-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px}
+.incident-monitor-card{border:1px solid #f4f4f5;border-radius:8px;padding:12px;background:#fafafa}
+.incident-monitor-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:8px}
+.incident-count{font-size:11px;font-weight:700;color:#71717a;background:#fff;border:1px solid #e4e4e7;border-radius:999px;padding:2px 7px;white-space:nowrap}
+.incident-row{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;padding:12px 0}
+.incident-row+.incident-row{border-top:1px solid #f4f4f5}
+.incident-row-main{display:flex;align-items:flex-start;gap:10px;min-width:0}
+.incident-severity{width:10px;height:10px;border-radius:50%;margin-top:6px;flex-shrink:0}
+.incident-severity.critical{background:#ef4444}
+.incident-severity.warning{background:#f59e0b}
+.incident-monitor{font-size:14px;font-weight:700;color:#18181b}
+.incident-severity-label{font-size:11px;font-weight:700;color:#71717a;text-transform:uppercase;letter-spacing:.04em;margin-left:5px}
 .monitor-row{background:#fff;border:1px solid #e4e4e7;border-radius:10px;padding:16px 18px;margin-bottom:8px}
 .monitor-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:11px;gap:12px}
 .monitor-name{font-size:15px;font-weight:600}
@@ -467,34 +518,29 @@ footer{border-top:1px solid #e4e4e7;padding:20px 0;margin-top:8px}
 .update.degraded .marker{background:#f59e0b}
 .update.degraded .label{color:#b45309}
 @media(max-width:640px){.event{grid-template-columns:1fr;gap:10px}.event-date .relative{margin-top:0;margin-left:8px}}
+@media(max-width:640px){.incident-card{margin-top:-16px}.incident-row{flex-direction:column;gap:6px}}
 </style>
 </head>
 <body>
 <header>
 <div class="container">
 <div class="header-inner">
-<div class="logo">💓 HeartbeatFlare</div>
+<div class="logo"><span class="brand-icon">${brandIconSvg}</span>HeartbeatFlare</div>
 <div class="overall-badge"><span class="overall-dot"></span>${overallText}</div>
-<span class="meta-text">Updated ${nowDisplay}</span>
 ${session
 	? `<div style="display:flex;align-items:center;gap:10px"><span class="meta-text" title="${escHtml(session.email)}">${escHtml(session.name)}</span><a href="/auth/logout" style="font-size:12px;font-weight:600;padding:5px 12px;border-radius:5px;border:1px solid #e4e4e7;background:#fff;color:#18181b;text-decoration:none">Sign out</a></div>`
 	: `<a href="/auth/login" style="font-size:12px;font-weight:600;padding:5px 12px;border-radius:5px;border:1px solid #18181b;background:#18181b;color:#fff;text-decoration:none">Sign in</a>`}
 </div>
-${activeIncidentsInHeaderHtml}
 ${maintenanceInHeaderHtml}
 </div>
 </header>
 <main class="container">
+${activeIncidentsCardHtml}
 <section class="section">
 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
 <div class="range-picker">
 <button class="range-btn tab-btn active" data-tab="monitors">Monitors (${monitors.length})</button>
 <button class="range-btn tab-btn" data-tab="history">History</button>
-</div>
-<div class="range-picker" id="range-picker">
-<button class="range-btn" data-days="7">7d</button>
-<button class="range-btn" data-days="30">30d</button>
-<button class="range-btn active" data-days="90">90d</button>
 </div>
 </div>
 <div id="tab-monitors">
@@ -511,6 +557,7 @@ ${usageHtml}
 <div class="container">
 <div class="footer-inner">
 <span class="meta-text">heartbeatflare.modem-ltd.workers.dev</span>
+<span class="meta-text">Updated ${nowDisplay}</span>
 <span class="meta-text">Powered by <a href="https://workers.cloudflare.com" target="_blank" rel="noopener" style="color:#71717a;text-decoration:underline">Cloudflare Workers</a></span>
 </div>
 </div>
@@ -519,21 +566,11 @@ ${usageHtml}
 <script>
 (function(){
   var INC=${incMapJson};
-  var picker=document.getElementById('range-picker');
   var tabMonitors=document.getElementById('tab-monitors');
   var tabHistory=document.getElementById('tab-history');
   var histList=document.getElementById('history-list');
   var histPager=document.getElementById('history-pagination');
   var histPage=1,histPages=1,histLoaded=false;
-
-  function setRange(d){
-    picker.querySelectorAll('.range-btn').forEach(function(b){b.classList.toggle('active',+b.dataset.days===d);});
-    document.querySelectorAll('.bar').forEach(function(b){b.style.display=+b.dataset.age<d?'':'none';});
-    document.querySelectorAll('.bars-range-label').forEach(function(el){el.textContent=d+' days ago';});
-  }
-  picker.querySelectorAll('.range-btn').forEach(function(btn){
-    btn.addEventListener('click',function(){setRange(+btn.dataset.days);});
-  });
 
   function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
   function fmtDur(s,e){if(!e)return'ongoing';var m=Math.floor((new Date(e)-new Date(s))/60000);if(m<60)return m+'m';var h=Math.floor(m/60);if(h<24)return h+'h '+(m%60)+'m';return Math.floor(h/24)+'d '+(h%24)+'h';}
@@ -591,7 +628,6 @@ ${usageHtml}
     document.querySelectorAll('.tab-btn').forEach(function(b){b.classList.toggle('active',b.dataset.tab===tab);});
     tabMonitors.hidden=isHist;
     tabHistory.hidden=!isHist;
-    picker.style.display=isHist?'none':'';
     if(isHist&&!histLoaded)loadHistory(1);
   }
   function tabFromHash(){return location.hash.slice(1)==='history'?'history':'monitors';}
