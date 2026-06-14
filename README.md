@@ -12,7 +12,7 @@ Live example: [status.modem.by](https://status.modem.by)
 - **Heartbeat (push) monitors** — a cron job / backup script `POST`s to a per-monitor URL; an incident opens when the beats stop arriving (dead-man's switch)
 - **SSL certificate expiry tracking** (best-effort, via external cert APIs)
 - **Incident management** — connectivity and SSL incidents tracked independently, with failure/recovery thresholds, cooldowns and optional escalation re-notifications
-- **Notifications** via Slack-compatible webhooks (e.g. Mattermost), generic webhooks and Telegram, delivered through Cloudflare Queues with retry
+- **Notifications** via Slack-compatible webhooks (e.g. Mattermost), structured generic webhooks and Telegram, delivered through Cloudflare Queues with retry
 - **Public + private status pages** — 90-day uptime bars, latency sparklines, incident history; the private view is protected by Cloudflare Access
 - **Maintenance windows** — announce planned work in `config.yaml`; the status page shows a banner and affected monitors aren't probed (no false incidents, uptime unaffected) while a window is active
 - **Atom feed** — `/feed.xml` publishes incidents and maintenance windows for any feed reader / Slack-RSS bridge; no email, no subscriber database
@@ -84,6 +84,14 @@ notification_channels:
   #   bot_token: ${TELEGRAM_BOT_TOKEN} # Worker Secret
   #   chat_id: "-1001234567890" # chat/group/channel id, or ${TELEGRAM_CHAT_ID}
   #   is_default: false
+  # - name: Ops Webhook
+  #   type: webhook
+  #   url: ${OPS_WEBHOOK_URL}
+  #   headers:
+  #     Authorization: Bearer ${OPS_WEBHOOK_TOKEN}
+  #   templates:
+  #     down: "{monitor} is {status}: {error}"
+  #     recovered: "{monitor} recovered after {count} checks"
 
 monitors:
   - name: Example API
@@ -127,11 +135,29 @@ A monitor can have multiple alert rules (e.g. one for connectivity, one for SSL 
 
 Notes:
 
-- Notification channels support Slack-compatible webhooks (`type: slack`), generic webhooks (`type: webhook`) and Telegram (`type: telegram` with `bot_token` and `chat_id`).
+- Notification channels support Slack-compatible webhooks (`type: slack`), generic structured webhooks (`type: webhook`) and Telegram (`type: telegram` with `bot_token` and `chat_id`).
+- Generic webhooks POST JSON with `monitor`, `incidentId`, `status`, `eventType`, `count`, optional `errorMessage`, `message`, `cronTimestamp` and `timestamp`. Use `headers` for auth, for example `Authorization: Bearer ${OPS_WEBHOOK_TOKEN}`.
+- Slack, Telegram and webhook channels can override notification text with `templates.down`, `templates.recovered` and `templates.escalation`. Supported placeholders are `{monitor}`, `{count}`, `{error}` and `{status}`.
 - Secrets never go into YAML or D1 — use `${VAR}` placeholders, resolved from the Worker's environment when a notification is sent. `scripts/sync-secrets.ts` discovers referenced placeholders during deploy, so a Telegram bot token can be provided as `TELEGRAM_BOT_TOKEN` in CI secrets or via `npx wrangler secret put TELEGRAM_BOT_TOKEN`.
 - `auth.team_domain` and `auth.aud` are written back automatically by the deploy pipeline.
 - `wrangler.jsonc` is generated from [`wrangler.template.jsonc`](wrangler.template.jsonc) — run any npm script (dev, test, deploy) and it's created automatically. Don't edit it directly.
 - The import is idempotent: removing a monitor from YAML soft-disables it, runtime history is preserved.
+
+Example generic webhook payload:
+
+```json
+{
+  "monitor": { "id": "example-api", "name": "Example API" },
+  "incidentId": "incident-123",
+  "status": "error",
+  "eventType": "down",
+  "count": 3,
+  "errorMessage": "Connection refused",
+  "message": "🔴 **Example API is DOWN** — 3 consecutive failures: Connection refused",
+  "cronTimestamp": 1781395201000,
+  "timestamp": "2026-06-14T00:00:01Z"
+}
+```
 
 ### Maintenance windows
 

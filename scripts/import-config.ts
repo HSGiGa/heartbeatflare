@@ -37,11 +37,18 @@ interface MonitorConfig {
 	notification_channels?: string[];
 }
 
+interface NotificationTemplatesConfig {
+	down?: string;
+	recovered?: string;
+	escalation?: string;
+}
+
 interface SlackChannelConfig {
 	name: string;
 	type: 'slack';
 	url: string;
 	channel?: string;
+	templates?: NotificationTemplatesConfig;
 	is_default?: boolean;
 }
 
@@ -50,6 +57,7 @@ interface WebhookChannelConfig {
 	type: 'webhook';
 	url: string;
 	headers?: Record<string, string>;
+	templates?: NotificationTemplatesConfig;
 	is_default?: boolean;
 }
 
@@ -70,6 +78,7 @@ interface TelegramChannelConfig {
 	type: 'telegram';
 	bot_token: string;
 	chat_id: string;
+	templates?: NotificationTemplatesConfig;
 	is_default?: boolean;
 }
 
