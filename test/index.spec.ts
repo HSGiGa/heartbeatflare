@@ -313,7 +313,7 @@ describe('maintenance windows, feed and badges', () => {
 		expect(header).not.toContain('Updated ');
 		expect(header).not.toContain('pub boom');
 		expect(footer).toContain('Updated ');
-		expect(activeIncidents).toContain('incident-monitor-card');
+		expect(activeIncidents).toContain('incident-line sev-critical');
 		expect(activeIncidents).not.toContain('Partial Outage');
 	});
 });
