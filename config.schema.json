@@ -407,6 +407,11 @@
 					"type": "string",
 					"pattern": "^[1-9][0-9]*[sm]$",
 					"description": "Minimum time between repeated alerts, e.g. \"300s\" or \"5m\"."
+				},
+				"escalation": {
+					"type": "string",
+					"pattern": "^[1-9][0-9]*[smh]$",
+					"description": "Re-notify interval while an incident stays open, e.g. \"1800s\", \"30m\" or \"1h\". Omit to disable escalation."
 				}
 			}
 		}
