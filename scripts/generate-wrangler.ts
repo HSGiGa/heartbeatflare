@@ -1,0 +1,82 @@
+// Generates wrangler.jsonc from wrangler.template.jsonc + config.yaml + env vars.
+// Called automatically by dev, test, deploy, and related npm scripts.
+//
+// Modes:
+//   --mode=local   (default) IDs may be empty; Wrangler uses local SQLite for D1.
+//   --mode=deploy  CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN are required; the D1 id is
+//                  resolved by name (<name>-prod-db) via the API — provision must have run first.
+
+import { readFileSync, writeFileSync } from 'node:fs';
+import { parse as parseJsonc } from 'jsonc-parser';
+import Cloudflare from 'cloudflare';
+import { loadConfig, resolveDeploy } from './lib/deploy-config';
+import { findDatabaseId } from './lib/d1';
+
+const isDeployMode = process.argv.includes('--mode=deploy');
+
+function fail(msg: string): never {
+	console.error(`generate-wrangler: ${msg}`);
+	process.exit(1);
+}
+
+interface WranglerTemplate {
+	name: string;
+	main: string;
+	compatibility_date: string;
+	compatibility_flags: string[];
+	workers_dev: boolean;
+	routes?: { pattern: string; custom_domain: boolean }[];
+	observability: { enabled: boolean; head_sampling_rate?: number };
+	vars: Record<string, string>;
+	triggers: { crons: string[] };
+	d1_databases: { binding: string; database_name: string; database_id: string; migrations_dir: string }[];
+	queues: {
+		producers: { queue: string; binding: string }[];
+		consumers: { queue: string; max_batch_size: number; max_batch_timeout: number; max_retries: number }[];
+	};
+	// Preserved as-is from the template (heartbeat endpoint rate limiters); not generated.
+	ratelimits?: { name: string; namespace_id: string; simple: { limit: number; period: number } }[];
+}
+
+async function main() {
+	const config = loadConfig();
+	const { name, domain, databaseName, queueName } = resolveDeploy(config);
+
+	const accountId = process.env.CLOUDFLARE_ACCOUNT_ID ?? '';
+
+	// Local mode leaves the D1 id empty (Wrangler uses local SQLite). Deploy mode resolves it by
+	// name via the API — the database must already exist (run "npm run provision" first).
+	let databaseId = '';
+	if (isDeployMode) {
+		if (!accountId) fail('CLOUDFLARE_ACCOUNT_ID env var is required in deploy mode.');
+		const token = process.env.CLOUDFLARE_API_TOKEN;
+		if (!token) fail('CLOUDFLARE_API_TOKEN env var is required in deploy mode.');
+		const found = await findDatabaseId(new Cloudflare({ apiToken: token }), accountId, databaseName);
+		if (!found) fail(`D1 database "${databaseName}" not found — run "npm run provision" first.`);
+		databaseId = found;
+	}
+
+	const wrangler = parseJsonc(readFileSync('wrangler.template.jsonc', 'utf-8')) as WranglerTemplate;
+
+	wrangler.name = name;
+	// Preserve template vars (e.g. LOG_LEVEL) and overwrite only the generated ones.
+	wrangler.vars = { ...wrangler.vars, CLOUDFLARE_ACCOUNT_ID: accountId, D1_DATABASE_ID: databaseId, WORKER_NAME: name };
+	wrangler.d1_databases[0].database_name = databaseName;
+	wrangler.d1_databases[0].database_id = databaseId;
+	wrangler.queues.producers[0].queue = queueName;
+	wrangler.queues.consumers[0].queue = queueName;
+
+	if (domain) {
+		wrangler.routes = [{ pattern: domain, custom_domain: true }];
+	} else {
+		delete wrangler.routes;
+	}
+
+	writeFileSync('wrangler.jsonc', JSON.stringify(wrangler, null, '\t') + '\n');
+	console.log(`wrangler.jsonc generated (${isDeployMode ? 'deploy' : 'local'} mode)`);
+}
+
+main().catch((err) => {
+	console.error(err);
+	process.exit(1);
+});
