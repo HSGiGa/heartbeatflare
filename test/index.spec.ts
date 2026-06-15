@@ -285,6 +285,16 @@ describe('auth visibility filtering', () => {
 		expect(body.monitors.every((m) => m.target === null)).toBe(true);
 	});
 
+	it('returns no-store for /auth/login redirect', async () => {
+		const req = new IncomingRequest('http://example.com/auth/login');
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(req, env, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(res.status).toBe(302);
+		expect(res.headers.get('Location')).toBe('http://example.com/private');
+		expect(res.headers.get('Cache-Control')).toBe('no-store');
+	});
+
 	it('returns 302 for /auth/logout when auth configured', async () => {
 		const req = new IncomingRequest('http://example.com/auth/logout');
 		const ctx = createExecutionContext();
@@ -292,7 +302,37 @@ describe('auth visibility filtering', () => {
 		await waitOnExecutionContext(ctx);
 		expect(res.status).toBe(302);
 		expect(res.headers.get('Location')).toBe('http://example.com/public');
+		expect(res.headers.get('Cache-Control')).toBe('no-store');
 		expect(res.headers.get('Set-Cookie')).toContain('CF_Authorization=;');
+	});
+
+	it('returns no-store for root auth redirect', async () => {
+		const req = new IncomingRequest('http://example.com/');
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(req, env, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(res.status).toBe(302);
+		expect(res.headers.get('Location')).toBe('http://example.com/public');
+		expect(res.headers.get('Cache-Control')).toBe('no-store');
+	});
+
+	it('returns no-store for /private even without a valid session', async () => {
+		const req = new IncomingRequest('http://example.com/private');
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(req, env, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('text/html');
+		expect(res.headers.get('Cache-Control')).toBe('no-store');
+	});
+
+	it('keeps /public cacheable', async () => {
+		const req = new IncomingRequest('http://example.com/public?t=auth-cache-control');
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(req, env, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Cache-Control')).toBe('public, max-age=60');
 	});
 });
 

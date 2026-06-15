@@ -130,6 +130,7 @@ export function handleLogout(request: Request, _authConfig: ResolvedAuthConfig):
 		status: 302,
 		headers: {
 			Location: origin + '/public',
+			'Cache-Control': 'no-store',
 			// Clear the CF Access cookie so subsequent requests are unauthenticated
 			'Set-Cookie': 'CF_Authorization=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=None',
 		},
