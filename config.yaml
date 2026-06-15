@@ -1,0 +1,96 @@
+# yaml-language-server: $schema=./config.schema.json
+
+deploy:
+  name: status # worker name; D1/queue names derive from it unless overridden
+  # domain:   # custom domain route; omit to serve on workers.dev only (worker URL: <name>.<subdomain>.workers.dev)
+  # database_name: heartbeatflare-prod-db   # default: ${name}-prod-db
+  # queue_name: heartbeatflare-notifications # default: ${name}-notifications
+
+auth:
+  provider: cloudflare_access
+  team_name: "${CLOUDFLARE_ACCESS_TEAM_NAME}"
+  aud: "${CLOUDFLARE_ACCESS_AUD}"
+
+notification_channels:
+  - name: Demo Webhook
+    type: webhook
+    url: ${DEMO_WEBHOOK_URL}
+    headers:
+      Authorization: Bearer ${DEMO_WEBHOOK_TOKEN}
+    is_default: false
+
+monitors:
+  - name: Google HTTP
+    type: http
+    mode: external
+    visibility: public
+    target: https://www.google.com/generate_204
+    interval: 60s
+    alerts:
+      - condition: "status != 200"
+        severity: critical
+        failures: 2
+        recovery: 2
+        cooldown: 300s
+  - name: Cloudflare DNS
+    type: dns
+    mode: external
+    visibility: public
+    target: cloudflare.com
+    interval: 60s
+    alerts:
+      - condition: "status != up"
+        severity: critical
+        failures: 2
+        recovery: 2
+        cooldown: 300s
+  - name: Cloudflare HTTPS
+    type: tcp
+    mode: external
+    visibility: public
+    ssl: true
+    target: cloudflare.com:443
+    interval: 5m
+    alerts:
+      - condition: "connect != true"
+        severity: critical
+        failures: 2
+        recovery: 2
+        cooldown: 300s
+      - condition: ssl_expiry < 14
+        severity: warning
+        failures: 1
+        recovery: 1
+  - name: Demo Heartbeat
+    type: heartbeat
+    mode: external
+    visibility: private
+    interval: 10m
+    alerts:
+      - condition: "status != up"
+        severity: critical
+        failures: 1
+        recovery: 1
+  - name: Demo Failing Endpoint
+    type: http
+    mode: external
+    visibility: private
+    enabled: false
+    target: https://nonexistent-alert-test.invalid
+    interval: 60s
+    alerts:
+      - condition: "status != 200"
+        severity: critical
+        failures: 1
+        recovery: 2
+        cooldown: 300s
+
+# Planned maintenance windows. While a window is active the affected monitors are not probed
+# (no incident, uptime unaffected) and a banner is shown on the status page. Times are ISO 8601 UTC.
+# Omit `monitors:` for a global window covering every monitor.
+# maintenance:
+#   - title: "Database migration"
+#     body: "Upgrading the primary Postgres cluster. Brief downtime expected."
+#     starts_at: "2026-06-20T02:00:00Z"
+#     ends_at: "2026-06-20T04:00:00Z"
+#     monitors: [ Google HTTP, Cloudflare HTTPS ]
