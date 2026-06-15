@@ -1,0 +1,51 @@
+/**
+ * Wrangler template — committed to git, never edited manually.
+ * Run `npm run wrangler:generate` (or any script that calls it) to produce wrangler.jsonc.
+ *
+ * Fields marked "generated" are overwritten by scripts/generate-wrangler.ts from
+ * config.yaml (deploy.*) and the CLOUDFLARE_ACCOUNT_ID env var. Do not put real
+ * values here — they will be silently overwritten on the next generation.
+ *
+ * For more details on Wrangler configuration:
+ * https://developers.cloudflare.com/workers/wrangler/configuration/
+ */
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "", // generated: deploy.name
+	"main": "src/index.ts",
+	"compatibility_date": "2025-06-07",
+	"compatibility_flags": ["nodejs_compat"],
+	"workers_dev": true,
+	"routes": [{ "pattern": "", "custom_domain": true }], // generated: deploy.domain (omitted when domain is unset)
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 1 // log 100% of invocations; lower only if nearing the Free Logs limit
+	},
+	"vars": {
+		"CLOUDFLARE_ACCOUNT_ID": "", // generated: $CLOUDFLARE_ACCOUNT_ID env var
+		"D1_DATABASE_ID": "", // generated: deploy.database_id
+		"WORKER_NAME": "", // generated: deploy.name (used for usage GraphQL scriptName + UI display)
+		"LOG_LEVEL": "info" // runtime log level: info (default) | debug; debug adds successful checks + probe timings
+	},
+	"triggers": {
+		"crons": ["* * * * *"]
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "", // generated: deploy.database_name (default: <name>-prod-db)
+			"database_id": "", // generated: deploy.database_id
+			"migrations_dir": "migrations"
+		}
+	],
+	"queues": {
+		"producers": [{ "queue": "", "binding": "NOTIFICATION_QUEUE" }], // generated: deploy.queue_name
+		"consumers": [{ "queue": "", "max_batch_size": 10, "max_batch_timeout": 5, "max_retries": 8 }] // generated: deploy.queue_name; 8 retries × backoff (src/queue.ts) ≈ ~14 min budget
+	},
+	// Rate limiters for the public heartbeat endpoint (POST /beat/<id>/<token>), checked before any
+	// D1 access. Best-effort per-colo limiting; namespace_ids are account-local identifiers.
+	"ratelimits": [
+		{ "name": "BEAT_IP_RATE_LIMITER", "namespace_id": "1001", "simple": { "limit": 60, "period": 60 } },
+		{ "name": "BEAT_MONITOR_RATE_LIMITER", "namespace_id": "1002", "simple": { "limit": 20, "period": 60 } }
+	]
+}

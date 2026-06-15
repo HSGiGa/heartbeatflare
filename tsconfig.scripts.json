@@ -1,0 +1,9 @@
+{
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"types": ["node"],
+		"lib": ["es2021", "dom"]
+	},
+	"exclude": [],
+	"include": ["scripts/**/*.ts"]
+}
