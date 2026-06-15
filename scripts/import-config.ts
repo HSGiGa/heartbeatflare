@@ -398,6 +398,16 @@ async function main() {
 		'UPDATE monitor_notification_channels SET enabled = 0 WHERE monitor_id IN (SELECT id FROM monitors WHERE enabled = 0)',
 	);
 
+	// A soft-deleted monitor is never probed again, so its open incident can never auto-resolve.
+	// Resolve it and clear the active-incident pointer — covers this import's removals and any
+	// pre-existing stale rows from earlier soft-deletes.
+	await d1Query(
+		"UPDATE incidents SET status = 'resolved', resolved_at = datetime('now') WHERE status = 'open' AND monitor_id IN (SELECT id FROM monitors WHERE enabled = 0)",
+	);
+	await d1Query(
+		'UPDATE monitor_state SET active_incident_id = NULL WHERE monitor_id IN (SELECT id FROM monitors WHERE enabled = 0)',
+	);
+
 	console.log(
 		`Import complete. ${config.monitors.length} monitor(s) imported, ${removed.length} soft-deleted, ${config.notification_channels?.length ?? 0} channel(s) imported, ${removedChannels.length} channel(s) soft-deleted, ${windows.length} maintenance window(s) imported.`,
 	);

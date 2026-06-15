@@ -152,13 +152,13 @@ async function handleHistoryApi(env: Env, searchParams: URLSearchParams, showAll
 			`SELECT i.id, i.monitor_id, i.severity, i.status, i.started_at, i.resolved_at, i.reason,
 			        m.name AS monitor_name, m.type AS monitor_type
 			 FROM incidents i JOIN monitors m ON m.id = i.monitor_id
-			 WHERE 1=1 ${visWhere}
+			 WHERE m.enabled = 1 ${visWhere}
 			 ORDER BY i.started_at DESC LIMIT ? OFFSET ?`,
 		).bind(limit, offset).all<IncidentRow>(),
 		env.DB.prepare(
 			showAll
-				? `SELECT COUNT(*) AS total FROM incidents`
-				: `SELECT COUNT(*) AS total FROM incidents i JOIN monitors m ON m.id = i.monitor_id WHERE m.visibility = 'public'`,
+				? `SELECT COUNT(*) AS total FROM incidents i JOIN monitors m ON m.id = i.monitor_id WHERE m.enabled = 1`
+				: `SELECT COUNT(*) AS total FROM incidents i JOIN monitors m ON m.id = i.monitor_id WHERE m.enabled = 1 AND m.visibility = 'public'`,
 		).first<{ total: number }>(),
 	]);
 
@@ -204,7 +204,7 @@ async function handleStatusPage(
 		env.DB.prepare(
 			`SELECT i.id, i.monitor_id, i.severity, i.started_at, i.reason
 			 FROM incidents i JOIN monitors m ON m.id = i.monitor_id
-			 WHERE i.status = 'open' ${visWhere}
+			 WHERE i.status = 'open' AND m.enabled = 1 ${visWhere}
 			 ORDER BY i.started_at DESC`,
 		).all<IncidentRow>(),
 		env.DB.prepare(
@@ -232,7 +232,7 @@ async function handleFeed(env: Env, origin: string): Promise<Response> {
 		env.DB.prepare(
 			`SELECT i.id, i.monitor_id, i.severity, i.status, i.started_at, i.resolved_at, i.reason, m.name AS monitor_name
 			 FROM incidents i JOIN monitors m ON m.id = i.monitor_id
-			 WHERE m.visibility = 'public'
+			 WHERE m.enabled = 1 AND m.visibility = 'public'
 			 ORDER BY COALESCE(i.resolved_at, i.started_at) DESC
 			 LIMIT 50`,
 		).all<IncidentRow>(),

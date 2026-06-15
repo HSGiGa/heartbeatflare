@@ -173,6 +173,55 @@ describe('incident independence', () => {
 	});
 });
 
+describe('soft-deleted monitor incidents are hidden', () => {
+	// A monitor removed from config.yaml is soft-deleted (enabled = 0). Its incidents must not
+	// surface on any public read path, even if they are still 'open' in the DB (a disabled monitor
+	// is never probed again, so the incident can't auto-resolve). Regression for issue #6.
+	beforeAll(async () => {
+		// Control: an enabled public monitor with an open incident — must still appear.
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, enabled)
+			 VALUES ('control-enabled', 'Control Live', 'http', 'external', 'public', 'https://control.example.com', 60, 1)`,
+		).run();
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, reason)
+			 VALUES ('control-inc', 'control-enabled', NULL, 'open', 'critical', '2026-12-31T00:00:01Z', 'down')`,
+		).run();
+		// The soft-deleted monitor (enabled = 0), public, with a lingering open incident.
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, enabled)
+			 VALUES ('ghost-disabled', 'Ghost Disabled', 'http', 'external', 'public', 'https://ghost.example.com', 60, 0)`,
+		).run();
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, reason)
+			 VALUES ('ghost-inc', 'ghost-disabled', NULL, 'open', 'critical', '2026-12-31T00:00:00Z', 'down')`,
+		).run();
+	});
+
+	it('excludes them from GET /api/history', async () => {
+		// Unique query so this fetch gets its own edge-cache entry (the public feed/api responses
+		// are edge-cached by URL; a shared key would let an earlier test's render leak in).
+		const response = await SELF.fetch('https://example.com/api/history?t=softdelete');
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as { incidents: Array<{ id: string; monitor_id: string }> };
+		const ids = body.incidents.map((i) => i.id);
+		// Both incidents have the most recent started_at, so the control lands on page 1 if shown.
+		expect(ids).toContain('control-inc');
+		expect(ids).not.toContain('ghost-inc');
+		expect(body.incidents.some((i) => i.monitor_id === 'ghost-disabled')).toBe(false);
+	});
+
+	it('excludes them from GET /feed.xml', async () => {
+		// Unique query (cache-bust) so this earlier feed fetch doesn't populate the shared
+		// /feed.xml edge-cache entry that a later test asserts against.
+		const response = await SELF.fetch('https://example.com/feed.xml?t=softdelete');
+		expect(response.status).toBe(200);
+		const xml = await response.text();
+		expect(xml).toContain('Control Live');
+		expect(xml).not.toContain('Ghost Disabled');
+	});
+});
+
 describe('auth visibility filtering', () => {
 	beforeAll(async () => {
 		await env.DB.prepare(
