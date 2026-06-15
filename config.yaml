@@ -44,12 +44,11 @@ monitors:
         failures: 2
         recovery: 2
         cooldown: 300s
-  - name: Cloudflare HTTPS
+  - name: SMTP Google (587)
     type: tcp
     mode: external
     visibility: public
-    ssl: true
-    target: cloudflare.com:443
+    target: smtp.gmail.com:587 # submission port; STARTTLS, so a plain TCP connect check (no ssl)
     interval: 5m
     alerts:
       - condition: "connect != true"
@@ -57,10 +56,6 @@ monitors:
         failures: 2
         recovery: 2
         cooldown: 300s
-      - condition: ssl_expiry < 14
-        severity: warning
-        failures: 1
-        recovery: 1
   - name: Demo Heartbeat
     type: heartbeat
     mode: external
