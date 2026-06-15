@@ -1,0 +1,385 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "config.schema.json",
+	"title": "HeartbeatFlare Config",
+	"type": "object",
+	"required": ["deploy", "monitors"],
+	"additionalProperties": false,
+	"properties": {
+		"deploy": {
+			"$ref": "#/$defs/deploy_config"
+		},
+		"auth": {
+			"$ref": "#/$defs/auth_config"
+		},
+		"notification_channels": {
+			"type": "array",
+			"items": {
+				"oneOf": [
+					{
+						"$ref": "#/$defs/slack_channel"
+					},
+					{
+						"$ref": "#/$defs/webhook_channel"
+					},
+					{
+						"$ref": "#/$defs/email_channel"
+					},
+					{
+						"$ref": "#/$defs/telegram_channel"
+					}
+				]
+			}
+		},
+		"monitors": {
+			"type": "array",
+			"minItems": 1,
+			"items": {
+				"$ref": "#/$defs/monitor"
+			}
+		},
+		"maintenance": {
+			"type": "array",
+			"description": "Planned maintenance windows. Shown on the status page; affected monitors are not probed while a window is active.",
+			"items": {
+				"$ref": "#/$defs/maintenance_window"
+			}
+		}
+	},
+	"$defs": {
+		"notification_templates": {
+			"type": "object",
+			"description": "Optional custom notification text templates by event type. Placeholders: {monitor}, {count}, {error}, {status}.",
+			"additionalProperties": false,
+			"minProperties": 1,
+			"properties": {
+				"down": {
+					"type": "string",
+					"minLength": 1
+				},
+				"recovered": {
+					"type": "string",
+					"minLength": 1
+				},
+				"escalation": {
+					"type": "string",
+					"minLength": 1
+				}
+			}
+		},
+		"maintenance_window": {
+			"type": "object",
+			"required": ["title", "starts_at", "ends_at"],
+			"additionalProperties": false,
+			"properties": {
+				"title": {
+					"type": "string",
+					"description": "Short headline shown on the status page banner. Must be unique (used to derive the window id)."
+				},
+				"body": {
+					"type": "string",
+					"description": "Optional longer description of the planned work."
+				},
+				"starts_at": {
+					"type": "string",
+					"description": "Start time, ISO 8601 UTC, e.g. \"2026-06-20T02:00:00Z\"."
+				},
+				"ends_at": {
+					"type": "string",
+					"description": "End time, ISO 8601 UTC, e.g. \"2026-06-20T04:00:00Z\"."
+				},
+				"monitors": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Names of affected monitors. Omit for a global window (all monitors)."
+				}
+			}
+		},
+		"deploy_config": {
+			"type": "object",
+			"required": ["name"],
+			"additionalProperties": false,
+			"description": "Deployment inputs. provision creates the D1 database and queue by name; their IDs are resolved by name at deploy time and never stored here.",
+			"properties": {
+				"name": {
+					"type": "string",
+					"pattern": "^[a-z0-9-]+$",
+					"description": "Worker name. Resource names derive from it: <name>-prod-db, <name>-notifications."
+				},
+				"domain": {
+					"type": "string",
+					"description": "Custom domain route, e.g. status.example.com. Omit to serve on workers.dev only."
+				},
+				"database_name": {
+					"type": "string",
+					"description": "D1 database name override. Default: <name>-prod-db."
+				},
+				"queue_name": {
+					"type": "string",
+					"description": "Notification queue name override. Default: <name>-notifications."
+				}
+			}
+		},
+		"auth_config": {
+			"type": "object",
+			"required": ["provider", "team_name", "aud"],
+			"additionalProperties": false,
+			"description": "Optional Cloudflare Access authentication for /private. When present, unauthenticated users see only public monitors. Scope the Access application to the /private path (Destination <host>/private), not the bare hostname — otherwise Access walls off the public page too.",
+			"properties": {
+				"provider": {
+					"const": "cloudflare_access"
+				},
+				"team_name": {
+					"type": "string",
+					"description": "Your Cloudflare Zero Trust team name (the label before .cloudflareaccess.com, e.g. \"acme\" for acme.cloudflareaccess.com — not the full domain). Supports ${VAR} substitution."
+				},
+				"aud": {
+					"type": "string",
+					"description": "Application AUD tag from CF Access dashboard. Supports ${VAR} substitution."
+				}
+			}
+		},
+		"slack_channel": {
+			"type": "object",
+			"required": ["name", "type", "url"],
+			"additionalProperties": false,
+			"properties": {
+				"name": {
+					"type": "string"
+				},
+				"type": {
+					"const": "slack"
+				},
+				"url": {
+					"type": "string",
+					"description": "Incoming webhook URL. Supports ${VAR} substitution."
+				},
+				"channel": {
+					"type": "string",
+					"description": "Channel name for display purposes, e.g. \"#alerts\"."
+				},
+				"templates": {
+					"$ref": "#/$defs/notification_templates"
+				},
+				"is_default": {
+					"type": "boolean",
+					"default": false
+				}
+			}
+		},
+		"webhook_channel": {
+			"type": "object",
+			"required": ["name", "type", "url"],
+			"additionalProperties": false,
+			"properties": {
+				"name": {
+					"type": "string"
+				},
+				"type": {
+					"const": "webhook"
+				},
+				"url": {
+					"type": "string",
+					"description": "Webhook endpoint URL. Supports ${VAR} substitution."
+				},
+				"headers": {
+					"type": "object",
+					"description": "Additional HTTP headers. Values support ${VAR} substitution.",
+					"additionalProperties": {
+						"type": "string"
+					}
+				},
+				"templates": {
+					"$ref": "#/$defs/notification_templates"
+				},
+				"is_default": {
+					"type": "boolean",
+					"default": false
+				}
+			}
+		},
+		"email_channel": {
+			"type": "object",
+			"required": ["name", "type", "server", "port", "from", "to"],
+			"additionalProperties": false,
+			"properties": {
+				"name": {
+					"type": "string"
+				},
+				"type": {
+					"const": "email"
+				},
+				"server": {
+					"type": "string",
+					"description": "SMTP server hostname."
+				},
+				"port": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 65535
+				},
+				"from": {
+					"type": "string",
+					"description": "Sender email address."
+				},
+				"to": {
+					"oneOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "array",
+							"items": {
+								"type": "string"
+							},
+							"minItems": 1
+						}
+					],
+					"description": "Recipient email address or list of addresses."
+				},
+				"username": {
+					"type": "string"
+				},
+				"password": {
+					"type": "string",
+					"description": "SMTP password. Supports ${VAR} substitution."
+				},
+				"is_default": {
+					"type": "boolean",
+					"default": false
+				}
+			}
+		},
+		"telegram_channel": {
+			"type": "object",
+			"required": ["name", "type", "bot_token", "chat_id"],
+			"additionalProperties": false,
+			"properties": {
+				"name": {
+					"type": "string"
+				},
+				"type": {
+					"const": "telegram"
+				},
+				"bot_token": {
+					"type": "string",
+					"description": "Telegram Bot API token. Supports ${VAR} substitution."
+				},
+				"chat_id": {
+					"type": "string",
+					"description": "Telegram chat or channel ID. Supports ${VAR} substitution."
+				},
+				"templates": {
+					"$ref": "#/$defs/notification_templates"
+				},
+				"is_default": {
+					"type": "boolean",
+					"default": false
+				}
+			}
+		},
+		"monitor": {
+			"type": "object",
+			"required": ["name", "type", "mode"],
+			"additionalProperties": false,
+			"description": "A monitor. `target` is required for all types except `heartbeat` (push); a heartbeat monitor is identified by its URL id and validated by a Cloudflare Worker Secret derived from its name.",
+			"allOf": [
+				{
+					"if": {
+						"properties": { "type": { "not": { "const": "heartbeat" } } }
+					},
+					"then": {
+						"required": ["target"]
+					}
+				}
+			],
+			"properties": {
+				"name": {
+					"type": "string"
+				},
+				"type": {
+					"type": "string",
+					"enum": ["http", "tcp", "dns", "heartbeat", "openmetrics"]
+				},
+				"mode": {
+					"type": "string",
+					"enum": ["external", "internal"]
+				},
+				"visibility": {
+					"type": "string",
+					"enum": ["public", "private"],
+					"default": "private"
+				},
+				"ssl": {
+					"type": "boolean",
+					"default": true
+				},
+				"target": {
+					"type": "string",
+					"description": "URL, host:port, or domain to monitor."
+				},
+				"interval": {
+					"type": "string",
+					"pattern": "^((6[0-9]|[7-9][0-9]|[1-9][0-9]{2,})s|[1-9][0-9]*[mhd])$",
+					"default": "5m",
+					"description": "Check interval (heartbeat: expected beat period), minimum 60s. Examples: \"60s\", \"5m\", \"300s\", \"6h\", \"1d\". Defaults to 5m."
+				},
+				"alerts": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/alert"
+					}
+				},
+				"enabled": {
+					"type": "boolean",
+					"default": true,
+					"description": "Set to false to pause this monitor: still visible on the status page but not probed."
+				},
+				"notification_channels": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Names of notification channels for this monitor. If omitted, falls back to is_default channels."
+				}
+			}
+		},
+		"alert": {
+			"type": "object",
+			"required": ["condition", "severity", "failures", "recovery"],
+			"additionalProperties": false,
+			"properties": {
+				"condition": {
+					"type": "string",
+					"description": "Alert condition, e.g. \"status != 200\", \"connect != true\", \"latency >= 1000\"."
+				},
+				"severity": {
+					"type": "string",
+					"enum": ["warning", "critical"]
+				},
+				"failures": {
+					"type": "integer",
+					"minimum": 1,
+					"description": "Consecutive failures before alerting."
+				},
+				"recovery": {
+					"type": "integer",
+					"minimum": 1,
+					"description": "Consecutive successes before resolving."
+				},
+				"cooldown": {
+					"type": "string",
+					"pattern": "^[1-9][0-9]*[sm]$",
+					"description": "Minimum time between repeated alerts, e.g. \"300s\" or \"5m\"."
+				},
+				"escalation": {
+					"type": "string",
+					"pattern": "^[1-9][0-9]*[smh]$",
+					"description": "Re-notify interval while an incident stays open, e.g. \"1800s\", \"30m\" or \"1h\". Omit to disable escalation."
+				}
+			}
+		}
+	}
+}
