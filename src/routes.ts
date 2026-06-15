@@ -13,6 +13,17 @@ import { fetchUsage, usageResetsIn } from './usage';
 
 // Edge-cache TTL for unauthenticated responses (status page + public API).
 const PUBLIC_MAXAGE = 60;
+const NO_STORE = 'no-store';
+
+function redirectNoStore(location: string): Response {
+	return new Response(null, {
+		status: 302,
+		headers: {
+			Location: location,
+			'Cache-Control': NO_STORE,
+		},
+	});
+}
 
 // Cache API key namespaced to public responses, so an authenticated request to the same URL
 // (which we never cache) can never match a cached public response.
@@ -175,6 +186,7 @@ async function handleStatusPage(
 	session: Session | null,
 	authEnabled: boolean,
 	host: string,
+	cacheControl?: string,
 ): Promise<Response> {
 	const nowMs = Date.now();
 	const visWhere = showAll ? '' : `AND m.visibility = 'public'`;
@@ -221,8 +233,8 @@ async function handleStatusPage(
 	const html = buildStatusPage({ nowMs, monitors, uptimeDays, latencyPoints, activeIncidents, allIncidents, maintenanceWindows, d1Usage, session, authEnabled, workerName: runtimeEnv.WORKER_NAME ?? '', host });
 
 	// Unauthenticated (public) renders are cacheable at the edge; authenticated views are always fresh.
-	const cacheControl = session ? 'no-store' : `public, max-age=${PUBLIC_MAXAGE}`;
-	return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': cacheControl } });
+	const resolvedCacheControl = cacheControl ?? (session ? NO_STORE : `public, max-age=${PUBLIC_MAXAGE}`);
+	return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': resolvedCacheControl } });
 }
 
 // Public Atom feed of incidents + maintenance windows (public monitors only).
@@ -275,18 +287,18 @@ export async function handleFetch(request: Request, env: Env, ctx: ExecutionCont
 	}
 
 	if (pathname === '/auth/login') {
-		return Response.redirect(origin + '/private', 302);
+		return redirectNoStore(origin + '/private');
 	}
 
 	if (pathname === '/auth/logout') {
 		const authConfig = await resolveAuthConfig(env);
-		return authConfig ? handleLogout(request, authConfig) : Response.redirect(origin + '/public', 302);
+		return authConfig ? handleLogout(request, authConfig) : redirectNoStore(origin + '/public');
 	}
 
 	if (request.method === 'GET' && pathname === '/') {
 		try {
 			const { session } = await getAuth(request, env);
-			return Response.redirect(origin + (session ? '/private' : '/public'), 302);
+			return redirectNoStore(origin + (session ? '/private' : '/public'));
 		} catch (err) {
 			log('error', 'auth.error', { error: err instanceof Error ? err.message : String(err) });
 			return new Response('Authentication service unavailable', {
@@ -338,7 +350,7 @@ export async function handleFetch(request: Request, env: Env, ctx: ExecutionCont
 	}
 
 	if (request.method === 'GET' && pathname === '/private') {
-		return handleStatusPage(env, runtimeEnv, showAll, session, authEnabled, new URL(request.url).host);
+		return handleStatusPage(env, runtimeEnv, showAll, session, authEnabled, new URL(request.url).host, NO_STORE);
 	}
 
 	return new Response(null, { status: 404 });
