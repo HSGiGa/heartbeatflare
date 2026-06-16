@@ -8,7 +8,8 @@ kinds — bug reports, fixes, docs, and features — are welcome.
 ```sh
 git clone https://github.com/HSGiGa/heartbeatflare.git && cd heartbeatflare
 npm ci
-cp .env.example .env   # local-only; never commit real credentials
+cp .env.example .env             # local-only; never commit real credentials
+cp config.example.yaml config.yaml   # your monitors; the example is the tracked default
 npm test               # Vitest with the Workers runtime
 npm run dev            # local Worker at http://localhost:8787
 ```

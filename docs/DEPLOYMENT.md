@@ -49,6 +49,13 @@ cp .env.example .env       # fill in CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT
 set -a; . ./.env; set +a
 ```
 
+Create your `config.yaml` from the tracked example (upstream ships only `config.example.yaml`; if no
+`config.yaml` exists the deploy falls back to the example demo):
+
+```sh
+cp config.example.yaml config.yaml
+```
+
 Run the combined production flow:
 
 ```sh

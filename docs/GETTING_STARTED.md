@@ -15,16 +15,30 @@ covered at the end.
 
 - A **Cloudflare account** (free tier is enough).
 - **Node.js 24** and **git** locally.
-- A **GitHub repository** with this code (clone it, or fork/push your own copy).
+- A **GitHub repository** created from this template (recommended), or your own copy of the code.
 - A **Cloudflare API token** — created in step 2.
 
-## 1. Get the code
+## 1. Create your repository
+
+For a real deployment, create your own repository first:
+
+1. Open `https://github.com/HSGiGa/heartbeatflare`.
+2. Click **Use this template**.
+3. Create a new repository under your account or organization.
+4. Clone your new repository:
 
 ```sh
-git clone https://github.com/HSGiGa/heartbeatflare.git
-cd heartbeatflare
+git clone https://github.com/<you>/<your-status-repo>.git
+cd <your-status-repo>
 npm ci
 ```
+
+If you're contributing to heartbeatflare itself, clone the upstream repository instead.
+
+> **Your generated repo is independent.** `Use this template` copies the files but **not** the
+> upstream commit history, Issues, or secrets. You'll add your own Cloudflare secrets (step 3), and
+> you may want to point the README badge and the demo link at your own deployment. To pull later
+> improvements, see [Updating from upstream](#updating-from-upstream).
 
 ## 2. Create a Cloudflare API token
 
@@ -56,7 +70,14 @@ In your repository: **Settings → Secrets and variables → Actions → New rep
 > Add the required secrets **before** your first push — the deploy workflow runs on every push to
 > `main` and will fail without them.
 
-## 4. Edit `config.yaml`
+## 4. Create your `config.yaml`
+
+The repo ships a ready-to-edit `config.example.yaml`; your own `config.yaml` is user-owned (it isn't
+tracked upstream, so it won't conflict when you pull updates). Copy it:
+
+```sh
+cp config.example.yaml config.yaml
+```
 
 Set `deploy.name` and define at least one monitor. A minimal public HTTP monitor:
 
@@ -118,3 +139,18 @@ automatically and fails the run if `/public` isn't healthy. If anything went wro
   ([Heartbeat monitors](CONFIGURATION.md#heartbeat-push-monitors)).
 - **Hit a snag?** — [TROUBLESHOOTING.md](TROUBLESHOOTING.md) covers the common Cloudflare setup
   failures.
+
+## Updating from upstream
+
+A repository created with `Use this template` does **not** receive heartbeatflare updates
+automatically. To pull later improvements, add this repo as a remote and merge:
+
+```sh
+git remote add upstream https://github.com/HSGiGa/heartbeatflare.git
+git fetch upstream
+git merge upstream/main
+```
+
+Your `config.yaml` is user-owned and not tracked upstream (the repo ships `config.example.yaml`), so
+your monitors won't conflict with upstream changes. Resolve any conflicts in shared files, then
+redeploy.

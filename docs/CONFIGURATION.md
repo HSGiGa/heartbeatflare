@@ -1,9 +1,12 @@
 # Configuration
 
-All platform configuration lives in [`config.yaml`](../config.yaml), validated by
-[`config.schema.json`](../config.schema.json). It is the single source of truth: the Worker
-never reads YAML at runtime — `config.yaml` is imported into D1 by the `config:import` deploy
-step, and the Worker operates exclusively against D1.
+All platform configuration lives in `config.yaml`, validated by
+[`config.schema.json`](../config.schema.json). The repo ships a ready-to-edit
+[`config.example.yaml`](../config.example.yaml) — copy it to your own `config.yaml`
+(`cp config.example.yaml config.yaml`); without one, deploys fall back to the example demo.
+
+`config.yaml` is the single source of truth: the Worker never reads YAML at runtime — it is
+imported into D1 by the `config:import` deploy step, and the Worker operates exclusively against D1.
 
 Editing configuration is a git change: commit `config.yaml` and deploy (or push to `main`).
 The import is idempotent — removing a monitor, channel or window soft-disables or deletes it
@@ -75,13 +78,17 @@ secrets at runtime (see [Secrets](#secrets-and-var-placeholders)).
 
 ## `notification_channels`
 
-Where incident open / resolve / escalation messages are delivered. Three channel types:
+Where incident open / resolve / escalation messages are delivered. Three channel types are
+implemented:
 
 | `type` | Required fields | Notes |
 | --- | --- | --- |
 | `slack` | `name`, `url` | Slack-compatible incoming webhook (works with Mattermost, etc.). Optional `channel`. |
 | `webhook` | `name`, `url` | Generic structured JSON webhook. Use `headers` for auth. |
 | `telegram` | `name`, `bot_token`, `chat_id` | Telegram Bot API. |
+
+`email` is reserved in the schema for future work, but delivery is not implemented yet. Do not
+configure `type: email` — notifications for that channel will fail.
 
 ```yaml
 notification_channels:
@@ -331,4 +338,5 @@ history and open incidents are preserved. Removing a maintenance window deletes 
 
 ## Full example
 
-A complete, deployable starter lives in [`config.yaml`](../config.yaml) at the repo root.
+A complete, deployable starter lives in [`config.example.yaml`](../config.example.yaml) at the repo
+root — copy it to `config.yaml` and edit.

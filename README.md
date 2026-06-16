@@ -22,9 +22,9 @@ One Worker, three entry points: `scheduled()` runs every minute to probe due mon
 
 ## Quick start
 
-1. **Clone and install:** `git clone https://github.com/HSGiGa/heartbeatflare.git && cd heartbeatflare && npm ci`
+1. **Create your repo:** click **Use this template** on GitHub, then clone your new repository and run `npm ci`.
 2. **Add Cloudflare deploy credentials:** `cp .env.example .env`, then fill in `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` (see [token scopes](docs/DEPLOYMENT.md#cloudflare-api-token-permissions)).
-3. **Edit `config.yaml`:** set `deploy.name` and your monitors (full [configuration reference](docs/CONFIGURATION.md)).
+3. **Create your config:** `cp config.example.yaml config.yaml`, then set `deploy.name` and your monitors (full [configuration reference](docs/CONFIGURATION.md)).
 4. **Deploy:** `set -a; . ./.env; set +a` then `npm run deploy:prod` — or push to `main` and let GitHub Actions deploy.
 5. **Open `/public`** on the deployed Worker URL.
 
@@ -33,6 +33,8 @@ One Worker, three entry points: `scheduled()` runs every minute to probe due mon
 First time? Follow the step-by-step [Getting Started](docs/GETTING_STARTED.md) guide. For local development:
 
 ```sh
+git clone https://github.com/HSGiGa/heartbeatflare.git && cd heartbeatflare
+npm ci
 npm run dev    # local Worker at http://localhost:8787
 npm test       # Vitest with the Workers runtime
 ```
