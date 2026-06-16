@@ -396,6 +396,8 @@ describe('maintenance windows, feed and badges', () => {
 		const svg = await res.text();
 		expect(svg).toContain('<svg');
 		expect(svg).toContain('Operational');
+		expect(svg).toContain('transform="translate(7 4) scale(.011)"');
+		expect(svg).toContain('M316 904c-88');
 	});
 
 	it('returns 404 for a private monitor badge (no leak)', async () => {
