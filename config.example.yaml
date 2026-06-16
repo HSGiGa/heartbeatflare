@@ -20,18 +20,6 @@ notification_channels:
     is_default: false
 
 monitors:
-  - name: HeartbeatFlare Demo HTTP
-    type: http
-    mode: external
-    visibility: public
-    target: https://status.hsgiga.workers.dev/public
-    interval: 5m
-    alerts:
-      - condition: "status != 200"
-        severity: critical
-        failures: 2
-        recovery: 2
-        cooldown: 300s
   - name: Google HTTP
     type: http
     mode: external
