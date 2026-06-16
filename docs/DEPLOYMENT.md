@@ -32,6 +32,18 @@ The workflow `.github/workflows/deploy-cloudflare.yml` deploys on push to `main`
 > Add your Cloudflare secrets **before** the first push. The workflow runs the full deploy on every
 > push to `main`; without credentials it fails at the provision/secrets step.
 
+Instead of adding each secret by hand in the UI, bulk-import a filled-in local `.env` with the
+[`gh` CLI](https://cli.github.com/) — it creates or updates one repository secret per line:
+
+```sh
+gh secret set --env-file .env
+```
+
+Fill in (or delete) every placeholder first: blank entries from `.env.example` would otherwise create
+empty secrets, and `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` are deploy credentials you don't
+want unset. Lines beginning with `#` are ignored. Add `--repo <owner>/<repo>` to target a specific
+repository, or `--env <name>` to write environment-scoped secrets instead of repository ones.
+
 GitHub repository secrets can't be enumerated individually from a workflow step, so the workflow
 passes them all to the secrets-sync step via `SECRETS_CONTEXT: ${{ toJSON(secrets) }}`.
 
