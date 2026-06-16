@@ -293,10 +293,12 @@ change (commit + deploy). Removing a window from YAML deletes it.
 | --- | --- |
 | `/public` | Public status page (public monitors only). |
 | `/feed.xml` | Atom 1.0 feed of incidents + maintenance windows (public monitors only). |
+| `/badges` | Public badge gallery with rendered previews, direct SVG URLs, Markdown snippets and HTML snippets for all public monitors. |
 | `/badge/<monitor>.svg` | SVG status badge for a public monitor; `?label=` overrides the left text. Private/unknown monitors return 404. |
 | `POST /beat/<monitor-id>/<token>` | Heartbeat ingest. `204` on success; `404`/`405`/`429` otherwise. Not cached, no Access (see [Heartbeat monitors](#heartbeat-push-monitors)). |
 
-`<monitor>` is the slug of the monitor name (lowercased, non-alphanumerics → `-`). Embed a badge:
+`<monitor>` is the stored monitor id (derived from the monitor name at import time). Use `/badges`
+on your deployed Worker to copy ready-to-use embed snippets. A direct Markdown badge looks like:
 
 ```markdown
 ![status](https://status.example.com/badge/example-api.svg)

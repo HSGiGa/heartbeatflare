@@ -25,6 +25,14 @@ function redirectNoStore(location: string): Response {
 	});
 }
 
+function escHtml(s: string): string {
+	return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function escapeMarkdownAlt(s: string): string {
+	return s.replace(/\\/g, '\\\\').replace(/\]/g, '\\]');
+}
+
 // Cache API key namespaced to public responses, so an authenticated request to the same URL
 // (which we never cache) can never match a cached public response.
 function publicCacheKey(request: Request): Request {
@@ -237,6 +245,85 @@ async function handleStatusPage(
 	return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': resolvedCacheControl } });
 }
 
+async function handleBadgesPage(env: Env, origin: string): Promise<Response> {
+	const monitors = await fetchMonitorRows(env, false);
+	const rows = monitors
+		.map((m) => {
+			const badgePath = `/badge/${encodeURIComponent(m.id)}.svg`;
+			const badgeUrl = `${origin}${badgePath}`;
+			const labelUrl = `${badgeUrl}?label=${encodeURIComponent(m.name)}`;
+			const markdown = `![${escapeMarkdownAlt(m.name)} status](${badgeUrl})`;
+			const htmlSnippet = `<img src="${escHtml(badgeUrl)}" alt="${escHtml(m.name)} status">`;
+			return `<article class="badge-row">
+  <div class="badge-head">
+    <div>
+      <h2>${escHtml(m.name)}</h2>
+      <div class="monitor-id">${escHtml(m.id)}${m.paused === 1 ? ' · paused' : ''}</div>
+    </div>
+    <img class="badge-preview" src="${escHtml(badgePath)}" alt="${escHtml(m.name)} status badge" loading="lazy">
+  </div>
+  <label>SVG URL</label>
+  <pre><code>${escHtml(badgeUrl)}</code></pre>
+  <label>Markdown</label>
+  <pre><code>${escHtml(markdown)}</code></pre>
+  <label>HTML</label>
+  <pre><code>${escHtml(htmlSnippet)}</code></pre>
+  <label>Custom label example</label>
+  <pre><code>${escHtml(labelUrl)}</code></pre>
+</article>`;
+		})
+		.join('\n');
+	const body =
+		monitors.length === 0
+			? `<section class="empty"><h2>No public badges yet</h2><p>Add an enabled public monitor to config.yaml and deploy to generate badge snippets.</p></section>`
+			: `<section class="badge-list">${rows}</section>`;
+	const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Status badges</title>
+  <style>
+    :root{color-scheme:light;--text:#18181b;--muted:#71717a;--line:#e4e4e7;--bg:#fafafa;--panel:#fff}
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.5}
+    main{max-width:980px;margin:0 auto;padding:32px 18px 48px}
+    header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:24px}
+    h1{font-size:28px;line-height:1.15;margin:0 0 8px}
+    h2{font-size:17px;line-height:1.25;margin:0}
+    p{margin:0;color:var(--muted)}
+    a{color:#2563eb;text-decoration:none}
+    a:hover{text-decoration:underline}
+    .badge-list{display:grid;gap:14px}
+    .badge-row,.empty{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px}
+    .badge-head{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:14px}
+    .monitor-id{font-size:12px;color:var(--muted);margin-top:3px}
+    .badge-preview{flex:0 0 auto;max-width:100%;height:20px}
+    label{display:block;font-size:12px;font-weight:700;color:#3f3f46;margin:12px 0 5px;text-transform:uppercase}
+    pre{margin:0;overflow:auto;border:1px solid var(--line);border-radius:6px;background:#f4f4f5;padding:10px 12px}
+    code{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace;font-size:12px;white-space:pre}
+    .empty{text-align:center;padding:34px 20px}
+    @media (max-width:640px){header,.badge-head{display:block}.badge-preview{margin-top:12px}main{padding-top:22px}}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Status badges</h1>
+        <p>Embeddable SVG badges for public monitors.</p>
+      </div>
+      <a href="/public">Status page</a>
+    </header>
+    ${body}
+  </main>
+</body>
+</html>`;
+	return new Response(html, {
+		headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': `public, max-age=${PUBLIC_MAXAGE}` },
+	});
+}
+
 // Public Atom feed of incidents + maintenance windows (public monitors only).
 async function handleFeed(env: Env, origin: string): Promise<Response> {
 	const nowMs = Date.now();
@@ -314,6 +401,10 @@ export async function handleFetch(request: Request, env: Env, ctx: ExecutionCont
 
 	if (request.method === 'GET' && pathname === '/feed.xml') {
 		return withPublicEdgeCache(request, ctx, () => handleFeed(env, origin));
+	}
+
+	if (request.method === 'GET' && pathname === '/badges') {
+		return withPublicEdgeCache(request, ctx, () => handleBadgesPage(env, origin));
 	}
 
 	if (request.method === 'GET' && pathname.startsWith('/badge/') && pathname.endsWith('.svg')) {
