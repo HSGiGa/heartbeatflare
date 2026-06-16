@@ -1,6 +1,6 @@
 {
 	"name": "heartbeatflare",
-	"version": "0.1.0",
+	"version": "1.0.0",
 	"description": "Serverless uptime monitor and status page that runs entirely on the Cloudflare free tier.",
 	"license": "MIT",
 	"author": "HSGiGa",
