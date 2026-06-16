@@ -1,6 +1,6 @@
 import { parse } from 'yaml';
 import Cloudflare from 'cloudflare';
-import { loadConfig, loadConfigRaw, resolveDeploy, requireEnv } from './lib/deploy-config';
+import { assertUserConfig, loadConfig, loadConfigRaw, resolveDeploy, requireEnv } from './lib/deploy-config';
 import { findDatabaseId } from './lib/d1';
 import { heartbeatSecretName, slug } from './lib/naming';
 
@@ -176,6 +176,7 @@ async function d1Query<T = Record<string, unknown>>(sql: string, params: unknown
 }
 
 async function main() {
+	assertUserConfig();
 	const raw = loadConfigRaw();
 	const config = parse(raw) as Config;
 

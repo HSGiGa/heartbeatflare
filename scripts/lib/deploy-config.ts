@@ -19,10 +19,14 @@ export interface ResolvedDeploy {
 	queueName: string;
 }
 
-// Resolves the active config file: your own `config.yaml` if present, otherwise the tracked
-// `config.example.yaml` (so a freshly templated/cloned repo still deploys the demo). Treating
-// config.yaml as user-owned keeps it out of upstream merge conflicts — it is intentionally NOT
-// gitignored, so generated repos can commit their own.
+// Resolves the active config file (lenient): your own `config.yaml` if present, otherwise the
+// tracked `config.example.yaml`. Used by read/dev tooling — wrangler generation, tests, dry-runs —
+// so a freshly templated/cloned repo still works locally without a `cp`. Production-writing commands
+// must call `assertUserConfig()` first so the example can't be deployed by accident.
+//
+// `config.yaml` is user-owned: tracking the example instead keeps user configs out of upstream merge
+// conflicts. It is intentionally NOT gitignored — a generated repo commits its own `config.yaml` so
+// CI can deploy it.
 export function configPath(): string {
 	if (existsSync(CONFIG_FILE)) return CONFIG_FILE;
 	if (existsSync(CONFIG_EXAMPLE)) {
@@ -41,6 +45,26 @@ export function configPath(): string {
 
 export function loadConfigRaw(): string {
 	return readFileSync(configPath(), 'utf-8');
+}
+
+// Fail-fast guard for production-writing commands (provision, config import, secrets sync). A
+// missing `config.yaml` means the user forgot `cp config.example.yaml config.yaml` — without this
+// guard the example demo would be deployed silently. The `ALLOW_EXAMPLE_CONFIG` escape hatch lets a
+// deploy use the example on purpose (the upstream demo sets it as a repo Actions variable; template
+// repos don't inherit variables, so generated repos fail fast).
+export function assertUserConfig(): void {
+	if (existsSync(CONFIG_FILE)) return;
+	const allow = (process.env.ALLOW_EXAMPLE_CONFIG ?? '').toLowerCase();
+	if (allow === '1' || allow === 'true' || allow === 'yes') {
+		console.warn(`${CONFIG_FILE} not found — deploying ${CONFIG_EXAMPLE} (ALLOW_EXAMPLE_CONFIG set).`);
+		return;
+	}
+	console.error(
+		`${CONFIG_FILE} not found. Copy the example, edit it, and commit it in your repo so CI can deploy it:\n` +
+			`  cp ${CONFIG_EXAMPLE} ${CONFIG_FILE}\n` +
+			`(To deploy the example on purpose, set ALLOW_EXAMPLE_CONFIG=1.)`,
+	);
+	process.exit(1);
 }
 
 export function loadConfig<T extends { deploy?: DeployConfig }>(): T {

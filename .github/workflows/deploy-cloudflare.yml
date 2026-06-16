@@ -15,6 +15,10 @@ jobs:
       # All repository secrets as JSON, so secrets:sync can look up runtime secrets
       # (one per ${VAR} in config.yaml) without listing each one here.
       SECRETS_CONTEXT: ${{ toJSON(secrets) }}
+      # Without your own config.yaml the deploy fails fast (so a forgotten copy can't ship the demo).
+      # Set this repo variable to "1" only on the upstream demo to deploy config.example.yaml on purpose;
+      # generated template repos don't inherit it, so they must commit their own config.yaml.
+      ALLOW_EXAMPLE_CONFIG: ${{ vars.ALLOW_EXAMPLE_CONFIG }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5

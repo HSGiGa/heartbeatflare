@@ -2,8 +2,10 @@
 
 All platform configuration lives in `config.yaml`, validated by
 [`config.schema.json`](../config.schema.json). The repo ships a ready-to-edit
-[`config.example.yaml`](../config.example.yaml) — copy it to your own `config.yaml`
-(`cp config.example.yaml config.yaml`); without one, deploys fall back to the example demo.
+[`config.example.yaml`](../config.example.yaml) — copy it to your own `config.yaml`, edit it, and
+**commit it in your repo** (`cp config.example.yaml config.yaml`). Local dev and tests fall back to
+the example when `config.yaml` is absent, but a **production deploy fails fast** without your own
+`config.yaml`, so a forgotten copy can't ship the demo.
 
 `config.yaml` is the single source of truth: the Worker never reads YAML at runtime — it is
 imported into D1 by the `config:import` deploy step, and the Worker operates exclusively against D1.

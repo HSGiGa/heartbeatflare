@@ -72,8 +72,10 @@ In your repository: **Settings → Secrets and variables → Actions → New rep
 
 ## 4. Create your `config.yaml`
 
-The repo ships a ready-to-edit `config.example.yaml`; your own `config.yaml` is user-owned (it isn't
-tracked upstream, so it won't conflict when you pull updates). Copy it:
+The repo ships a ready-to-edit `config.example.yaml`. Copy it to your own `config.yaml`, edit it, and
+**commit `config.yaml` in your repo** — CI deploys it, and a deploy without it fails fast rather than
+shipping the demo. (`config.yaml` isn't tracked in the upstream heartbeatflare repo, so your edits
+won't conflict when you pull upstream updates; in *your* repo it's a normal committed file.)
 
 ```sh
 cp config.example.yaml config.yaml
@@ -151,6 +153,6 @@ git fetch upstream
 git merge upstream/main
 ```
 
-Your `config.yaml` is user-owned and not tracked upstream (the repo ships `config.example.yaml`), so
-your monitors won't conflict with upstream changes. Resolve any conflicts in shared files, then
-redeploy.
+Your `config.yaml` is committed in your own repo but is not tracked in upstream (which ships
+`config.example.yaml`), so your monitors won't conflict with upstream changes. Resolve any conflicts
+in shared files, then redeploy.
