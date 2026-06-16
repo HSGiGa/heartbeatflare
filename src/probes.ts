@@ -5,10 +5,23 @@
 import { connect } from 'cloudflare:sockets';
 import type { ProbeResult } from './types';
 
-export async function httpCheck(url: string, sslCheck: boolean): Promise<ProbeResult> {
+// Stable, non-secret identifier sent on every HTTP probe — for observability and WAF/log
+// identification only, NOT a security control. Hardcoded (not derived from package.json) so it
+// stays constant across patch releases and never breaks WAF rules that match on it.
+export const PROBE_USER_AGENT = 'heartbeatflare/1.0';
+
+// Merges any per-monitor custom headers with the default User-Agent. The default is applied last
+// via Headers.set so config can never override it (case-insensitive: a custom `user-agent` loses).
+export function buildProbeHeaders(custom?: Record<string, string>): Headers {
+	const headers = new Headers(custom ?? {});
+	headers.set('User-Agent', PROBE_USER_AGENT);
+	return headers;
+}
+
+export async function httpCheck(url: string, sslCheck: boolean, custom?: Record<string, string>): Promise<ProbeResult> {
 	const start = Date.now();
 	try {
-		const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+		const res = await fetch(url, { headers: buildProbeHeaders(custom), signal: AbortSignal.timeout(10_000) });
 		const latency_ms = Date.now() - start;
 		if (res.ok) return { status: 'up', latency_ms };
 		return { status: 'down', latency_ms, error: `HTTP ${res.status}` };

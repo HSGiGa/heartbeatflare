@@ -32,6 +32,25 @@ monitors:
         failures: 2
         recovery: 2
         cooldown: 300s
+  # Custom request headers (type: http only) — for endpoints that expect a token, environment hint,
+  # or other routing header. Values support ${VAR} substitution from Worker secrets, resolved at
+  # probe time: the literal ${VAR} is never sent, and a missing secret fails the check. Every HTTP
+  # probe also sends a fixed `User-Agent: heartbeatflare/1.0` (config cannot set/override it).
+  # NOTE: the User-Agent is for request identification only — not authentication.
+  # - name: Example API
+  #   type: http
+  #   mode: external
+  #   visibility: private
+  #   target: https://api.example.com/health
+  #   interval: 60s
+  #   headers:
+  #     X-Healthcheck-Token: ${HEALTHCHECK_TOKEN}
+  #     X-Environment: production
+  #   alerts:
+  #     - condition: "status != 200"
+  #       severity: critical
+  #       failures: 2
+  #       recovery: 2
   - name: Cloudflare DNS
     type: dns
     mode: external
