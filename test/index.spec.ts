@@ -347,6 +347,20 @@ describe('maintenance windows, feed and badges', () => {
 			`INSERT OR IGNORE INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, enabled)
 			 VALUES ('badge-priv', 'Badge Private', 'http', 'external', 'private', 'https://priv.example.com', 60, 1)`,
 		).run();
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, enabled, paused)
+			 VALUES ('badge-paused', 'Badge Paused', 'http', 'external', 'public', 'https://paused.example.com', 60, 1, 1)`,
+		).run();
+		await env.DB.prepare(`INSERT OR IGNORE INTO monitor_state (monitor_id, status) VALUES ('badge-paused', 'up')`).run();
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, enabled)
+			 VALUES ('badge-disabled', 'Badge Disabled', 'http', 'external', 'public', 'https://disabled.example.com', 60, 0)`,
+		).run();
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, enabled)
+			 VALUES ('badge-special', 'A & "B" <test>', 'http', 'external', 'public', 'https://special.example.com', 60, 1)`,
+		).run();
+		await env.DB.prepare(`INSERT OR IGNORE INTO monitor_state (monitor_id, status) VALUES ('badge-special', 'up')`).run();
 		// Alert rules referenced by the incidents below (incidents.alert_rule_id is a NOT NULL FK).
 		await env.DB.prepare(
 			`INSERT OR IGNORE INTO alert_rules (id, monitor_id, metric_name, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled)
@@ -392,6 +406,54 @@ describe('maintenance windows, feed and badges', () => {
 	it('returns 404 for an unknown monitor badge', async () => {
 		const res = await SELF.fetch('https://example.com/badge/does-not-exist.svg');
 		expect(res.status).toBe(404);
+	});
+
+	it('serves a public badges page with snippets for public monitors', async () => {
+		const res = await SELF.fetch(`https://status.example.test/badges?t=${Date.now()}-list`);
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('text/html');
+		expect(res.headers.get('Cache-Control')).toBe('public, max-age=60');
+		const html = await res.text();
+		expect(html).toContain('Status badges');
+		expect(html).toContain('Badge Public');
+		expect(html).toContain('Badge Paused');
+		expect(html).toContain('paused');
+		expect(html).toContain('src="/badge/badge-pub.svg"');
+		expect(html).toContain('https://status.example.test/badge/badge-pub.svg');
+		expect(html).toContain('![Badge Public status](https://status.example.test/badge/badge-pub.svg)');
+		expect(html).toContain('&lt;img src=&quot;https://status.example.test/badge/badge-pub.svg&quot; alt=&quot;Badge Public status&quot;&gt;');
+		expect(html).not.toContain('Badge Private');
+		expect(html).not.toContain('Badge Disabled');
+	});
+
+	it('escapes special-character monitor names on the badges page', async () => {
+		const res = await SELF.fetch(`https://status.example.test/badges?t=${Date.now()}-escape`);
+		expect(res.status).toBe(200);
+		const html = await res.text();
+		expect(html).toContain('A &amp; &quot;B&quot; &lt;test&gt;');
+		expect(html).toContain('/badge/badge-special.svg');
+		expect(html).toContain('label=A%20%26%20%22B%22%20%3Ctest%3E');
+		expect(html).toContain('![A &amp; &quot;B&quot; &lt;test&gt; status](https://status.example.test/badge/badge-special.svg)');
+		expect(html).toContain('alt=&quot;A &amp;amp; &amp;quot;B&amp;quot; &amp;lt;test&amp;gt; status&quot;');
+		expect(html).not.toContain('<test>');
+	});
+
+	it('shows an empty state when there are no public badges', async () => {
+		const { results: publicMonitors } = await env.DB.prepare(`SELECT id FROM monitors WHERE enabled = 1 AND visibility = 'public'`).all<{ id: string }>();
+		try {
+			for (const m of publicMonitors) {
+				await env.DB.prepare(`UPDATE monitors SET enabled = 0 WHERE id = ?`).bind(m.id).run();
+			}
+			const res = await SELF.fetch(`https://example.com/badges?t=${Date.now()}-empty`);
+			expect(res.status).toBe(200);
+			const html = await res.text();
+			expect(html).toContain('No public badges yet');
+			expect(html).not.toContain('<article class="badge-row">');
+		} finally {
+			for (const m of publicMonitors) {
+				await env.DB.prepare(`UPDATE monitors SET enabled = 1 WHERE id = ?`).bind(m.id).run();
+			}
+		}
 	});
 
 	it('serves an Atom feed with public incidents but not private ones', async () => {
