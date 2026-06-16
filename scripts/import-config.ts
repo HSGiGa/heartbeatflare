@@ -1,7 +1,6 @@
-import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
 import Cloudflare from 'cloudflare';
-import { loadConfig, resolveDeploy, requireEnv } from './lib/deploy-config';
+import { assertUserConfig, loadConfig, loadConfigRaw, resolveDeploy, requireEnv } from './lib/deploy-config';
 import { findDatabaseId } from './lib/d1';
 import { heartbeatSecretName, slug } from './lib/naming';
 
@@ -177,7 +176,8 @@ async function d1Query<T = Record<string, unknown>>(sql: string, params: unknown
 }
 
 async function main() {
-	const raw = readFileSync('config.yaml', 'utf-8');
+	assertUserConfig();
+	const raw = loadConfigRaw();
 	const config = parse(raw) as Config;
 
 	const { databaseName } = resolveDeploy(loadConfig());

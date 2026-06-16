@@ -1,5 +1,5 @@
 import Cloudflare from 'cloudflare';
-import { loadConfig, resolveDeploy, requireEnv } from './lib/deploy-config';
+import { assertUserConfig, loadConfig, resolveDeploy, requireEnv } from './lib/deploy-config';
 import { findDatabaseId } from './lib/d1';
 
 async function ensureDatabase(client: Cloudflare, accountId: string, name: string): Promise<string> {
@@ -27,10 +27,13 @@ async function ensureQueue(client: Cloudflare, accountId: string, name: string):
 }
 
 async function main() {
+	const dryRun = process.argv.includes('--dry-run');
+	if (!dryRun) assertUserConfig();
+
 	const config = loadConfig();
 	const deploy = resolveDeploy(config);
 
-	if (process.argv.includes('--dry-run')) {
+	if (dryRun) {
 		console.log('Dry run — no API calls, no file writes.');
 		console.log(`Worker name:   ${deploy.name}`);
 		console.log(`Custom domain: ${deploy.domain ?? '(none — workers.dev only)'}`);
