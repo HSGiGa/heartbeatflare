@@ -1,5 +1,9 @@
 # Monitoring Platform Architecture
 
+> **For maintainers and contributors changing heartbeatflare internals.** If you're deploying
+> heartbeatflare, start with [GETTING_STARTED.md](GETTING_STARTED.md); for `config.yaml` fields see
+> [CONFIGURATION.md](CONFIGURATION.md), and for deploy paths see [DEPLOYMENT.md](DEPLOYMENT.md).
+
 > **Implementation status (MVP).** This document describes the implemented system.
 > The MVP is a **single Cloudflare Worker** (`src/index.ts`) exposing three entry
 > points — `fetch` (status pages + API), `scheduled` (cron probing + maintenance),
@@ -689,67 +693,17 @@ config.yaml  +  Cloudflare Secrets
           Workers
 ```
 
-### YAML Structure
+### YAML structure and secrets
 
-```yaml
-notification_channels:
-  - name: Mattermost
-    type: slack                          # slack | webhook | telegram (email not implemented)
-    is_default: true
-    url: ${MATTERMOST_WEBHOOK_URL}       # ${VAR} resolved from Worker env at send time
-    channel: "#alerts"
+The user-facing `config.yaml` reference — monitor types, alert conditions, notification channels,
+maintenance windows and the `${VAR}` secret mechanism — lives in
+[CONFIGURATION.md](CONFIGURATION.md). Architecturally, the key invariants are:
 
-monitors:
-  - name: Google
-    type: http                           # http | tcp | dns
-    mode: external
-    visibility: public                   # appears on both status pages
-    target: https://www.google.com/generate_204
-    interval: 60s
-    alerts:
-      - condition: "status != 200"
-        severity: critical
-        failures: 2
-        recovery: 2
-        cooldown: 300s
-
-  - name: VPN example.com
-    type: tcp
-    mode: external
-    visibility: private                  # private status page only
-    ssl: true                            # also probe TLS cert expiry
-    target: vpn.example.com:443
-    interval: 5m
-    alerts:
-      - condition: "connect != true"
-        severity: critical
-        failures: 2
-        recovery: 2
-      - condition: ssl_expiry < 14       # metric_name = 'ssl_expiry'
-        severity: warning
-        failures: 1
-        recovery: 1
-```
-
-### Secrets
-
-Sensitive values (webhook URLs, tokens) are kept out of `config.yaml` and out of
-D1 as literals. They are referenced as `${VAR}` placeholders; the Worker resolves
-the actual value from its environment (Cloudflare Secrets / vars) at send time.
-
-```
-config.yaml   url: ${MATTERMOST_WEBHOOK_URL}     (placeholder)
-      |
-      v
-D1            notification_channels.configuration = {"url":"${MATTERMOST_WEBHOOK_URL}", ...}
-      |
-      v
-Worker        value = resolveVars(env, "${MATTERMOST_WEBHOOK_URL}")  (at send time)
-```
-
-A D1 dump therefore contains placeholders, not credentials. (Note: the secret
-value reaches the Worker via its bound env; keep real secrets in Cloudflare Secrets,
-not in `wrangler.jsonc` `vars`.)
+- The Worker never reads YAML; `config:import` is the only writer of the config tables in D1.
+- Sensitive values are kept out of `config.yaml` and out of D1 as literals — they are `${VAR}`
+  placeholders resolved from the Worker's environment (Cloudflare Secrets) at send time, so a D1
+  dump contains placeholders, not credentials. Keep real secrets in Cloudflare Secrets, not in
+  `wrangler.jsonc` `vars`.
 
 ### Import Semantics
 
@@ -773,32 +727,10 @@ The import step is idempotent and runs on every push to main via CI/CD.
 
 ## Roadmap
 
-### MVP (Free Plan) — implemented
-- External probing: HTTP, TCP, DNS
-- SSL/TLS cert-expiry monitoring (external API, best-effort)
-- Inline probing in the cron tick (no Queues, no Service Bindings)
-- Incident management: independent connectivity + SSL incidents
-- Slack + Webhook + Telegram notifications, with queue-based retry
-- D1 storage (state, executions, metric_series, uptime aggregates)
-- Status pages: public (no auth) + private (Cloudflare Access), single Worker, fail-closed
-- Edge caching of public responses via the Cache API
-- Heartbeat (push) monitoring with secret tokens (`/beat` endpoint + scheduler miss detection)
-
-### Phase 2
-- Internal OpenMetrics scraping via Cloudflare Tunnel (blackbox_exporter etc.)
-- Email notification channels
-- Separate cron expressions for rollup/cleanup (tracked as a GitHub feature request)
-- Tags, Monitor Groups, Monitor Dependencies
-- Status page enhancements (component groups, uptime charts, subscriptions, SLA reporting)
-- Multi-region probing
-- Migrate `metric_series` to Analytics Engine when monitor count nears the D1 write ceiling (~30 at 60s)
-
-### Deferred
-- User accounts
-- RBAC
-- Multi-tenancy
-- OpenTelemetry traces
-- Distributed agents
+Planned (Phase 2) and deferred work is tracked in the
+[Roadmap issue](https://github.com/HSGiGa/heartbeatflare/issues/12), not in this document. The
+implemented MVP is described throughout the sections above (and summarised in the
+[Implementation status](#monitoring-platform-architecture) note at the top).
 
 ## Design Principles
 

@@ -28,6 +28,27 @@ npm run dev            # local Worker at http://localhost:8787
 
 4. Open a pull request describing the change and the motivation.
 
+## Project structure
+
+| Path | Purpose |
+| --- | --- |
+| `src/index.ts` | Worker entry point — dispatches fetch / scheduled / queue |
+| `src/scheduler.ts` | Cron tick: select due monitors, probe, detect missed heartbeats, rollup, cleanup |
+| `src/probes.ts` | HTTP, TCP, DNS and SSL-expiry probe implementations |
+| `src/heartbeat.ts` | Heartbeat ingest endpoint (`POST /beat/<id>/<token>`) |
+| `src/alerts.ts` | Result store (write-budget aware) + alert evaluation + incidents |
+| `src/queue.ts` / `src/notify.ts` | Notification delivery and channel resolution |
+| `src/routes.ts` | HTTP routing, edge caching, JSON API, feed + badge endpoints |
+| `src/status-page.ts` | Server-rendered status page (uptime bars, sparklines, maintenance) |
+| `src/feed.ts` | Atom feed builder (`/feed.xml`) |
+| `src/badge.ts` / `src/status-meta.ts` | SVG status badge + shared status→label/colour mapping |
+| `src/auth.ts` | Cloudflare Access JWT verification (fail-closed) |
+| `src/usage.ts` | Account usage block (Cloudflare GraphQL API) |
+| `scripts/` | Provisioning, config import and secret sync (deploy-time, Node) |
+| `migrations/` | D1 schema migrations (additive-only) |
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how these fit together.
+
 ## Guidelines
 
 - **Database migrations are additive-only.** No `DROP`/`RENAME` of tables or

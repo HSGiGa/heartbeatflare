@@ -1,117 +1,52 @@
-# Cloudflare Deployment
+# Deployment
 
-This project supports three production deployment paths:
+heartbeatflare deploys the same way through three paths — pick one:
 
-- local CLI
-- GitHub Actions
-- GitLab CI
+- **[GitHub Actions](#github-actions-recommended)** — recommended; deploys on every push to `main`.
+- **[Local CLI](#local-cli)** — one command from your machine.
+- **[GitLab CI](#gitlab-ci)** — equivalent pipeline on GitLab.
 
-Deployable data-plane resources (D1 database and notification queue) are provisioned automatically from `config.yaml`. You provide only API credentials and the deployment inputs below — resources are identified by name (`<name>-prod-db`, `<name>-notifications`) and their IDs are resolved by name at deploy time into the generated `wrangler.jsonc`, so no IDs are stored in `config.yaml`. Cloudflare Access is configured manually in the Cloudflare dashboard; the Worker only verifies the resulting JWT at runtime.
+All paths run the same pipeline: tests → migration lint → **provision** (create D1 + queue by name)
+→ D1 migrations → config import → `wrangler deploy` → secrets sync → smoke test. Data-plane resources
+(D1 database, notification queue) are provisioned automatically from `config.yaml` and resolved by
+name into the generated `wrangler.jsonc`, so no resource IDs are ever stored in the repo.
 
-## Required Cloudflare Variables
+You only need to supply credentials (below) and edit [`config.yaml`](CONFIGURATION.md).
 
-Create a Cloudflare API token with these permissions, then provide it together with your account ID:
+## GitHub Actions (recommended)
 
-- Workers Scripts: Edit
-- D1: Edit
-- Queues: Edit
+The workflow `.github/workflows/deploy-cloudflare.yml` deploys on push to `main` and on manual
+`workflow_dispatch`.
 
-```sh
-CLOUDFLARE_API_TOKEN=...
-CLOUDFLARE_ACCOUNT_ID=...
-```
+1. **Add repository secrets** (Settings → Secrets and variables → Actions):
+   - `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` (required — see
+     [token permissions](#cloudflare-api-token-permissions))
+   - any [runtime secrets](#runtime-worker-secrets) your `config.yaml` references
+     (`CLOUDFLARE_ACCESS_TEAM_NAME`, `MATTERMOST_WEBHOOK_URL`, …)
+2. **Edit `config.yaml`** and commit.
+3. **Deploy** — push to `main`, or trigger the workflow manually
+   (`gh workflow run deploy-cloudflare.yml`).
+4. **Verify** — the workflow ends with a [smoke test](#verification) that fails the run if `/public`
+   doesn't return HTTP 200.
 
-For local CLI usage, either export the variables in your shell or copy `.env.example` to `.env` and load it before running npm scripts:
+> Add your Cloudflare secrets **before** the first push. The workflow runs the full deploy on every
+> push to `main`; without credentials it fails at the provision/secrets step.
 
-```sh
-set -a
-. ./.env
-set +a
-```
+GitHub repository secrets can't be enumerated individually from a workflow step, so the workflow
+passes them all to the secrets-sync step via `SECRETS_CONTEXT: ${{ toJSON(secrets) }}`.
 
-`.env` is ignored by git.
-
-For GitHub Actions, add repository secrets; for GitLab CI, add protected and masked CI/CD variables:
-
-```text
-CLOUDFLARE_API_TOKEN
-CLOUDFLARE_ACCOUNT_ID
-```
-
-## Runtime Worker Secrets
-
-The variables above are deploy-time only and never reach the Worker. Values the Worker needs at request time — `CLOUDFLARE_ACCESS_TEAM_NAME` / `CLOUDFLARE_ACCESS_AUD` for Cloudflare Access JWT verification, the optional `CLOUDFLARE_GRAPHQL_API_TOKEN` for the usage block, and one variable per `${VAR}` placeholder used in `config.yaml` notification channels (e.g. `MATTERMOST_WEBHOOK_URL`) — are read from `.env` in local dev and tests. For production, both paths work and can be mixed:
-
-**Automatic (recommended):** add each secret to GitHub repository secrets / GitLab CI variables under the same name. The `secrets:sync` step (`scripts/sync-secrets.ts`) runs after every deploy: it discovers required names from `${VAR}` references in `config.yaml` and pushes them all to Cloudflare Worker secrets in one bulk call. A referenced name absent from CI is skipped (value kept) when the secret already exists on the Worker — so manually uploaded secrets don't have to be duplicated into CI. When a referenced secret exists in neither place, the step prints a warning and the deploy proceeds; the affected feature stays broken until the secret is added. On GitHub the workflow passes all repository secrets to the step via `SECRETS_CONTEXT: ${{ toJSON(secrets) }}` (repository secrets are not individually enumerable from a step); on GitLab CI variables are plain env vars and need no extra wiring. `npm run deploy:prod` runs the same sync using your local `.env`. Optional secrets (`CLOUDFLARE_GRAPHQL_API_TOKEN`) produce a warning instead of a failure when absent.
-
-**Heartbeat tokens (auto-generated):** each `heartbeat` monitor needs a `HEARTBEAT_<ID>_TOKEN` secret (NAME derived from the monitor id). `secrets:sync` generates a random token for any heartbeat monitor that has none on the Worker, uploads it, and **prints it once** in the deploy output — copy it into the job's beat `curl`. Cloudflare never shows a secret value again, so save it then; existing tokens are kept across deploys. To rotate, delete the secret in the dashboard and redeploy. You can also pre-set your own value (CI env or `wrangler secret put`) and it will be used instead of a generated one.
-
-**Manual:** upload each secret once by hand; it persists across deployments and the sync step simply overwrites it with the same value on the next CI run:
-
-```sh
-npx wrangler secret put CLOUDFLARE_ACCESS_TEAM_NAME
-npx wrangler secret put CLOUDFLARE_ACCESS_AUD
-npx wrangler secret put CLOUDFLARE_GRAPHQL_API_TOKEN
-npx wrangler secret put MATTERMOST_WEBHOOK_URL
-```
-
-Or upload a whole file at once with `npx wrangler secret bulk <file>` (JSON or KEY=VALUE format). Don't point it at the full `.env` — that would also push the deploy-time credentials (`CLOUDFLARE_API_TOKEN` etc.) into the Worker, which it doesn't need; pass a file containing only the runtime secrets.
-
-Preview the required/optional secret list without credentials:
-
-```sh
-npm run secrets:sync -- --dry-run
-```
-
-See the section comments in `.env.example` for the full list and required token scopes.
-
-## Deployment Inputs (`config.yaml`)
-
-The `deploy:` section is the single place to configure deployment:
-
-```yaml
-deploy:
-  name: heartbeatflare # worker name; D1/queue names derive from it
-  domain: status.example.com # custom domain route; omit to serve on workers.dev only
-  # database_name: ... # default: ${name}-prod-db
-  # queue_name: ...    # default: ${name}-notifications
-```
-
-`npm run provision` creates the D1 database and the notification queue if they do not exist (find-by-name, idempotent). It writes nothing back to `config.yaml`. The deploy step generates `wrangler.jsonc` (gitignored) from `wrangler.template.jsonc` + `config.yaml`, resolving the D1 id by name — so no resource IDs are ever stored in the repo.
-
-For the private page, create a Cloudflare Access self-hosted application manually in the dashboard.
-
-> **Important — scope the application to the `/private` path, not the bare host.** Access gates by URL (hostname **+ path**). Set the application Destination to `<your-host>/private` (e.g. `status.example.com/private` or `status.<subdomain>.workers.dev/private`). If you point it at the bare hostname, Access walls off the **entire** site — the public status page (`/`, `/public`, `/feed.xml`, `/badge/*`) included. With the `/private` path scope, only `/private` is gated at the edge (and the Worker then verifies the injected Access JWT); everything else stays public.
-
-Put the team subdomain and application AUD in `config.yaml` as runtime placeholders:
-
-```yaml
-auth:
-  provider: cloudflare_access
-  team_name: "${CLOUDFLARE_ACCESS_TEAM_NAME}"
-  aud: "${CLOUDFLARE_ACCESS_AUD}"
-```
-
-Then set `CLOUDFLARE_ACCESS_TEAM_NAME` and `CLOUDFLARE_ACCESS_AUD` as Worker secrets via CI variables, `.env` + `npm run secrets:sync`, or `wrangler secret put`.
-
-Prerequisites that cannot be automated:
-
-- the zone for `deploy.domain` must already exist in the Cloudflare account
-
-Use `npm run provision -- --dry-run` to preview resource names without credentials, API calls, or file writes.
-
-## CLI Deployment
-
-Install dependencies:
+## Local CLI
 
 ```sh
 npm ci
+npm run cf:whoami          # verify Cloudflare authentication
 ```
 
-Verify Cloudflare authentication:
+Provide credentials by copying `.env.example` to `.env` and loading it (the file is gitignored):
 
 ```sh
-npm run cf:whoami
+cp .env.example .env       # fill in CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID
+set -a; . ./.env; set +a
 ```
 
 Run the combined production flow:
@@ -120,21 +55,23 @@ Run the combined production flow:
 npm run deploy:prod
 ```
 
-It runs: tests → migration lint → provision → D1 migrations → config import → `wrangler deploy` → secrets sync. Individual steps are available as separate scripts (`npm run provision`, `npm run d1:migrate:prod`, `npm run config:import`, `npm run deploy`, `npm run secrets:sync`).
+It runs: tests → migration lint → provision → D1 migrations → config import → `wrangler deploy` →
+secrets sync, reading runtime secrets from `.env`. Individual steps are available as separate
+scripts:
 
-## CI Deployment
+| Script | What it does |
+| --- | --- |
+| `npm run provision` | Create D1 + queue if missing, by name (`--dry-run` supported). |
+| `npm run d1:migrate:prod` | Apply D1 migrations (additive-only, linted). |
+| `npm run config:import` | Push `config.yaml` monitors/alerts/channels into D1. |
+| `npm run deploy` | Generate `wrangler.jsonc` then `wrangler deploy`. |
+| `npm run secrets:sync` | Push `${VAR}` runtime secrets to the Worker (`--dry-run` supported). |
+| `npm run deploy:prod` | All of the above, in order, with tests first. |
 
-GitHub Actions deploys on:
+## GitLab CI
 
-- push to `main`
-- manual `workflow_dispatch`
-
-GitLab CI deploys on:
-
-- default branch pipeline
-- manual web pipeline
-
-Both CI paths run:
+GitLab CI deploys on the default-branch pipeline and on a manual web pipeline. It runs the same
+sequence as the other paths:
 
 ```sh
 npm ci
@@ -147,20 +84,123 @@ npm run deploy
 npm run secrets:sync
 ```
 
-followed by a smoke test of the deployed Worker.
+followed by the smoke test. Add `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` and any runtime
+secrets as **protected, masked** CI/CD variables. GitLab CI variables are plain env vars, so the
+secrets-sync step picks them up with no extra wiring.
+
+## Cloudflare API token permissions
+
+Create a Cloudflare API token with the scopes for what you deploy:
+
+| Token | Required permissions | Notes |
+| --- | --- | --- |
+| `CLOUDFLARE_API_TOKEN` | Workers Scripts: Edit, D1: Edit, Queues: Edit | Used only by deploy/provision scripts and CI; never reaches the Worker. Add **Workers Routes: Edit** and **Zone: Read** if deploying a custom domain route. |
+| `CLOUDFLARE_GRAPHQL_API_TOKEN` | Account Analytics: Read, D1: Read | Optional runtime secret for the private Infrastructure Usage block. Add **Account Billing: Read** to detect Free vs Workers Paid. |
+| Notification secrets | None in Cloudflare | Values like `MATTERMOST_WEBHOOK_URL` or `TELEGRAM_BOT_TOKEN` are third-party credentials, stored as Worker secrets and resolved at send time. |
+
+`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are **deploy-time** credentials — they live in
+`.env` locally and in CI secrets, and never reach the Worker.
+
+## Runtime Worker secrets
+
+Values the Worker needs at **request time** — `CLOUDFLARE_ACCESS_TEAM_NAME` /
+`CLOUDFLARE_ACCESS_AUD` for Access verification, the optional `CLOUDFLARE_GRAPHQL_API_TOKEN` for the
+usage block, and one variable per `${VAR}` placeholder in `config.yaml` notification channels
+(e.g. `MATTERMOST_WEBHOOK_URL`). In local dev and tests these are read from `.env`. For production,
+both paths below work and can be mixed:
+
+**Automatic (recommended).** Add each secret to GitHub repository secrets / GitLab CI variables under
+the same name. The `secrets:sync` step (`scripts/sync-secrets.ts`) runs after every deploy: it
+discovers required names from `${VAR}` references in `config.yaml` and pushes them all to Cloudflare
+Worker secrets in one bulk call. A referenced name absent from CI is skipped (value kept) when the
+secret already exists on the Worker. When a referenced secret exists in neither place, the step
+prints a warning and the deploy proceeds — the affected feature stays broken until the secret is
+added. Optional secrets (`CLOUDFLARE_GRAPHQL_API_TOKEN`) warn instead of failing. `npm run deploy:prod`
+runs the same sync using your local `.env`.
+
+**Manual.** Upload each secret once by hand; it persists across deployments and the sync step simply
+overwrites it with the same value on the next run:
+
+```sh
+npx wrangler secret put CLOUDFLARE_ACCESS_TEAM_NAME
+npx wrangler secret put CLOUDFLARE_ACCESS_AUD
+npx wrangler secret put CLOUDFLARE_GRAPHQL_API_TOKEN
+npx wrangler secret put MATTERMOST_WEBHOOK_URL
+```
+
+Or upload a file at once with `npx wrangler secret bulk <file>` (JSON or KEY=VALUE). Don't point it
+at the full `.env` — that would push deploy-time credentials into the Worker, which it doesn't need;
+pass a file containing only the runtime secrets.
+
+Preview the required/optional secret list without credentials:
+
+```sh
+npm run secrets:sync -- --dry-run
+```
+
+Heartbeat-token secrets (`HEARTBEAT_<ID>_TOKEN`) are generated automatically by this step — see
+[Heartbeat monitors](CONFIGURATION.md#heartbeat-push-monitors).
+
+## Cloudflare Access for `/private`
+
+The private status page is **optional** — `/public` deploys and works without any auth config. Set
+up Access when you want `/private`.
+
+Create a Cloudflare Access **self-hosted application** manually in the dashboard.
+
+> **Scope the application to the `/private` path, not the bare host.** Access gates by URL
+> (hostname **+ path**). Set the application Destination to `<your-host>/private` (e.g.
+> `status.example.com/private` or `status.<subdomain>.workers.dev/private`). If you point it at the
+> bare hostname, Access walls off the **entire** site — the public status page (`/`, `/public`,
+> `/feed.xml`, `/badge/*`) included. With the `/private` path scope, only `/private` is gated at the
+> edge; the Worker then verifies the injected Access JWT and everything else stays public.
+
+Add the `auth` block to `config.yaml` as runtime placeholders:
+
+```yaml
+auth:
+  provider: cloudflare_access
+  team_name: "${CLOUDFLARE_ACCESS_TEAM_NAME}"
+  aud: "${CLOUDFLARE_ACCESS_AUD}"
+```
+
+Then set `CLOUDFLARE_ACCESS_TEAM_NAME` and `CLOUDFLARE_ACCESS_AUD` as
+[runtime Worker secrets](#runtime-worker-secrets) (CI variables, `.env` + `secrets:sync`, or
+`wrangler secret put`).
+
+## Provisioned resources
+
+`npm run provision` creates the D1 database and notification queue if they don't exist
+(find-by-name, idempotent). It writes nothing back to `config.yaml`. The deploy step generates
+`wrangler.jsonc` (gitignored) from [`wrangler.template.jsonc`](../wrangler.template.jsonc) +
+`config.yaml`, resolving the D1 id by name — so no resource IDs are stored in the repo. Don't edit
+`wrangler.jsonc` directly; it is recreated by any npm script (dev, test, deploy).
+
+Names default to `${deploy.name}-prod-db` and `${deploy.name}-notifications`, overridable via
+`deploy.database_name` / `deploy.queue_name`. Preview names without credentials or API calls:
+
+```sh
+npm run provision -- --dry-run
+```
+
+One prerequisite that can't be automated: the zone for `deploy.domain` must already exist in the
+Cloudflare account.
 
 ## Verification
 
-List D1 migrations (the binding name `DB` resolves via `wrangler.jsonc`):
+After a deploy, `/public` on the deployed URL must return HTTP 200 (this is the CI smoke test), and
+`/private` must redirect to the Access login page (when Access is configured).
 
 ```sh
-npx wrangler d1 migrations list DB --remote
-```
-
-List D1 tables:
-
-```sh
+npx wrangler d1 migrations list DB --remote        # binding DB resolves via wrangler.jsonc
 npx wrangler d1 execute DB --remote --command "SELECT name FROM sqlite_master WHERE type='table';"
 ```
 
-After deploy, `/public` on the deployed URL must return HTTP 200 (this is the CI smoke test), and `/private` must redirect to the Access login page.
+If something fails, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+
+## Updating an existing deployment
+
+Re-running any deploy path applies your latest `config.yaml` and code. The pipeline is idempotent:
+provision and migrations are no-ops when nothing changed, `config:import` reconciles monitors/
+channels (removed entries are soft-disabled), and `secrets:sync` only uploads new or changed
+secrets. For GitHub Actions, just push to `main`.
