@@ -293,6 +293,14 @@
 					"then": {
 						"required": ["target"]
 					}
+				},
+				{
+					"if": {
+						"required": ["headers"]
+					},
+					"then": {
+						"properties": { "type": { "const": "http" } }
+					}
 				}
 			],
 			"properties": {
@@ -343,6 +351,13 @@
 						"type": "string"
 					},
 					"description": "Names of notification channels for this monitor. If omitted, falls back to is_default channels."
+				},
+				"headers": {
+					"type": "object",
+					"description": "Custom HTTP request headers (type: http only). Values support ${VAR} substitution from Worker secrets. The default User-Agent (heartbeatflare/1.0) cannot be overridden.",
+					"additionalProperties": {
+						"type": "string"
+					}
 				}
 			}
 		},

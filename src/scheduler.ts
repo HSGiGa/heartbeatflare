@@ -4,7 +4,7 @@
 import { CONNECTIVITY_CLASS, evaluateAlerts, storeHeartbeatMiss, storeResult } from './alerts';
 import { log } from './log';
 import { dnsCheck, httpCheck, sslProbe, tcpCheck } from './probes';
-import type { ActiveIncident, ActiveIncidentRow, AlertRuleDbRow, MonitorRow, NotificationMessage } from './types';
+import type { ActiveIncident, ActiveIncidentRow, AlertRuleDbRow, MonitorRow, NotificationMessage, ProbeResult, RuntimeEnv } from './types';
 
 // Per-check hard timeout (probe timeouts are 10s; this is the outer safety net).
 const PER_UNIT_MS = 20_000;
@@ -15,6 +15,39 @@ const MAX_CHECKS_PER_RUN = 15;
 
 function wait(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// PROBE_HEADERS is a generated, deploy-time Worker var: a JSON map of monitor id → custom HTTP probe
+// headers with ${VAR} placeholders preserved. Parsed once per tick; a missing/malformed value yields
+// an empty map (no monitor gets custom headers) rather than failing the whole run.
+function parseProbeHeaders(raw: string | undefined): Map<string, Record<string, string>> {
+	const map = new Map<string, Record<string, string>>();
+	if (!raw) return map;
+	try {
+		const parsed = JSON.parse(raw) as Record<string, unknown>;
+		for (const [id, headers] of Object.entries(parsed)) {
+			if (headers && typeof headers === 'object') map.set(id, headers as Record<string, string>);
+		}
+	} catch {
+		log('warn', 'probe_headers.parse_failed', {});
+	}
+	return map;
+}
+
+// Resolves ${VAR} placeholders in custom probe headers against env (Worker secrets). Throws on the
+// first header referencing an unset/empty secret so the caller can fail the check — unlike notify.ts
+// resolveVars (which silently substitutes ''), we must never send a literal ${VAR} to the target.
+export function resolveProbeHeaders(env: Env, raw: Record<string, string>): Record<string, string> {
+	const lookup = env as unknown as Record<string, string | undefined>;
+	const resolved: Record<string, string> = {};
+	for (const [key, value] of Object.entries(raw)) {
+		resolved[key] = value.replace(/\$\{([A-Z0-9_]+)\}/g, (_, name: string) => {
+			const v = lookup[name];
+			if (!v) throw new Error(`header "${key}" references unset secret ${name}`);
+			return v;
+		});
+	}
+	return resolved;
 }
 
 // Runs tasks with at most `limit` in flight: starts tasks eagerly and, once the window is
@@ -38,6 +71,7 @@ async function runExternalCheck(
 	now: string,
 	rules: AlertRuleDbRow[],
 	activeByClass: Map<string, ActiveIncident>,
+	probeHeaders?: Record<string, string>,
 ): Promise<void> {
 	const executionId = crypto.randomUUID();
 	let sslHostname: string | null = null;
@@ -49,12 +83,31 @@ async function runExternalCheck(
 		}
 	}
 	const doSslProbe = sslHostname !== null;
-	const [result, sslInfo] = await Promise.all([
-		monitor.type === 'tcp' ? tcpCheck(monitor.scrape_url!) :
-		monitor.type === 'dns' ? dnsCheck(monitor.scrape_url!) :
-		httpCheck(monitor.scrape_url!, monitor.ssl_check === 1),
-		doSslProbe ? sslProbe(sslHostname!) : Promise.resolve(null),
-	]);
+
+	// Resolve custom HTTP headers up front: a missing secret fails the check WITHOUT probing, so the
+	// literal ${VAR} placeholder never reaches the target (and no SSL probe is wasted either).
+	let resolvedHeaders: Record<string, string> | undefined;
+	let headerError: string | undefined;
+	if (monitor.type === 'http' && probeHeaders) {
+		try {
+			resolvedHeaders = resolveProbeHeaders(env, probeHeaders);
+		} catch (err) {
+			headerError = err instanceof Error ? err.message : String(err);
+		}
+	}
+
+	let result: ProbeResult;
+	let sslInfo: { daysLeft: number; notAfter: string; issuer: string } | null = null;
+	if (headerError) {
+		result = { status: 'down', latency_ms: 0, error: headerError };
+	} else {
+		[result, sslInfo] = await Promise.all([
+			monitor.type === 'tcp' ? tcpCheck(monitor.scrape_url!) :
+			monitor.type === 'dns' ? dnsCheck(monitor.scrape_url!) :
+			httpCheck(monitor.scrape_url!, monitor.ssl_check === 1, resolvedHeaders),
+			doSslProbe ? sslProbe(sslHostname!) : Promise.resolve(null),
+		]);
+	}
 	if (sslInfo) {
 		result.ssl_days_left = sslInfo.daysLeft;
 		result.ssl_not_after = sslInfo.notAfter;
@@ -73,6 +126,7 @@ async function runExternalCheck(
 export async function handleScheduled(env: Env): Promise<void> {
 	const now = new Date().toISOString();
 	const t0 = Date.now();
+	const probeHeadersById = parseProbeHeaders((env as RuntimeEnv).PROBE_HEADERS);
 
 	// Single query for all monitors + preload all alert rules + open incidents + active maintenance
 	// windows — avoids N+2 DB round-trips per cron run
@@ -154,7 +208,7 @@ export async function handleScheduled(env: Env): Promise<void> {
 	await runWithLimit(
 		dueExternal.slice(0, MAX_CHECKS_PER_RUN).map((monitor) => () =>
 			Promise.race([
-				runExternalCheck(monitor, env, now, rulesByMonitor.get(monitor.id) ?? [], activeByMonitor.get(monitor.id) ?? new Map()),
+				runExternalCheck(monitor, env, now, rulesByMonitor.get(monitor.id) ?? [], activeByMonitor.get(monitor.id) ?? new Map(), probeHeadersById.get(monitor.id)),
 				wait(PER_UNIT_MS).then(() => Promise.reject(new Error(`timed out after ${PER_UNIT_MS / 1000}s`))),
 			]).catch((err: unknown) =>
 				log('error', 'check.error', { monitorId: monitor.id, error: err instanceof Error ? err.message : String(err) }),

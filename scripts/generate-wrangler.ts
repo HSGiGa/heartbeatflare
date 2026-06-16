@@ -9,8 +9,9 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { parse as parseJsonc } from 'jsonc-parser';
 import Cloudflare from 'cloudflare';
-import { loadConfig, resolveDeploy } from './lib/deploy-config';
+import { loadConfig, resolveDeploy, type DeployConfig } from './lib/deploy-config';
 import { findDatabaseId } from './lib/d1';
+import { buildProbeHeadersMap, type MonitorHeaders } from './lib/probe-headers';
 
 const isDeployMode = process.argv.includes('--mode=deploy');
 
@@ -39,8 +40,17 @@ interface WranglerTemplate {
 }
 
 async function main() {
-	const config = loadConfig();
+	const config = loadConfig<{ deploy?: DeployConfig; monitors?: MonitorHeaders[] }>();
 	const { name, domain, databaseName, queueName } = resolveDeploy(config);
+
+	// Generated PROBE_HEADERS var (feature: WAF-safe monitoring). buildProbeHeadersMap throws if a
+	// non-http monitor carries headers — surface that as a generation failure.
+	let probeHeaders: string;
+	try {
+		probeHeaders = JSON.stringify(buildProbeHeadersMap(config.monitors ?? []));
+	} catch (err) {
+		fail(err instanceof Error ? err.message : String(err));
+	}
 
 	const accountId = process.env.CLOUDFLARE_ACCOUNT_ID ?? '';
 
@@ -60,7 +70,13 @@ async function main() {
 
 	wrangler.name = name;
 	// Preserve template vars (e.g. LOG_LEVEL) and overwrite only the generated ones.
-	wrangler.vars = { ...wrangler.vars, CLOUDFLARE_ACCOUNT_ID: accountId, D1_DATABASE_ID: databaseId, WORKER_NAME: name };
+	wrangler.vars = {
+		...wrangler.vars,
+		CLOUDFLARE_ACCOUNT_ID: accountId,
+		D1_DATABASE_ID: databaseId,
+		WORKER_NAME: name,
+		PROBE_HEADERS: probeHeaders,
+	};
 	wrangler.d1_databases[0].database_name = databaseName;
 	wrangler.d1_databases[0].database_id = databaseId;
 	wrangler.queues.producers[0].queue = queueName;

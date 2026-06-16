@@ -12,6 +12,10 @@ export default defineConfig({
 					TEST_TG_TOKEN: 'telegram-secret-xyz',
 					TEST_WEBHOOK_URL: 'https://webhook.example.com/hook',
 					TEST_WEBHOOK_TOKEN: 'webhook-secret-abc',
+					// Custom HTTP probe headers (Issue #16). PROBE_HEADERS maps monitor id → headers with
+					// ${VAR} placeholders; TEST_MONITOR_SECRET backs the placeholder for the resolve test.
+					TEST_MONITOR_SECRET: 'sekret',
+					PROBE_HEADERS: JSON.stringify({ 'http-hdr': { 'X-Monitor-Secret': '${TEST_MONITOR_SECRET}' } }),
 				},
 			},
 		}),

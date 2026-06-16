@@ -172,6 +172,43 @@ monitors:
 `type: http`. Probes `target` (a URL) and checks the response. Condition: `status != 200`
 (any non-2xx is treated as down). Supports `latency` and `ssl_expiry` conditions.
 
+#### Custom request headers
+
+`http` monitors can send custom request headers — useful for endpoints that expect an auth token, an
+environment hint, or other routing header. Every HTTP probe also sends a fixed
+`User-Agent: heartbeatflare/1.0` to make probes easy to spot in access logs. Header values support
+`${VAR}` substitution from Worker secrets, resolved at probe time — the literal `${VAR}` is never
+sent to the target, and if the referenced secret is unset the check fails (status `down`, opening an
+incident) instead of probing.
+
+```yaml
+  - name: Example API
+    type: http
+    mode: external
+    visibility: private
+    target: https://api.example.com/health
+    interval: 60s
+    headers:
+      X-Healthcheck-Token: ${HEALTHCHECK_TOKEN}
+      X-Environment: production
+    alerts:
+      - condition: "status != 200"
+        severity: critical
+        failures: 2
+        recovery: 2
+```
+
+`headers` are valid only on `type: http` — the config schema and `wrangler:generate` reject them on
+tcp/dns/heartbeat monitors. They are **not** stored in D1; they ship to the Worker as the generated
+`PROBE_HEADERS` var (with `${VAR}` placeholders preserved) and therefore update on **deploy**, not on
+a standalone `config:import`. `secrets:sync` picks up the referenced secrets automatically. Keep the
+total small — Worker plain-text vars are limited to a few KB on the Free plan.
+
+The fixed User-Agent cannot be set or overridden by config — a `User-Agent` header fails generation.
+
+> ⚠️ The default User-Agent is for request **identification only**, not authentication — it is
+> non-secret and trivially spoofed. Use a `${VAR}` secret header for any access that must be gated.
+
 ### TCP monitors
 
 `type: tcp`. `target` is `host:port`. Condition: `connect != true` (connection could not be

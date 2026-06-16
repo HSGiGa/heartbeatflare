@@ -32,6 +32,9 @@ interface MonitorConfig {
 	interval?: string;
 	alerts?: AlertConfig[];
 	notification_channels?: string[];
+	// Custom HTTP probe headers (type: http only). Not stored in D1 — shipped to the Worker as the
+	// generated PROBE_HEADERS var by scripts/generate-wrangler.ts. Listed here so the config type is honest.
+	headers?: Record<string, string>;
 }
 
 interface NotificationTemplatesConfig {
