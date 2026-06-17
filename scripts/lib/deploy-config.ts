@@ -95,3 +95,26 @@ export function requireEnv(name: string): string {
 	}
 	return value;
 }
+
+// GitHub Actions cannot enumerate repository secrets from a step, so the deploy workflow passes them
+// all as JSON in SECRETS_CONTEXT (`toJSON(secrets)`). Parses that into a name→value map; empty when
+// unset (local dev, GitLab CI) or malformed. Used as a fallback so config `${VAR}` references resolve
+// in CI even though the individual secrets aren't discrete env vars.
+export function secretsContext(): Record<string, string> {
+	const raw = process.env.SECRETS_CONTEXT;
+	if (!raw) return {};
+	try {
+		return JSON.parse(raw) as Record<string, string>;
+	} catch {
+		console.warn('SECRETS_CONTEXT is set but is not valid JSON — ignoring');
+		return {};
+	}
+}
+
+// The environment used to resolve config `${VAR}` placeholders: real env vars win over the
+// SECRETS_CONTEXT fallback (matches secrets:sync). Strips undefined env values so spreads stay clean.
+export function resolveEnv(): Record<string, string> {
+	const env: Record<string, string> = {};
+	for (const [k, v] of Object.entries(process.env)) if (v !== undefined) env[k] = v;
+	return { ...secretsContext(), ...env };
+}

@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { parse as parseJsonc } from 'jsonc-parser';
 import Cloudflare from 'cloudflare';
-import { loadConfig, resolveDeploy, type DeployConfig } from './lib/deploy-config';
+import { loadConfig, resolveDeploy, resolveEnv, type DeployConfig } from './lib/deploy-config';
 import { findDatabaseId } from './lib/d1';
 import { buildProbeHeadersMap, type MonitorHeaders } from './lib/probe-headers';
 import { buildVpcBindings, type VpcNetworkBinding, type VpcServiceBinding } from './lib/vpc';
@@ -99,7 +99,9 @@ async function main() {
 	if (config.deploy?.vpc) {
 		let bindings: ReturnType<typeof buildVpcBindings>;
 		try {
-			bindings = buildVpcBindings(config.deploy.vpc, process.env, { isDeployMode });
+			// resolveEnv merges SECRETS_CONTEXT (GitHub Actions repo secrets) under process.env so VPC
+			// ${VAR} ids resolve in CI, where individual secrets aren't exposed as discrete env vars.
+			bindings = buildVpcBindings(config.deploy.vpc, resolveEnv(), { isDeployMode });
 		} catch (err) {
 			fail(err instanceof Error ? err.message : String(err));
 		}

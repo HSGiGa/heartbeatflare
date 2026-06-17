@@ -19,6 +19,10 @@ deploy:
   #   services:                # scoped access to a single private service (host:port fixed by the service)
   #     - binding: DEMO_SERVICE
   #       service_id: ${DEMO_VPC_SERVICE_ID}
+  vpc:
+    services:
+      - binding: DEMO_SERVICE
+        service_id: ${DEMO_VPC_SERVICE_ID}
 
 auth:
   provider: cloudflare_access
@@ -130,6 +134,18 @@ monitors:
   #       severity: critical
   #       failures: 2
   #       recovery: 2
+  - name: Demo Internal Service (Public)
+    type: http
+    mode: internal
+    vpc_binding: DEMO_SERVICE
+    visibility: public
+    target: http://127.0.0.1/identity
+    interval: 5m
+    alerts:
+      - condition: "status != 200"
+        severity: critical
+        failures: 2
+        recovery: 2
   - name: Demo Failing Endpoint
     type: http
     mode: external
