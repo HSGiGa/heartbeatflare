@@ -246,6 +246,13 @@ export function buildStatusPage({
 		return `<span style="font-size:11px;font-weight:600;padding:2px 6px;border-radius:4px;background:#fef3c7;color:#92400e;text-transform:uppercase;letter-spacing:0.04em">Private</span>`;
 	}
 
+	// Marks monitors probed over a Cloudflare Workers VPC binding (mode: internal) rather than the
+	// public internet.
+	function internalBadge(mode: string): string {
+		if (mode !== 'internal') return '';
+		return `<span title="Probed privately via a Cloudflare Workers VPC binding" style="font-size:11px;font-weight:600;padding:2px 6px;border-radius:4px;background:#e0e7ff;color:#3730a3;text-transform:uppercase;letter-spacing:0.04em;cursor:default">Internal</span>`;
+	}
+
 	function sslBadge(notAfter: string | null, issuer: string | null): string {
 		if (!notAfter) return '';
 		const days = Math.floor((new Date(notAfter).getTime() - Date.now()) / 86_400_000);
@@ -290,6 +297,7 @@ export function buildStatusPage({
 						<span class="monitor-name">${escHtml(m.name)}</span>
 						${typeBadge(m.type)}
 						${visibilityBadge(m.visibility)}
+						${internalBadge(m.mode)}
 						${sslBadge(m.ssl_not_after, m.ssl_issuer)}
 					</div>
 				</div>

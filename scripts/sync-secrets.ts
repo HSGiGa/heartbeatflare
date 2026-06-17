@@ -12,7 +12,7 @@
 // In GitLab CI, variables arrive as plain env vars and SECRETS_CONTEXT is not needed.
 import Cloudflare from 'cloudflare';
 import { randomBytes } from 'node:crypto';
-import { assertUserConfig, loadConfig, loadConfigRaw, resolveDeploy, requireEnv, type DeployConfig } from './lib/deploy-config';
+import { assertUserConfig, loadConfig, loadConfigRaw, resolveDeploy, requireEnv, secretsContext, type DeployConfig } from './lib/deploy-config';
 import { heartbeatSecretName, slug } from './lib/naming';
 
 // Optional runtime secrets: warn-and-skip when absent instead of failing the deploy.
@@ -36,17 +36,6 @@ function heartbeatMonitors(): HeartbeatMonitor[] {
 			const id = slug(m.name);
 			return { name: m.name, id, secretName: heartbeatSecretName(id) };
 		});
-}
-
-function secretsContext(): Record<string, string> {
-	const raw = process.env.SECRETS_CONTEXT;
-	if (!raw) return {};
-	try {
-		return JSON.parse(raw) as Record<string, string>;
-	} catch {
-		console.warn('SECRETS_CONTEXT is set but is not valid JSON — ignoring');
-		return {};
-	}
 }
 
 async function main() {

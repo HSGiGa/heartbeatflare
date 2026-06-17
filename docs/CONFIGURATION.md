@@ -60,6 +60,60 @@ deploy:
 | `domain` | no | Custom domain route. Omit to serve only on `<name>.<subdomain>.workers.dev`. The zone must already exist in the Cloudflare account. |
 | `database_name` | no | Override the derived D1 database name. |
 | `queue_name` | no | Override the derived queue name. |
+| `vpc` | no | Cloudflare Workers VPC bindings for `mode: internal` monitors. See [`deploy.vpc`](#deployvpc-internal-monitors). |
+
+### `deploy.vpc` (internal monitors)
+
+> **Beta.** [Cloudflare Workers VPC](https://developers.cloudflare.com/workers-vpc/) is in beta; its
+> API/config may change. Verify the current Cloudflare docs before relying on it in production.
+
+`mode: internal` monitors probe **private** targets through a Workers VPC binding instead of the
+public internet. heartbeatflare only *consumes* pre-existing VPC resources by id/binding — it never
+provisions Networks, Services, Tunnels, routes, CIDRs, or Zero Trust policies. Manage those through
+the Cloudflare dashboard, Terraform, or a dedicated infrastructure repo.
+
+```yaml
+deploy:
+  name: status
+  vpc:
+    networks:                      # tunnel-backed VPC Networks → generated as wrangler vpc_networks
+      - binding: DEMO_NETWORK
+        tunnel_id: ${DEMO_TUNNEL_ID}
+        # remote: true             # default true; harmless for production deploys
+    services:                      # scoped VPC Services → generated as wrangler vpc_services
+      - binding: DEMO_SERVICE
+        service_id: ${DEMO_VPC_SERVICE_ID}
+```
+
+- A monitor selects a binding by name via [`vpc_binding`](#internal-monitors-mode-internal).
+- **Networks** give broad access to any target reachable through a Cloudflare Tunnel; the monitor's
+  `target` host:port is the real private address. Cloudflare Mesh (`network_id: cf1:network`) is
+  **not supported in v1** — tunnel-backed networks only (use `tunnel_id`).
+- **Services** scope access to a single private host:port fixed by `service_id`. For a service the
+  monitor's `target` host:port is **ignored** for routing (it only sets the HTTP `Host` / TLS SNI);
+  only the path matters.
+- **Network risk:** a tunnel-backed `vpc_networks` binding exposes the Worker to whatever the
+  `cloudflared` connector can reach from its runtime environment. In Kubernetes, that can include
+  other `*.svc.cluster.local` services, ClusterIP services in other namespaces, pod IPs, node/internal
+  networks, kube-dns, and possibly the Kubernetes API unless egress is restricted. Prefer
+  `vpc_services` for a fixed target. If you use `vpc_networks`, add Kubernetes NetworkPolicy or
+  equivalent firewall rules around the `cloudflared` connector so it can reach only the intended
+  private services plus required DNS/Cloudflare egress.
+- Resource ids (`tunnel_id`, `service_id`) are account/environment specific — provide them via
+  `.env` locally and CI env/secrets in deployment, referenced as `${VAR}` placeholders. Unlike
+  `headers` (`PROBE_HEADERS`, resolved at probe runtime), VPC ids are substituted at
+  **`wrangler.jsonc` generation time** because a binding needs a literal id at deploy time. Binding
+  names are not secret and may stay in `config.yaml`. In local mode an unset `${VAR}` simply omits
+  that binding (so dev/test never fail on absent infrastructure ids); a deploy fails fast.
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `networks[].binding` | yes | Worker binding name referenced by a monitor's `vpc_binding`. Unique across networks and services. |
+| `networks[].tunnel_id` | yes | Cloudflare Tunnel UUID (or `${VAR}`). `network_id` / Mesh is unsupported in v1. |
+| `networks[].remote` | no | Use the remote resource during local dev. Default `true`. |
+| `services[].binding` | yes | Worker binding name referenced by a monitor's `vpc_binding`. Unique across networks and services. |
+| `services[].service_id` | yes | VPC Service UUID (or `${VAR}`). |
+| `services[].remote` | no | Use the remote resource during local dev. Default `true`. |
 
 ## `auth` (optional)
 
@@ -218,6 +272,70 @@ established). Supports `latency` and, with `ssl: true`, `ssl_expiry`.
 
 `type: dns`. `target` is a hostname. Condition: `status != up` (query returned no records or
 timed out).
+
+### Internal monitors (`mode: internal`)
+
+> **Beta**, builds on [Cloudflare Workers VPC](https://developers.cloudflare.com/workers-vpc/).
+
+By default monitors are `mode: external` and probe over the public internet. `mode: internal`
+monitors probe **private** targets through a Workers VPC binding declared under
+[`deploy.vpc`](#deployvpc-internal-monitors). Set `vpc_binding` to the name of a network or service
+binding; HTTP probes use the binding's `fetch()`, TCP probes its `connect()`.
+
+```yaml
+  - name: Internal API
+    type: http
+    mode: internal
+    vpc_binding: DEMO_SERVICE      # a deploy.vpc network/service binding name
+    visibility: private
+    target: http://demo.internal/health
+    interval: 60s
+    ssl: false
+    alerts:
+      - condition: "status != 200"
+        severity: critical
+        failures: 2
+        recovery: 2
+```
+
+**v1 rules (enforced at config import — the import fails fast on violation):**
+
+- Supported types are `http` and `tcp` only. `type: dns` is **not supported** for internal monitors
+  (the DoH resolver is a public service).
+- `vpc_binding` is **required** and must name a binding declared under `deploy.vpc`. It must **not**
+  be set on `mode: external` monitors.
+- SSL/TLS expiry checks are **skipped** for internal monitors (the cert APIs are public and cannot
+  inspect private targets), so `ssl: true` is rejected — set `ssl: false` or omit it.
+- TCP over VPC is treated as plaintext connectivity.
+- For a **service** binding the `target` host:port is ignored (the destination is fixed by
+  `service_id`); for a **network** binding `target` is the real private address.
+
+If an internal monitor's `vpc_binding` is missing from the deployed Worker, its checks record a
+`down` result with a clear configuration error rather than probing the public network.
+
+#### Internal HTTPS and TLS trust
+
+For an **HTTPS** internal target, Workers VPC validates the origin certificate and trusts **only
+publicly-trusted CAs and Cloudflare Origin CA**. A self-signed or internal/private-CA certificate
+makes the TLS handshake fail, so `binding.fetch()` throws and the check is recorded `down` with a TLS
+error. heartbeatflare cannot relax this — Workers `fetch()` has no "skip verification" option, and the
+trust decision lives on the VPC resource (which heartbeatflare only consumes). Options:
+
+- **Prefer `http://`** for the private target. Through an `http`-type VPC Service or a tunnel-backed
+  network the request is still encrypted in flight to your network by the tunnel — plaintext-to-origin
+  does not mean plaintext on the wire — and there is no certificate to validate.
+- For HTTPS to a target with a non-public certificate via a **VPC Service**, set the service's TLS
+  verification mode when you create/update it (this is VPC infrastructure, managed outside
+  heartbeatflare): `verify_full` (default) → `verify_ca` (skip hostname) → `disabled` (no server-cert
+  verification, required for self-signed). For example:
+
+  ```bash
+  npx wrangler vpc service create my-service --type http --https-port 443 \
+    --tunnel-id <TUNNEL_ID> --cert-verification-mode disabled
+  ```
+
+- A **VPC Network** binding has no per-target certificate override, so HTTPS over a network binding
+  requires either `http://` or a publicly-trusted / Cloudflare Origin CA certificate on the origin.
 
 ### Heartbeat (push) monitors
 

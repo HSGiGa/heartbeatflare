@@ -119,6 +119,44 @@
 				"queue_name": {
 					"type": "string",
 					"description": "Notification queue name override. Default: <name>-notifications."
+				},
+				"vpc": {
+					"$ref": "#/$defs/vpc_config"
+				}
+			}
+		},
+		"vpc_config": {
+			"type": "object",
+			"additionalProperties": false,
+			"description": "Cloudflare Workers VPC bindings (beta) for mode: internal monitors. Consumes pre-existing VPC resources by id — heartbeatflare never provisions Networks/Services/Tunnels. Resource ids should be ${VAR} placeholders resolved from .env / CI env at wrangler-generation time.",
+			"properties": {
+				"networks": {
+					"type": "array",
+					"description": "Tunnel-backed VPC Networks. Cloudflare Mesh (network_id: cf1:network) is unsupported in v1.",
+					"items": {
+						"type": "object",
+						"required": ["binding", "tunnel_id"],
+						"additionalProperties": false,
+						"properties": {
+							"binding": { "type": "string", "description": "Worker binding name referenced by a monitor's vpc_binding. Unique across networks and services." },
+							"tunnel_id": { "type": "string", "description": "Cloudflare Tunnel UUID (or ${VAR})." },
+							"remote": { "type": "boolean", "default": true, "description": "Use the remote resource during local dev. Harmless for production deploys." }
+						}
+					}
+				},
+				"services": {
+					"type": "array",
+					"description": "Scoped VPC Services. The destination host:port is fixed by service_id; a monitor's target host:port is ignored for routing (URL only sets Host/SNI).",
+					"items": {
+						"type": "object",
+						"required": ["binding", "service_id"],
+						"additionalProperties": false,
+						"properties": {
+							"binding": { "type": "string", "description": "Worker binding name referenced by a monitor's vpc_binding. Unique across networks and services." },
+							"service_id": { "type": "string", "description": "VPC Service UUID (or ${VAR})." },
+							"remote": { "type": "boolean", "default": true, "description": "Use the remote resource during local dev. Harmless for production deploys." }
+						}
+					}
 				}
 			}
 		},
@@ -358,6 +396,10 @@
 					"additionalProperties": {
 						"type": "string"
 					}
+				},
+				"vpc_binding": {
+					"type": "string",
+					"description": "Required for mode: internal monitors (type http or tcp): the name of a deploy.vpc network/service binding to probe through. Must not be set on mode: external monitors. mode: internal does not support type dns or ssl in v1."
 				}
 			}
 		},

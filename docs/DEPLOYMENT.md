@@ -118,6 +118,22 @@ Create a Cloudflare API token with the scopes for what you deploy:
 | `CLOUDFLARE_GRAPHQL_API_TOKEN` | Account Analytics: Read, D1: Read | Optional runtime secret for the private Infrastructure Usage block. Add **Account Billing: Read** to detect Free vs Workers Paid. |
 | Notification secrets | None in Cloudflare | Values like `MATTERMOST_WEBHOOK_URL` or `TELEGRAM_BOT_TOKEN` are third-party credentials, stored as Worker secrets and resolved at send time. |
 
+For `mode: internal` monitors using **Cloudflare Workers VPC** (beta), the deploy token also needs
+Workers VPC / Connectivity Directory permissions on the same account as the referenced Tunnel or VPC
+Service:
+
+| VPC use | Additional permissions |
+| --- | --- |
+| `vpc_services` with existing `service_id` | Connectivity Directory: Read, Connectivity Directory: Bind |
+| `vpc_networks` with `tunnel_id` | Connectivity Directory: Read, Connectivity Directory: Admin |
+| Wrangler local smoke tests / `wrangler tail` | Workers Tail: Read |
+
+In the Cloudflare API token UI these may appear as permission groups such as **Connectivity Directory
+Read**, **Connectivity Directory Bind**, and **Connectivity Directory Admin**. A token that only has
+Cloudflare One Networks read/write permissions can still fail Workers VPC binding deploys with
+`code: 10196` (`not authorized for the requested VPC resource`). The token must be scoped to the
+account that owns the VPC Service / Tunnel.
+
 `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are **deploy-time** credentials — they live in
 `.env` locally and in CI secrets, and never reach the Worker.
 

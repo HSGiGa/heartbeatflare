@@ -104,6 +104,25 @@ delivers it). There are no Service Bindings and no separate Workers.
 SSL expiry is probed alongside HTTP/TCP checks when the monitor has `ssl_check = 1`
 and a derivable hostname.
 
+**External vs internal monitors (Workers VPC).** `mode: external` monitors (the default) use the
+public Workers networking above. `mode: internal` monitors instead probe **private** targets through
+a Cloudflare Workers VPC binding (beta) named by the monitor's `vpc_binding`: HTTP via
+`binding.fetch()`, TCP via `binding.connect()`. The same `httpCheck` / `tcpCheck` run either way — the
+scheduler injects the binding's transport for internal monitors and falls back to global `fetch` /
+`cloudflare:sockets` for external ones, so VPC Networks and VPC Services need no special probe code.
+Bindings are generated into `wrangler.jsonc` only when `deploy.vpc` is configured (see
+[CONFIGURATION](CONFIGURATION.md#deployvpc-internal-monitors)); a monitor referencing an absent
+binding records a `down` configuration error rather than touching the public network. heartbeatflare
+consumes pre-existing VPC resources by id only — it never provisions Networks, Services, Tunnels,
+routes, CIDRs, or Zero Trust policies. v1 limitations: internal DNS is unsupported and internal SSL
+expiry is skipped (both rely on public services).
+
+Security boundary: `vpc_services` is the preferred narrow binding for a fixed private target because
+Cloudflare routes only to the service's configured host:port. A tunnel-backed `vpc_networks` binding
+is intentionally broader: the Worker can attempt to reach targets that the `cloudflared` connector
+can reach. In Kubernetes, protect the connector with NetworkPolicy / egress controls so a broad
+network binding cannot become unintended access to every service in the cluster.
+
 **Fan-out limit:** a single Worker invocation can make at most 50 subrequests on
 the Free Plan, and the cron tick itself has a CPU/time budget. `MAX_CHECKS_PER_RUN`
 caps checks per tick; beyond that, the oldest-checked-first ordering rotates work
@@ -187,7 +206,8 @@ type                  -- http | tcp | dns | heartbeat (openmetrics reserved); pl
 mode                  -- external | internal
 visibility            -- public | private  (controls status page exposure)
 scrape_url            -- target (URL / host:port / hostname); NULL for heartbeat (push) monitors
-ssl_check             -- 1 = also probe TLS cert expiry for this monitor (0 for heartbeat)
+ssl_check             -- 1 = also probe TLS cert expiry for this monitor (0 for heartbeat / internal)
+vpc_binding           -- mode: internal only: name of the deploy.vpc binding probed through; NULL otherwise
 interval_seconds      -- probe interval; for heartbeat, the expected beat period
 enabled
 paused                -- 1 = temporarily not probed (still shown)

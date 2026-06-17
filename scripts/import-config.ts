@@ -1,8 +1,9 @@
 import { parse } from 'yaml';
 import Cloudflare from 'cloudflare';
-import { assertUserConfig, loadConfig, loadConfigRaw, resolveDeploy, requireEnv } from './lib/deploy-config';
+import { assertUserConfig, loadConfig, loadConfigRaw, resolveDeploy, requireEnv, type DeployConfig } from './lib/deploy-config';
 import { findDatabaseId } from './lib/d1';
 import { heartbeatSecretName, slug } from './lib/naming';
+import { collectVpcBindingNames, validateMonitorVpc, validateVpcConfig } from './lib/vpc';
 
 const API_BASE = 'https://api.cloudflare.com/client/v4';
 
@@ -30,6 +31,8 @@ interface MonitorConfig {
 	enabled?: boolean;
 	target?: string; // required for all types except heartbeat (push)
 	interval?: string;
+	// Required for mode: internal: the deploy.vpc binding name to probe through. Stored in D1.
+	vpc_binding?: string;
 	alerts?: AlertConfig[];
 	notification_channels?: string[];
 	// Custom HTTP probe headers (type: http only). Not stored in D1 — shipped to the Worker as the
@@ -183,7 +186,11 @@ async function main() {
 	const raw = loadConfigRaw();
 	const config = parse(raw) as Config;
 
-	const { databaseName } = resolveDeploy(loadConfig());
+	const deploy = loadConfig<{ deploy?: DeployConfig }>().deploy;
+	const { databaseName } = resolveDeploy({ deploy });
+	if (deploy?.vpc) validateVpcConfig(deploy.vpc);
+	const vpcBindings = collectVpcBindingNames(deploy?.vpc);
+
 	const found = await findDatabaseId(new Cloudflare({ apiToken: token }), accountId, databaseName);
 	if (!found) {
 		console.error(`D1 database "${databaseName}" not found — run \`npm run provision\` first`);
@@ -227,12 +234,17 @@ async function main() {
 	for (const monitor of config.monitors) {
 		const id = slug(monitor.name);
 		if (!id) throw new Error(`Monitor "${monitor.name}" produces an empty id — give it a name with letters or digits`);
+		validateMonitorVpc(monitor, vpcBindings);
 		const intervalSeconds = parseInterval(monitor.interval ?? '5m');
 		const isHeartbeat = monitor.type === 'heartbeat';
+		const isInternal = monitor.mode === 'internal';
 		// Heartbeat is push-based: no probe target, no SSL probe. Its token lives in a Worker Secret;
 		// D1 stores only the reference `secret:<NAME>`, with NAME derived from the monitor id.
 		const scrapeUrl = isHeartbeat ? null : normalizeTarget(monitor);
-		const sslCheck = isHeartbeat ? 0 : (monitor.ssl ?? true) ? 1 : 0;
+		// SSL expiry uses public external APIs that can't inspect private targets, so it's skipped for
+		// internal monitors (and never applies to heartbeat).
+		const sslCheck = isHeartbeat || isInternal ? 0 : (monitor.ssl ?? true) ? 1 : 0;
+		const vpcBinding = isInternal ? monitor.vpc_binding! : null;
 		const heartbeatToken = isHeartbeat ? `secret:${heartbeatSecretName(id)}` : null;
 
 		console.log(`Importing monitor: ${monitor.name} (${id})${isHeartbeat ? ` [heartbeat secret: ${heartbeatSecretName(id)}]` : ''}`);
@@ -241,8 +253,8 @@ async function main() {
 		// through ON DELETE CASCADE and wipe monitor_state, incidents, executions and metric_series
 		// on every import. ON CONFLICT updates in place and preserves runtime data + created_at.
 		await d1Query(
-			`INSERT INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, ssl_check, heartbeat_token, paused, enabled, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))
+			`INSERT INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, ssl_check, vpc_binding, heartbeat_token, paused, enabled, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))
        ON CONFLICT(id) DO UPDATE SET
          name = excluded.name,
          type = excluded.type,
@@ -251,6 +263,7 @@ async function main() {
          scrape_url = excluded.scrape_url,
          interval_seconds = excluded.interval_seconds,
          ssl_check = excluded.ssl_check,
+         vpc_binding = excluded.vpc_binding,
          heartbeat_token = excluded.heartbeat_token,
          paused = excluded.paused,
          enabled = 1,
@@ -264,6 +277,7 @@ async function main() {
 				scrapeUrl,
 				intervalSeconds,
 				sslCheck,
+				vpcBinding,
 				heartbeatToken,
 				monitor.enabled === false ? 1 : 0,
 			],
@@ -330,7 +344,7 @@ async function main() {
 
 		// Add default SSL expiry rules if no ssl_expiry alerts are explicitly configured
 		const hasSslRule = alerts.some((a) => /ssl_expiry/i.test(a.condition));
-		const sslEnabled = monitor.ssl ?? true;
+		const sslEnabled = !isInternal && (monitor.ssl ?? true);
 		if (!hasSslRule && sslEnabled && ['http', 'tcp'].includes(monitor.type)) {
 			await d1Query(
 				`INSERT OR IGNORE INTO alert_rules (id, monitor_id, metric_name, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled)
