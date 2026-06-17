@@ -5,6 +5,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-06-17
+
+### Added
+
+- **Internal monitors via Cloudflare Workers VPC (beta)** — `mode: internal` HTTP/TCP monitors probe
+  **private** targets through a configured Workers VPC binding instead of the public internet.
+  Declare bindings under `deploy.vpc` (tunnel-backed `networks[]` and scoped `services[]`, with
+  resource ids supplied as `${VAR}` placeholders resolved at deploy time), and point a monitor at one
+  via `vpc_binding`. External monitors are unaffected. An **Internal** badge marks these monitors on
+  the status page.
+- v1 limits, enforced at config import: internal monitors are `http`/`tcp` only (no `dns`), SSL-expiry
+  checks are skipped (`ssl: true` rejected), and Cloudflare Mesh (`network_id: cf1:network`) is out of
+  scope — tunnel-backed networks only. heartbeatflare consumes pre-existing VPC resources by
+  id/binding and never provisions Networks, Services, or Tunnels.
+
 ## [1.0.0] - 2026-06-16
 
 First stable release. A serverless uptime monitor and status page that runs entirely on the
@@ -29,4 +44,5 @@ notifications, and serves public/private status pages.
 - **Configuration as code** — monitors, alerts, and channels in one `config.yaml`; CI provisions the
   D1 database and notification queue automatically.
 
+[1.1.0]: https://github.com/HSGiGa/heartbeatflare/releases/tag/v1.1.0
 [1.0.0]: https://github.com/HSGiGa/heartbeatflare/releases/tag/v1.0.0

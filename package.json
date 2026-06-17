@@ -1,6 +1,6 @@
 {
 	"name": "heartbeatflare",
-	"version": "1.0.0",
+	"version": "1.1.0",
 	"description": "Serverless uptime monitor and status page that runs entirely on the Cloudflare free tier.",
 	"license": "MIT",
 	"author": "HSGiGa",
@@ -27,7 +27,7 @@
 		"wrangler:generate:local": "tsx scripts/generate-wrangler.ts --mode=local",
 		"pretest": "npm run wrangler:generate:local",
 		"test": "vitest",
-		"dev": "npm run wrangler:generate:local && wrangler dev",
+		"dev": "npm run wrangler:generate:local && npm run d1:migrate:local && X_LOCAL_EXPLORER=false wrangler dev",
 		"start": "npm run dev",
 		"deploy": "npm run wrangler:generate && wrangler deploy",
 		"deploy:prod": "npm run test && npm run migration:lint && npm run provision && npm run d1:migrate:prod && npm run config:import && npm run deploy && npm run secrets:sync",
@@ -36,6 +36,7 @@
 		"cf-typegen": "npm run wrangler:generate:local && wrangler types",
 		"cf:whoami": "wrangler whoami",
 		"d1:migrate:prod": "npm run wrangler:generate && wrangler d1 migrations apply DB --remote",
+		"d1:migrate:local": "CI=1 wrangler d1 migrations apply DB --local --persist-to .wrangler/state",
 		"migration:lint": "if grep -riE 'DROP TABLE|DROP COLUMN|RENAME COLUMN|RENAME TABLE' migrations/ | grep -v 'lint-ok'; then echo 'ERROR: destructive migration detected — use additive-only schema changes' && exit 1; fi",
 		"config:import": "tsx scripts/import-config.ts",
 		"typecheck:scripts": "tsc -p tsconfig.scripts.json"
