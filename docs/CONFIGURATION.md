@@ -313,6 +313,30 @@ binding; HTTP probes use the binding's `fetch()`, TCP probes its `connect()`.
 If an internal monitor's `vpc_binding` is missing from the deployed Worker, its checks record a
 `down` result with a clear configuration error rather than probing the public network.
 
+#### Internal HTTPS and TLS trust
+
+For an **HTTPS** internal target, Workers VPC validates the origin certificate and trusts **only
+publicly-trusted CAs and Cloudflare Origin CA**. A self-signed or internal/private-CA certificate
+makes the TLS handshake fail, so `binding.fetch()` throws and the check is recorded `down` with a TLS
+error. heartbeatflare cannot relax this — Workers `fetch()` has no "skip verification" option, and the
+trust decision lives on the VPC resource (which heartbeatflare only consumes). Options:
+
+- **Prefer `http://`** for the private target. Through an `http`-type VPC Service or a tunnel-backed
+  network the request is still encrypted in flight to your network by the tunnel — plaintext-to-origin
+  does not mean plaintext on the wire — and there is no certificate to validate.
+- For HTTPS to a target with a non-public certificate via a **VPC Service**, set the service's TLS
+  verification mode when you create/update it (this is VPC infrastructure, managed outside
+  heartbeatflare): `verify_full` (default) → `verify_ca` (skip hostname) → `disabled` (no server-cert
+  verification, required for self-signed). For example:
+
+  ```bash
+  npx wrangler vpc service create my-service --type http --https-port 443 \
+    --tunnel-id <TUNNEL_ID> --cert-verification-mode disabled
+  ```
+
+- A **VPC Network** binding has no per-target certificate override, so HTTPS over a network binding
+  requires either `http://` or a publicly-trusted / Cloudflare Origin CA certificate on the origin.
+
 ### Heartbeat (push) monitors
 
 `type: heartbeat`. A dead-man's switch: instead of the Worker probing a target, your job calls the
