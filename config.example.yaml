@@ -5,6 +5,20 @@ deploy:
   # domain:   # custom domain route; omit to serve on workers.dev only (worker URL: <name>.<subdomain>.workers.dev)
   # database_name: heartbeatflare-prod-db   # default: ${name}-prod-db
   # queue_name: heartbeatflare-notifications # default: ${name}-notifications
+  # Cloudflare Workers VPC bindings (BETA) for mode: internal monitors — see the Workers VPC docs:
+  # https://developers.cloudflare.com/workers-vpc/ . heartbeatflare only consumes pre-existing VPC
+  # resources; it never provisions Networks/Services/Tunnels. Resource ids should be ${VAR}
+  # placeholders resolved from .env / CI env at wrangler-generation time (binding names are not
+  # secret and may stay here). v1 supports tunnel-backed Networks and scoped Services only — not
+  # Cloudflare Mesh (network_id: cf1:network).
+  # vpc:
+  #   networks:               # broad access to targets reachable through a Cloudflare Tunnel
+  #     - binding: DEMO_NETWORK
+  #       tunnel_id: ${DEMO_TUNNEL_ID}
+  #       # remote: true       # default true; harmless for production deploys
+  #   services:                # scoped access to a single private service (host:port fixed by the service)
+  #     - binding: DEMO_SERVICE
+  #       service_id: ${DEMO_VPC_SERVICE_ID}
 
 auth:
   provider: cloudflare_access
@@ -85,6 +99,37 @@ monitors:
         severity: critical
         failures: 1
         recovery: 1
+  # Internal monitors (mode: internal) probe private targets through a Workers VPC binding (see
+  # deploy.vpc above). vpc_binding names a network/service binding. v1 supports type http and tcp
+  # only (no dns); SSL expiry checks are skipped, so set ssl: false (ssl: true is rejected). For a
+  # VPC Service binding the target host:port is ignored (fixed by the service); for a network binding
+  # the target is the real private address.
+  # - name: Demo Internal Service
+  #   type: http
+  #   mode: internal
+  #   vpc_binding: DEMO_SERVICE
+  #   visibility: private
+  #   target: http://demo.internal/health
+  #   interval: 60s
+  #   ssl: false
+  #   alerts:
+  #     - condition: "status != 200"
+  #       severity: critical
+  #       failures: 2
+  #       recovery: 2
+  # - name: Demo Internal Redis
+  #   type: tcp
+  #   mode: internal
+  #   vpc_binding: DEMO_NETWORK
+  #   visibility: private
+  #   target: 10.0.1.50:6379
+  #   interval: 60s
+  #   ssl: false
+  #   alerts:
+  #     - condition: "connect != true"
+  #       severity: critical
+  #       failures: 2
+  #       recovery: 2
   - name: Demo Failing Endpoint
     type: http
     mode: external

@@ -3,7 +3,7 @@
 // the generate-time non-http / User-Agent rejection, and real header delivery on the wire.
 import { env } from 'cloudflare:test';
 import { describe, it, expect, vi } from 'vitest';
-import { buildProbeHeaders, httpCheck, PROBE_USER_AGENT } from '../src/probes';
+import { buildProbeHeaders, httpCheck, PROBE_USER_AGENT, tcpCheck } from '../src/probes';
 import { resolveProbeHeaders } from '../src/scheduler';
 import { buildProbeHeadersMap } from '../scripts/lib/probe-headers';
 
@@ -57,6 +57,33 @@ describe('buildProbeHeadersMap (generate-time)', () => {
 	it('rejects a config attempt to set User-Agent (case-insensitive)', () => {
 		expect(() => buildProbeHeadersMap([{ name: 'API', type: 'http', headers: { 'User-Agent': 'evil/9' } }])).toThrowError(/cannot set a "User-Agent" header/);
 		expect(() => buildProbeHeadersMap([{ name: 'API', type: 'http', headers: { 'user-agent': 'evil/9' } }])).toThrowError(/cannot set a "User-Agent" header/);
+	});
+});
+
+describe('probe transport injection (Workers VPC, Issue #18)', () => {
+	it('httpCheck uses the injected fetcher, not global fetch', async () => {
+		const orig = globalThis.fetch;
+		globalThis.fetch = vi.fn(() => Promise.reject(new Error('global fetch must not be used'))) as typeof fetch;
+		const fetcher = vi.fn(async () => new Response('ok', { status: 200 }));
+		try {
+			const res = await httpCheck('http://demo.internal/health', false, undefined, fetcher);
+			expect(res.status).toBe('up');
+			expect(fetcher).toHaveBeenCalledTimes(1);
+			expect(String(fetcher.mock.calls[0][0])).toBe('http://demo.internal/health');
+			expect(globalThis.fetch).not.toHaveBeenCalled();
+		} finally {
+			globalThis.fetch = orig;
+		}
+	});
+
+	it('tcpCheck uses the injected connector with parsed host/port', async () => {
+		const close = vi.fn();
+		const connector = vi.fn(() => ({ opened: Promise.resolve(), close }) as unknown as Socket);
+		const res = await tcpCheck('10.0.1.50:6379', connector);
+		expect(res.status).toBe('up');
+		expect(connector).toHaveBeenCalledTimes(1);
+		expect(connector.mock.calls[0][0]).toEqual({ hostname: '10.0.1.50', port: 6379 });
+		expect(close).toHaveBeenCalled();
 	});
 });
 

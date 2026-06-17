@@ -18,10 +18,17 @@ export function buildProbeHeaders(custom?: Record<string, string>): Headers {
 	return headers;
 }
 
-export async function httpCheck(url: string, sslCheck: boolean, custom?: Record<string, string>): Promise<ProbeResult> {
+// `fetcher` defaults to global fetch (public networking). mode: internal monitors pass a Workers VPC
+// binding's fetch (env.BINDING.fetch) to reach a private target — same signature, same probe logic.
+export async function httpCheck(
+	url: string,
+	sslCheck: boolean,
+	custom?: Record<string, string>,
+	fetcher: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> = fetch,
+): Promise<ProbeResult> {
 	const start = Date.now();
 	try {
-		const res = await fetch(url, { headers: buildProbeHeaders(custom), signal: AbortSignal.timeout(10_000) });
+		const res = await fetcher(url, { headers: buildProbeHeaders(custom), signal: AbortSignal.timeout(10_000) });
 		const latency_ms = Date.now() - start;
 		if (res.ok) return { status: 'up', latency_ms };
 		return { status: 'down', latency_ms, error: `HTTP ${res.status}` };
@@ -135,12 +142,18 @@ export async function dnsCheck(target: string): Promise<ProbeResult> {
 	}
 }
 
-export async function tcpCheck(target: string): Promise<ProbeResult> {
+// `connector` defaults to cloudflare:sockets connect (public networking). mode: internal monitors
+// pass a Workers VPC binding's connect; the binding takes a "host:port" string, so the scheduler
+// wraps it to this {hostname,port} signature.
+export async function tcpCheck(
+	target: string,
+	connector: (address: { hostname: string; port: number }) => Socket = connect,
+): Promise<ProbeResult> {
 	const start = Date.now();
 	let socket: Socket | undefined;
 	try {
 		const { hostname, port } = parseTcpTarget(target);
-		socket = connect({ hostname, port });
+		socket = connector({ hostname, port });
 		let timeoutId: ReturnType<typeof setTimeout> | undefined;
 		await Promise.race([
 			socket.opened,

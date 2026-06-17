@@ -12,6 +12,7 @@ import Cloudflare from 'cloudflare';
 import { loadConfig, resolveDeploy, type DeployConfig } from './lib/deploy-config';
 import { findDatabaseId } from './lib/d1';
 import { buildProbeHeadersMap, type MonitorHeaders } from './lib/probe-headers';
+import { buildVpcBindings, type VpcNetworkBinding, type VpcServiceBinding } from './lib/vpc';
 
 const isDeployMode = process.argv.includes('--mode=deploy');
 
@@ -35,6 +36,8 @@ interface WranglerTemplate {
 		producers: { queue: string; binding: string }[];
 		consumers: { queue: string; max_batch_size: number; max_batch_timeout: number; max_retries: number }[];
 	};
+	vpc_networks?: VpcNetworkBinding[];
+	vpc_services?: VpcServiceBinding[];
 	// Preserved as-is from the template (heartbeat endpoint rate limiters); not generated.
 	ratelimits?: { name: string; namespace_id: string; simple: { limit: number; period: number } }[];
 }
@@ -86,6 +89,22 @@ async function main() {
 		wrangler.routes = [{ pattern: domain, custom_domain: true }];
 	} else {
 		delete wrangler.routes;
+	}
+
+	// Workers VPC bindings (Issue #18): vpc_networks (tunnel-backed) and vpc_services. ${VAR} ids are
+	// resolved here at generation time. Deploy mode fails fast on an unset var; local mode omits the
+	// unresolved binding so dev/test never fail on absent private infrastructure ids.
+	delete wrangler.vpc_networks;
+	delete wrangler.vpc_services;
+	if (config.deploy?.vpc) {
+		let bindings: ReturnType<typeof buildVpcBindings>;
+		try {
+			bindings = buildVpcBindings(config.deploy.vpc, process.env, { isDeployMode });
+		} catch (err) {
+			fail(err instanceof Error ? err.message : String(err));
+		}
+		if (bindings.vpc_networks) wrangler.vpc_networks = bindings.vpc_networks;
+		if (bindings.vpc_services) wrangler.vpc_services = bindings.vpc_services;
 	}
 
 	writeFileSync('wrangler.jsonc', JSON.stringify(wrangler, null, '\t') + '\n');

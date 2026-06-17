@@ -1,5 +1,5 @@
 import { env, createExecutionContext, waitOnExecutionContext, SELF } from 'cloudflare:test';
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import worker from '../src/index';
 import { _invalidateAuthCache, resolveAuthConfig } from '../src/auth';
 import { CONNECTIVITY_CLASS, evaluateAlerts } from '../src/alerts';
@@ -9,6 +9,8 @@ import type { AlertRuleDbRow, MonitorRow } from '../src/types';
 // ever split into further migrations, import and apply each one here in order.
 // @ts-expect-error vite ?raw import
 import m01 from '../migrations/0001_initial_schema.sql?raw';
+// @ts-expect-error vite ?raw import
+import m02 from '../migrations/0002_monitor_vpc_binding.sql?raw';
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 
@@ -30,7 +32,7 @@ async function applyMigration(sql: string) {
 }
 
 beforeAll(async () => {
-	for (const sql of [m01]) {
+	for (const sql of [m01, m02]) {
 		await applyMigration(sql as string);
 	}
 	await env.DB.prepare(
@@ -637,5 +639,65 @@ describe('heartbeat (push) monitoring', () => {
 			expect(inc).not.toBeNull();
 			expect(inc?.severity).toBe('critical');
 		});
+	});
+});
+
+describe('scheduler internal (Workers VPC) monitors', () => {
+	// A fake VPC binding injected onto env (bindings are accessed dynamically by name). fetch() backs
+	// HTTP probes; connect() returns a minimal Socket for TCP probes.
+	const vpcFetch = vi.fn(async () => new Response('ok', { status: 200 }));
+	const vpcConnect = vi.fn(() => ({ opened: Promise.resolve(), close: () => {} }));
+
+	beforeAll(async () => {
+		(env as unknown as Record<string, unknown>).TEST_VPC = { fetch: vpcFetch, connect: vpcConnect };
+		// Quiet every other monitor so handleScheduled does no real outbound network this suite.
+		await env.DB.prepare(`UPDATE monitors SET paused = 1`).run();
+	});
+	afterAll(async () => {
+		await env.DB.prepare(`DELETE FROM monitors WHERE id LIKE 'int-%'`).run();
+		await env.DB.prepare(`UPDATE monitors SET paused = 0`).run();
+		delete (env as unknown as Record<string, unknown>).TEST_VPC;
+	});
+
+	async function seedInternal(id: string, type: 'http' | 'tcp', target: string, binding: string | null) {
+		await env.DB.prepare(
+			`INSERT OR REPLACE INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, ssl_check, vpc_binding, enabled, paused)
+			 VALUES (?, ?, ?, 'internal', 'private', ?, 60, 0, ?, 1, 0)`,
+		).bind(id, id, type, target, binding).run();
+	}
+
+	it('routes an internal HTTP monitor through the VPC binding fetch()', async () => {
+		vpcFetch.mockClear();
+		await seedInternal('int-http', 'http', 'http://demo.internal/health', 'TEST_VPC');
+
+		await handleScheduled(env);
+
+		expect(vpcFetch).toHaveBeenCalledTimes(1);
+		expect(String(vpcFetch.mock.calls[0][0])).toBe('http://demo.internal/health');
+		const st = await env.DB.prepare(`SELECT status FROM monitor_state WHERE monitor_id = 'int-http'`).first<{ status: string }>();
+		expect(st?.status).toBe('up');
+	});
+
+	it('routes an internal TCP monitor through the VPC binding connect()', async () => {
+		vpcConnect.mockClear();
+		await seedInternal('int-tcp', 'tcp', '10.0.1.50:6379', 'TEST_VPC');
+
+		await handleScheduled(env);
+
+		expect(vpcConnect).toHaveBeenCalledTimes(1);
+		expect(vpcConnect.mock.calls[0][0]).toBe('10.0.1.50:6379');
+		const st = await env.DB.prepare(`SELECT status FROM monitor_state WHERE monitor_id = 'int-tcp'`).first<{ status: string }>();
+		expect(st?.status).toBe('up');
+	});
+
+	it('records a down config-error result when the VPC binding is missing', async () => {
+		await seedInternal('int-missing', 'http', 'http://demo.internal/', 'NOPE_BINDING');
+
+		await handleScheduled(env);
+
+		const st = await env.DB
+			.prepare(`SELECT status FROM monitor_state WHERE monitor_id = 'int-missing'`)
+			.first<{ status: string }>();
+		expect(st?.status).toBe('down');
 	});
 });

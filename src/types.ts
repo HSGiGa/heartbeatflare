@@ -43,6 +43,8 @@ export type MonitorRow = {
 	scrape_url: string | null;
 	interval_seconds: number;
 	ssl_check: number;
+	// Workers VPC binding name for mode: internal monitors (Issue #18); null for external.
+	vpc_binding: string | null;
 	current_status: string | null;
 	last_check_at: string | null;
 	consecutive_failures: number;
@@ -116,6 +118,14 @@ export type RuntimeEnv = Env & {
 	// Generated at deploy time from config.yaml: JSON map of monitor id → custom HTTP probe headers,
 	// with ${VAR} placeholders preserved (resolved against env at probe runtime). Non-secret.
 	PROBE_HEADERS?: string;
+};
+
+// A Cloudflare Workers VPC binding (Issue #18): vpc_networks and vpc_services expose the same probe
+// surface — fetch() for HTTP, connect() for raw TCP. Bindings are optional (only present when
+// deploy.vpc is configured) and accessed dynamically by name, so this is kept structural.
+export type VpcBinding = {
+	fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+	connect: (address: string) => Socket;
 };
 
 export type D1Usage = {

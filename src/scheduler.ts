@@ -4,7 +4,7 @@
 import { CONNECTIVITY_CLASS, evaluateAlerts, storeHeartbeatMiss, storeResult } from './alerts';
 import { log } from './log';
 import { dnsCheck, httpCheck, sslProbe, tcpCheck } from './probes';
-import type { ActiveIncident, ActiveIncidentRow, AlertRuleDbRow, MonitorRow, NotificationMessage, ProbeResult, RuntimeEnv } from './types';
+import type { ActiveIncident, ActiveIncidentRow, AlertRuleDbRow, MonitorRow, NotificationMessage, ProbeResult, RuntimeEnv, VpcBinding } from './types';
 
 // Per-check hard timeout (probe timeouts are 10s; this is the outer safety net).
 const PER_UNIT_MS = 20_000;
@@ -65,6 +65,26 @@ async function runWithLimit(tasks: Array<() => Promise<void>>, limit: number): P
 	await Promise.allSettled(active);
 }
 
+// Resolves a monitor's mode: internal VPC binding from env by name (Issue #18). Returns the binding,
+// or an error string when it is missing/unusable — the caller records a down result without probing
+// (so a misconfiguration never throws and never leaks onto the public network). External monitors
+// pass through unchanged.
+function resolveVpcBinding(env: Env, monitor: { mode: string; vpc_binding: string | null }): { binding?: VpcBinding; error?: string } {
+	if (monitor.mode !== 'internal') return {};
+	const name = monitor.vpc_binding;
+	if (!name) return { error: 'internal monitor has no vpc_binding configured' };
+	const candidate = (env as unknown as Record<string, unknown>)[name] as VpcBinding | undefined;
+	if (!candidate || typeof candidate.fetch !== 'function' || typeof candidate.connect !== 'function') {
+		return { error: `VPC binding "${name}" is not available on the Worker — check deploy.vpc and redeploy` };
+	}
+	return { binding: candidate };
+}
+
+// Adapts a VPC binding's string-address connect() to the {hostname,port} signature tcpCheck expects.
+function vpcConnector(binding: VpcBinding): (address: { hostname: string; port: number }) => Socket {
+	return ({ hostname, port }) => binding.connect(`${hostname}:${port}`);
+}
+
 async function runExternalCheck(
 	monitor: MonitorRow & { mode: string; last_success_at: string | null },
 	env: Env,
@@ -96,15 +116,22 @@ async function runExternalCheck(
 		}
 	}
 
+	// mode: internal monitors probe through a Workers VPC binding instead of public networking. A
+	// missing/unusable binding fails the check up front (like a missing header secret) — never probed.
+	const { binding: vpcBinding, error: bindingError } = resolveVpcBinding(env, monitor);
+	const fetcher = vpcBinding ? vpcBinding.fetch.bind(vpcBinding) : undefined;
+	const connector = vpcBinding ? vpcConnector(vpcBinding) : undefined;
+
+	const preError = headerError ?? bindingError;
 	let result: ProbeResult;
 	let sslInfo: { daysLeft: number; notAfter: string; issuer: string } | null = null;
-	if (headerError) {
-		result = { status: 'down', latency_ms: 0, error: headerError };
+	if (preError) {
+		result = { status: 'down', latency_ms: 0, error: preError };
 	} else {
 		[result, sslInfo] = await Promise.all([
-			monitor.type === 'tcp' ? tcpCheck(monitor.scrape_url!) :
+			monitor.type === 'tcp' ? tcpCheck(monitor.scrape_url!, connector) :
 			monitor.type === 'dns' ? dnsCheck(monitor.scrape_url!) :
-			httpCheck(monitor.scrape_url!, monitor.ssl_check === 1, resolvedHeaders),
+			httpCheck(monitor.scrape_url!, monitor.ssl_check === 1, resolvedHeaders, fetcher),
 			doSslProbe ? sslProbe(sslHostname!) : Promise.resolve(null),
 		]);
 	}
@@ -133,7 +160,7 @@ export async function handleScheduled(env: Env): Promise<void> {
 	const [{ results: allMonitors }, { results: allRules }, { results: openIncidents }, { results: activeMaintenance }] = await Promise.all([
 		env.DB.prepare(
 			`SELECT m.id, m.name, m.type, m.mode, m.scrape_url, m.interval_seconds, m.created_at,
-			        COALESCE(m.ssl_check, 1) AS ssl_check,
+			        COALESCE(m.ssl_check, 1) AS ssl_check, m.vpc_binding,
 			        ms.status AS current_status, ms.last_check_at, ms.last_success_at,
 			        COALESCE(ms.consecutive_failures, 0) AS consecutive_failures,
 			        COALESCE(ms.consecutive_successes, 0) AS consecutive_successes,
@@ -191,10 +218,11 @@ export async function handleScheduled(env: Env): Promise<void> {
 		byClass.set(inc.class, { id: inc.incident_id, severity: inc.severity });
 	}
 
-	const dueExternal = allMonitors.filter(
+	// Pull-probed monitors of any mode: external (public networking) and internal (Workers VPC binding).
+	// Heartbeat (push) monitors are handled separately below.
+	const dueChecks = allMonitors.filter(
 		(m) =>
 			['http', 'tcp', 'dns'].includes(m.type) &&
-			m.mode === 'external' &&
 			// Skip monitors under an active maintenance window: no probe → no incident, uptime unaffected.
 			!underMaintenance(m.id) &&
 			(!m.last_check_at ||
@@ -203,10 +231,10 @@ export async function handleScheduled(env: Env): Promise<void> {
 
 	// Oldest-checked first so that, when more than MAX_CHECKS_PER_RUN are due, no monitor starves.
 	// last_check_at is ISO 8601 (lexicographically ordered); never-checked (null → '') sort first.
-	dueExternal.sort((a, b) => (a.last_check_at ?? '').localeCompare(b.last_check_at ?? ''));
+	dueChecks.sort((a, b) => (a.last_check_at ?? '').localeCompare(b.last_check_at ?? ''));
 
 	await runWithLimit(
-		dueExternal.slice(0, MAX_CHECKS_PER_RUN).map((monitor) => () =>
+		dueChecks.slice(0, MAX_CHECKS_PER_RUN).map((monitor) => () =>
 			Promise.race([
 				runExternalCheck(monitor, env, now, rulesByMonitor.get(monitor.id) ?? [], activeByMonitor.get(monitor.id) ?? new Map(), probeHeadersById.get(monitor.id)),
 				wait(PER_UNIT_MS).then(() => Promise.reject(new Error(`timed out after ${PER_UNIT_MS / 1000}s`))),
@@ -252,8 +280,8 @@ export async function handleScheduled(env: Env): Promise<void> {
 
 	log('info', 'scheduler.tick', {
 		durationMs: Date.now() - t0,
-		due: dueExternal.length,
-		checked: Math.min(dueExternal.length, MAX_CHECKS_PER_RUN),
+		due: dueChecks.length,
+		checked: Math.min(dueChecks.length, MAX_CHECKS_PER_RUN),
 		heartbeats: heartbeats.length,
 		heartbeatMisses,
 		maintenanceMonitors: maintenanceMonitorIds.size,
