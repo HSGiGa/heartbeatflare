@@ -701,3 +701,25 @@ describe('scheduler internal (Workers VPC) monitors', () => {
 		expect(st?.status).toBe('down');
 	});
 });
+
+describe('status page internal badge', () => {
+	beforeAll(async () => {
+		// A public-visibility internal monitor so it renders on /public. paused so no probe runs.
+		await env.DB.prepare(
+			`INSERT OR REPLACE INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, vpc_binding, enabled, paused)
+			 VALUES ('badge-internal', 'Badge Internal', 'http', 'internal', 'public', 'http://demo.internal/health', 60, 'DEMO', 1, 1)`,
+		).run();
+	});
+	afterAll(async () => {
+		await env.DB.prepare(`DELETE FROM monitors WHERE id = 'badge-internal'`).run();
+	});
+
+	it('renders an "Internal" badge for mode: internal monitors', async () => {
+		const res = await SELF.fetch(`https://example.com/public?t=${Date.now()}-internal-badge`);
+		expect(res.status).toBe(200);
+		const html = await res.text();
+		const row = html.slice(html.indexOf('Badge Internal'));
+		const rowEnd = row.indexOf('</div></div>');
+		expect(row.slice(0, rowEnd > 0 ? rowEnd : 400)).toContain('>Internal<');
+	});
+});
