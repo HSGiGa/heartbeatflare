@@ -179,26 +179,27 @@ export function buildStatusPage({
 			const avg = days?.get(day);
 			const tip = avg !== undefined ? `${(avg * 100).toFixed(1)}% uptime` : 'No data';
 			const key = `${monitorId}:${day}`;
-			const dayIncs = incidentsByMonitorDay.get(key) ?? [];
-			// Colour precedence: no data → grey; any critical incident that day → red; any other
-			// incident → amber; otherwise by uptime ratio (<95% red, <99% amber, else green).
-			let color: string;
+			// OpenStatus-style daily proportion: each bar is a vertical stack sized by the day's
+			// uptime ratio — green base for the healthy portion, with a degraded (amber) or down
+			// (red) segment for the rest. Incidents stay in the tooltip only and never repaint the
+			// bar, so a short warning on an otherwise healthy day no longer marks the whole day.
+			let segs: string;
 			if (avg === undefined) {
-				color = '#d4d4d8';
-			} else if (dayIncs.some((inc) => inc.severity === 'critical')) {
-				color = '#f87171';
-			} else if (dayIncs.length > 0) {
-				color = '#fbbf24';
-			} else if (avg < 0.95) {
-				color = '#f87171';
-			} else if (avg < 0.99) {
-				color = '#fbbf24';
+				segs = `<span class="bar-seg" style="height:100%;background:#d4d4d8"></span>`;
+			} else if (avg >= 1) {
+				segs = `<span class="bar-seg" style="height:100%;background:#4ade80"></span>`;
 			} else {
-				color = '#4ade80';
+				// Floor the down segment so even a tiny outage (e.g. 99.9%) stays visible (~2px on
+				// the 26px bar). Amber for degraded days, red once the day drops below 75% uptime.
+				const downPct = Math.max((1 - avg) * 100, 8);
+				const downColor = avg >= 0.75 ? '#fbbf24' : '#f87171';
+				segs =
+					`<span class="bar-seg" style="height:${downPct.toFixed(2)}%;background:${downColor}"></span>` +
+					`<span class="bar-seg" style="height:${(100 - downPct).toFixed(2)}%;background:#4ade80"></span>`;
 			}
 			const safeKey = escHtml(key);
 			const safeTip = escHtml(day + ': ' + tip);
-			bars += `<span class="bar" data-age="${i}" data-key="${safeKey}" data-tip="${safeTip}" aria-label="${safeTip}" style="background:${color}"></span>`;
+			bars += `<span class="bar" data-age="${i}" data-key="${safeKey}" data-tip="${safeTip}" aria-label="${safeTip}">${segs}</span>`;
 		}
 		return bars;
 	}
@@ -480,7 +481,8 @@ header{background:${bannerBg};border-bottom:1px solid ${bannerBorder};padding:28
 .monitor-name{font-size:15px;font-weight:600}
 .incident-inline{font-size:12px;color:#b45309;background:var(--sev-warning-bg);border:1px solid #fde68a;border-radius:6px;padding:6px 10px;margin-bottom:10px}
 .bars-row{display:flex;gap:2px;margin-bottom:3px;overflow:hidden}
-.bar{flex:1;min-width:4px;max-width:20px;height:26px;border-radius:2px;cursor:default;transition:opacity .12s}
+.bar{flex:1;min-width:4px;max-width:20px;height:26px;border-radius:2px;cursor:default;transition:opacity .12s;display:flex;flex-direction:column;justify-content:flex-end;overflow:hidden}
+.bar-seg{width:100%;flex-shrink:0}
 .bar:hover{opacity:.7}
 #bar-tt{position:fixed;z-index:100;pointer-events:none;background:#18181b;color:#f4f4f5;border-radius:8px;padding:10px 14px;font-size:12px;max-width:280px;box-shadow:0 4px 16px rgba(0,0,0,.35);line-height:1.5;white-space:normal}
 #bar-tt .tt-row+.tt-row{border-top:1px solid #3f3f46;margin-top:6px;padding-top:6px}
