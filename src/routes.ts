@@ -238,7 +238,7 @@ async function handleStatusPage(
 		showAll ? fetchUsage(runtimeEnv) : Promise.resolve(null),
 	]);
 
-	const html = buildStatusPage({ nowMs, monitors, uptimeDays, latencyPoints, activeIncidents, allIncidents, maintenanceWindows, d1Usage, session, authEnabled, workerName: runtimeEnv.WORKER_NAME ?? '', host });
+	const html = buildStatusPage({ nowMs, monitors, uptimeDays, latencyPoints, activeIncidents, allIncidents, maintenanceWindows, d1Usage, session, authEnabled, scope: showAll ? 'all' : 'public', workerName: runtimeEnv.WORKER_NAME ?? '', host });
 
 	// Unauthenticated (public) renders are cacheable at the edge; authenticated views are always fresh.
 	const resolvedCacheControl = cacheControl ?? (session ? NO_STORE : `public, max-age=${PUBLIC_MAXAGE}`);
@@ -435,7 +435,13 @@ export async function handleFetch(request: Request, env: Env, ctx: ExecutionCont
 
 	if (request.method === 'GET' && pathname === '/api/history') {
 		const searchParams = new URL(request.url).searchParams;
-		return showAll
+		// Scope is explicit (set by the page that issued the request), not ambient session state:
+		// /public asks for scope=public, /private asks for scope=all. The server still enforces the
+		// session fail-closed — scope=all only yields private data with a valid session, otherwise it
+		// degrades to public. A missing scope defaults to public so cached responses stay consistent.
+		const wantsAll = searchParams.get('scope') === 'all';
+		const effectiveShowAll = wantsAll && showAll;
+		return effectiveShowAll
 			? handleHistoryApi(env, searchParams, true)
 			: withPublicEdgeCache(request, ctx, () => handleHistoryApi(env, searchParams, false));
 	}

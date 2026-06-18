@@ -72,6 +72,7 @@ export function buildStatusPage({
 	d1Usage,
 	session,
 	authEnabled,
+	scope,
 	workerName,
 	host,
 }: {
@@ -85,6 +86,7 @@ export function buildStatusPage({
 	d1Usage: UsageSnapshot | null;
 	session: Session | null;
 	authEnabled: boolean;
+	scope: 'public' | 'all';
 	workerName: string;
 	host: string;
 }): string {
@@ -574,6 +576,7 @@ ${usageHtml}
 <script>
 (function(){
   var INC=${incMapJson};
+  var SCOPE=${JSON.stringify(scope)};
   var tabMonitors=document.getElementById('tab-monitors');
   var tabHistory=document.getElementById('tab-history');
   var histList=document.getElementById('history-list');
@@ -625,7 +628,7 @@ ${usageHtml}
   function loadHistory(page){
     histList.innerHTML='<div class="meta-text" style="padding:24px 0;text-align:center">Loading…</div>';
     histPager.innerHTML='';
-    fetch('/api/history?page='+page)
+    fetch('/api/history?scope='+SCOPE+'&page='+page)
       .then(function(r){return r.json();})
       .then(function(data){histPage=data.page;histPages=data.pages;histLoaded=true;histList.innerHTML=renderRows(data.incidents);renderPager();})
       .catch(function(){histList.innerHTML='<div class="meta-text" style="padding:24px 0;text-align:center">Failed to load.</div>';});
