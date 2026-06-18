@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] - 2026-06-18
+
+### Changed
+
+- **Uptime bars reflect daily proportion, not incidents** — each 90-day bar is now a vertical stack
+  sized by the day's `avg_up`: a green base for the healthy portion plus an amber (degraded) or red
+  (below 75% uptime) segment for the rest. Incidents no longer repaint the bar — they remain in the
+  tooltip only — so a short warning on an otherwise healthy day no longer marks the whole day as
+  degraded. The down segment is floored to a few pixels so a tiny outage (e.g. 99.9%) stays visible.
+  No schema or query changes. ([#23](https://github.com/HSGiGa/heartbeatflare/issues/23))
+
 ## [1.1.1] - 2026-06-18
 
 ### Fixed
