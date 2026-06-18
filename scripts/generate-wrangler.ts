@@ -11,6 +11,7 @@ import { parse as parseJsonc } from 'jsonc-parser';
 import Cloudflare from 'cloudflare';
 import { loadConfig, resolveDeploy, resolveEnv, type DeployConfig } from './lib/deploy-config';
 import { findDatabaseId } from './lib/d1';
+import { buildEmailBinding, collectEmailChannels, type EmailBindingConfig, type EmailChannelConfig } from './lib/email';
 import { buildProbeHeadersMap, type MonitorHeaders } from './lib/probe-headers';
 import { buildVpcBindings, type VpcNetworkBinding, type VpcServiceBinding } from './lib/vpc';
 
@@ -36,6 +37,7 @@ interface WranglerTemplate {
 		producers: { queue: string; binding: string }[];
 		consumers: { queue: string; max_batch_size: number; max_batch_timeout: number; max_retries: number }[];
 	};
+	send_email?: EmailBindingConfig[];
 	vpc_networks?: VpcNetworkBinding[];
 	vpc_services?: VpcServiceBinding[];
 	// Preserved as-is from the template (heartbeat endpoint rate limiters); not generated.
@@ -43,7 +45,7 @@ interface WranglerTemplate {
 }
 
 async function main() {
-	const config = loadConfig<{ deploy?: DeployConfig; monitors?: MonitorHeaders[] }>();
+	const config = loadConfig<{ deploy?: DeployConfig; monitors?: MonitorHeaders[]; notification_channels?: EmailChannelConfig[] }>();
 	const { name, domain, databaseName, queueName } = resolveDeploy(config);
 
 	// Generated PROBE_HEADERS var (feature: WAF-safe monitoring). buildProbeHeadersMap throws if a
@@ -84,6 +86,10 @@ async function main() {
 	wrangler.d1_databases[0].database_id = databaseId;
 	wrangler.queues.producers[0].queue = queueName;
 	wrangler.queues.consumers[0].queue = queueName;
+
+	const emailBinding = buildEmailBinding(collectEmailChannels(config));
+	if (emailBinding) wrangler.send_email = [emailBinding];
+	else delete wrangler.send_email;
 
 	if (domain) {
 		wrangler.routes = [{ pattern: domain, custom_domain: true }];

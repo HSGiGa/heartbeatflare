@@ -58,6 +58,31 @@ async function upsertWebhookChannel(id: string, configuration: Record<string, un
 	return row;
 }
 
+async function upsertEmailChannel(id: string, configuration: Record<string, unknown>): Promise<NotificationChannelDbRow> {
+	await env.DB.prepare(
+		`INSERT OR REPLACE INTO notification_channels (id, name, type, configuration, is_default, enabled)
+		 VALUES (?, ?, 'email', ?, 0, 1)`,
+	)
+		.bind(id, id, JSON.stringify(configuration))
+		.run();
+	const row = await env.DB.prepare(`SELECT id, name, type, configuration FROM notification_channels WHERE id = ?`)
+		.bind(id)
+		.first<NotificationChannelDbRow>();
+	if (!row) throw new Error(`channel ${id} not found`);
+	return row;
+}
+
+function setEmailBinding(send: SendEmail['send']) {
+	Object.defineProperty(env, 'EMAIL', {
+		value: { send },
+		configurable: true,
+	});
+}
+
+function deleteEmailBinding() {
+	delete (env as Partial<Env>).EMAIL;
+}
+
 function event(overrides: Partial<NotificationMessage> = {}): NotificationMessage {
 	return {
 		incidentId: 'notify-incident',
@@ -87,6 +112,7 @@ beforeEach(async () => {
 
 afterEach(() => {
 	vi.restoreAllMocks();
+	deleteEmailBinding();
 });
 
 describe('renderMessage', () => {
@@ -286,5 +312,103 @@ describe('sendToChannel webhook', () => {
 		const [, init] = fetchSpy.mock.calls[0];
 		const body = JSON.parse(String((init as RequestInit).body)) as { message: string };
 		expect(body.message).toBe('Notify Monitor custom 2: timeout');
+	});
+});
+
+describe('sendToChannel email', () => {
+	it('sends an email and records a sent delivery', async () => {
+		const channel = await upsertEmailChannel('email-success', {
+			from: 'noreply@bubblech.com',
+			from_name: 'HeartBeat',
+			to: 'hsgiga@gmail.com',
+		});
+		const send = vi.fn<SendEmail['send']>().mockResolvedValue({ messageId: '<test@bubblech.com>' });
+		setEmailBinding(send);
+
+		const ok = await sendToChannel(env, channel, event({ count: 3, error: 'boom' }), '2026-06-14T00:00:01Z', 1);
+
+		expect(ok).toBe(true);
+		expect(send).toHaveBeenCalledTimes(1);
+		expect(send).toHaveBeenCalledWith({
+			from: { email: 'noreply@bubblech.com', name: 'HeartBeat' },
+			to: ['hsgiga@gmail.com'],
+			subject: 'HeartBeat: Notify Monitor is DOWN',
+			text: expect.stringContaining('Notify Monitor is DOWN'),
+		});
+		await expect(deliveryFor(channel.id)).resolves.toMatchObject({ status: 'sent', error: null });
+	});
+
+	it('supports multiple recipients and subject prefixes', async () => {
+		const channel = await upsertEmailChannel('email-multiple', {
+			from: 'noreply@bubblech.com',
+			to: ['ops@example.com', 'hsgiga@gmail.com'],
+			subject_prefix: '[status]',
+		});
+		const send = vi.fn<SendEmail['send']>().mockResolvedValue({ messageId: '<test@bubblech.com>' });
+		setEmailBinding(send);
+
+		await sendToChannel(env, channel, event({ eventType: 'recovered', count: 2 }), '2026-06-14T00:00:02Z', 1);
+
+		expect(send).toHaveBeenCalledWith({
+			from: { email: 'noreply@bubblech.com', name: 'HeartBeat' },
+			to: ['ops@example.com', 'hsgiga@gmail.com'],
+			subject: '[status] Notify Monitor recovered',
+			text: expect.stringContaining('Notify Monitor recovered'),
+		});
+	});
+
+	it('uses channel templates for email body', async () => {
+		const channel = await upsertEmailChannel('email-template', {
+			from: 'noreply@bubblech.com',
+			to: 'hsgiga@gmail.com',
+			templates: { down: '{monitor} custom {count}: {error}' },
+		});
+		const send = vi.fn<SendEmail['send']>().mockResolvedValue({ messageId: '<test@bubblech.com>' });
+		setEmailBinding(send);
+
+		await sendToChannel(env, channel, event({ count: 2, error: 'timeout' }), '2026-06-14T00:00:03Z', 1);
+
+		expect(send).toHaveBeenCalledWith(expect.objectContaining({ text: 'Notify Monitor custom 2: timeout' }));
+	});
+
+	it('records missing email configuration without calling the binding', async () => {
+		const channel = await upsertEmailChannel('email-missing-config', { from: '${MISSING_EMAIL_FROM}', to: [] });
+		const send = vi.fn<SendEmail['send']>().mockResolvedValue({ messageId: '<unexpected@bubblech.com>' });
+		setEmailBinding(send);
+
+		const ok = await sendToChannel(env, channel, event(), '2026-06-14T00:00:04Z', 1);
+
+		expect(ok).toBe(false);
+		expect(send).not.toHaveBeenCalled();
+		await expect(deliveryFor(channel.id)).resolves.toMatchObject({ status: 'failed', error: 'missing from or to in channel configuration' });
+	});
+
+	it('records a missing EMAIL binding', async () => {
+		const channel = await upsertEmailChannel('email-missing-binding', {
+			from: 'noreply@bubblech.com',
+			to: 'hsgiga@gmail.com',
+		});
+
+		const ok = await sendToChannel(env, channel, event(), '2026-06-14T00:00:05Z', 1);
+
+		expect(ok).toBe(false);
+		await expect(deliveryFor(channel.id)).resolves.toMatchObject({ status: 'failed', error: 'missing EMAIL binding' });
+	});
+
+	it('records sanitized Cloudflare send errors', async () => {
+		const channel = await upsertEmailChannel('email-error', {
+			from: 'noreply@bubblech.com',
+			to: 'hsgiga@gmail.com',
+		});
+		const send = vi.fn<SendEmail['send']>().mockRejectedValue(new Error('email.sending.error.invalid_request_schema\nwith detail'));
+		setEmailBinding(send);
+
+		const ok = await sendToChannel(env, channel, event(), '2026-06-14T00:00:06Z', 2);
+
+		expect(ok).toBe(false);
+		await expect(deliveryFor(channel.id)).resolves.toMatchObject({
+			status: 'failed',
+			error: 'email.sending.error.invalid_request_schema with detail',
+		});
 	});
 });

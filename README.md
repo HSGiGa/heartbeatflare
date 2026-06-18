@@ -11,7 +11,7 @@ Live demo: [status.hsgiga.workers.dev](https://status.hsgiga.workers.dev/)
 - **HTTP/HTTPS, TCP, DNS and heartbeat (push) monitors** with per-monitor intervals (60s minimum)
 - **Public + private status pages** — 90-day uptime bars, latency sparklines, incident history; the private view is gated by Cloudflare Access
 - **Incident management** — connectivity and SSL-expiry incidents tracked independently, with failure/recovery thresholds, cooldowns and escalation re-notifications
-- **Notifications** via Slack-compatible webhooks (e.g. Mattermost), generic webhooks and Telegram, delivered through Cloudflare Queues with retry
+- **Notifications** via Slack-compatible webhooks (e.g. Mattermost), generic webhooks, Telegram and Cloudflare Email Service, delivered through Cloudflare Queues with retry
 - **Maintenance windows, Atom feed (`/feed.xml`) and embeddable SVG status badges**
 - **Configuration as code** — monitors, alerts and channels live in one `config.yaml`; CI provisions the D1 database and notification queue automatically
 - **Free-plan native** — designed around D1 write budgets and edge caching (~30 monitors at 60s intervals)

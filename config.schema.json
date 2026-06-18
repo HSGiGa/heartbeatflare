@@ -240,7 +240,7 @@
 		},
 		"email_channel": {
 			"type": "object",
-			"required": ["name", "type", "server", "port", "from", "to"],
+			"required": ["name", "type", "from", "to"],
 			"additionalProperties": false,
 			"properties": {
 				"name": {
@@ -249,40 +249,38 @@
 				"type": {
 					"const": "email"
 				},
-				"server": {
-					"type": "string",
-					"description": "SMTP server hostname."
-				},
-				"port": {
-					"type": "integer",
-					"minimum": 1,
-					"maximum": 65535
-				},
 				"from": {
 					"type": "string",
-					"description": "Sender email address."
+					"format": "email",
+					"description": "Sender email address allowed by the Cloudflare Email binding."
+				},
+				"from_name": {
+					"type": "string",
+					"description": "Sender display name. Defaults to HeartBeat."
 				},
 				"to": {
 					"oneOf": [
 						{
-							"type": "string"
+							"type": "string",
+							"format": "email"
 						},
 						{
 							"type": "array",
 							"items": {
-								"type": "string"
+								"type": "string",
+								"format": "email"
 							},
 							"minItems": 1
 						}
 					],
-					"description": "Recipient email address or list of addresses."
+					"description": "Verified Cloudflare Email Routing destination address or list of addresses."
 				},
-				"username": {
-					"type": "string"
-				},
-				"password": {
+				"subject_prefix": {
 					"type": "string",
-					"description": "SMTP password. Supports ${VAR} substitution."
+					"description": "Optional subject prefix, e.g. [heartbeatflare]."
+				},
+				"templates": {
+					"$ref": "#/$defs/notification_templates"
 				},
 				"is_default": {
 					"type": "boolean",

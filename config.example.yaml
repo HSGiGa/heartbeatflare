@@ -36,6 +36,15 @@ notification_channels:
     headers:
       Authorization: Bearer ${DEMO_WEBHOOK_TOKEN}
     is_default: false
+  # Cloudflare Email Service. On the Free Plan, recipients must be verified Email Routing
+  # destination addresses; `npm run provision` creates missing addresses and asks you to verify them.
+  # - name: Email
+  #   type: email
+  #   from: noreply@example.com
+  #   from_name: HeartBeat
+  #   to:
+  #     - ops@example.com
+  #   is_default: true
 
 monitors:
   - name: Google HTTP

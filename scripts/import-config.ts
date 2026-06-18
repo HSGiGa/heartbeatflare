@@ -2,6 +2,7 @@ import { parse } from 'yaml';
 import Cloudflare from 'cloudflare';
 import { assertUserConfig, loadConfig, loadConfigRaw, resolveDeploy, requireEnv, type DeployConfig } from './lib/deploy-config';
 import { findDatabaseId } from './lib/d1';
+import type { EmailChannelConfig } from './lib/email';
 import { heartbeatSecretName, slug } from './lib/naming';
 import { collectVpcBindingNames, validateMonitorVpc, validateVpcConfig } from './lib/vpc';
 
@@ -61,18 +62,6 @@ interface WebhookChannelConfig {
 	url: string;
 	headers?: Record<string, string>;
 	templates?: NotificationTemplatesConfig;
-	is_default?: boolean;
-}
-
-interface EmailChannelConfig {
-	name: string;
-	type: 'email';
-	server: string;
-	port: number;
-	from: string;
-	to: string | string[];
-	username?: string;
-	password?: string;
 	is_default?: boolean;
 }
 
