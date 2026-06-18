@@ -134,7 +134,7 @@ secrets at runtime (see [Secrets](#secrets-and-var-placeholders)).
 
 ## `notification_channels`
 
-Where incident open / resolve / escalation messages are delivered. Three channel types are
+Where incident open / resolve / escalation messages are delivered. Four channel types are
 implemented:
 
 | `type` | Required fields | Notes |
@@ -142,9 +142,7 @@ implemented:
 | `slack` | `name`, `url` | Slack-compatible incoming webhook (works with Mattermost, etc.). Optional `channel`. |
 | `webhook` | `name`, `url` | Generic structured JSON webhook. Use `headers` for auth. |
 | `telegram` | `name`, `bot_token`, `chat_id` | Telegram Bot API. |
-
-`email` is reserved in the schema for future work, but delivery is not implemented yet. Do not
-configure `type: email` — notifications for that channel will fail.
+| `email` | `name`, `from`, `to` | Cloudflare Email Service. On the Free Plan, every `to` address must be a verified Email Routing destination address. |
 
 ```yaml
 notification_channels:
@@ -160,12 +158,25 @@ notification_channels:
     headers:
       Authorization: Bearer ${DEMO_WEBHOOK_TOKEN}
     is_default: false
+
+  - name: Email
+    type: email
+    from: noreply@example.com
+    from_name: HeartBeat
+    to:
+      - ops@example.com
+    is_default: true
 ```
 
 **Routing:** per-monitor channels take precedence; channels marked `is_default: true` are the
 fallback for monitors that don't name their own.
 
-**Custom message text:** Slack, Telegram and webhook channels can override the notification text
+**Email:** `npm run provision` checks all configured recipients against Cloudflare Email Routing
+destination addresses. Missing addresses are created through the API and must be verified from the
+Cloudflare confirmation email before deploy can complete. `wrangler.jsonc` gets a generated
+`send_email` binding restricted to the configured senders and recipients.
+
+**Custom message text:** Slack, Telegram, webhook and email channels can override the notification text
 with `templates.down`, `templates.recovered` and `templates.escalation`. Supported placeholders:
 `{monitor}`, `{count}`, `{error}`, `{status}`.
 

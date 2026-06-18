@@ -1,7 +1,49 @@
 // Workers VPC config helpers (Issue #18). Pure-lib tests for validation, ${VAR} substitution, and
 // wrangler binding generation — mirrors test/probes.spec.ts (generate-time helpers in the WP pool).
 import { describe, it, expect } from 'vitest';
+import { buildEmailBinding, collectEmailChannels, collectEmailSendersAndRecipients } from '../scripts/lib/email';
 import { buildVpcBindings, collectVpcBindingNames, resolveVpcId, validateMonitorVpc, validateVpcConfig } from '../scripts/lib/vpc';
+
+describe('email config helpers', () => {
+	it('collects only email notification channels', () => {
+		const channels = collectEmailChannels({
+			notification_channels: [
+				{ type: 'webhook' },
+				{ name: 'Email', type: 'email', from: 'noreply@example.com', to: 'ops@example.com' },
+			],
+		});
+
+		expect(channels).toEqual([
+			{ name: 'Email', type: 'email', from: 'noreply@example.com', to: 'ops@example.com' },
+		]);
+	});
+
+	it('deduplicates and sorts sender and recipient allowlists', () => {
+		const out = collectEmailSendersAndRecipients([
+			{ name: 'A', type: 'email', from: 'noreply@example.com', to: ['ops@example.com', 'alerts@example.com'] },
+			{ name: 'B', type: 'email', from: 'noreply@example.com', to: 'ops@example.com' },
+		]);
+
+		expect(out).toEqual({
+			senders: ['noreply@example.com'],
+			recipients: ['alerts@example.com', 'ops@example.com'],
+		});
+	});
+
+	it('builds a single EMAIL binding for configured email channels', () => {
+		expect(
+			buildEmailBinding([{ name: 'Email', type: 'email', from: 'noreply@example.com', to: 'ops@example.com' }]),
+		).toEqual({
+			name: 'EMAIL',
+			allowed_sender_addresses: ['noreply@example.com'],
+			allowed_destination_addresses: ['ops@example.com'],
+		});
+	});
+
+	it('omits the binding when no email channels are configured', () => {
+		expect(buildEmailBinding([])).toBeNull();
+	});
+});
 
 describe('validateVpcConfig', () => {
 	it('accepts a tunnel-backed network and a scoped service', () => {

@@ -72,6 +72,27 @@ export function renderMessage(event: NotificationMessage, templates?: Record<str
 	return `🟢 **${monitorName} recovered** — back up after ${count} successful check${count !== 1 ? 's' : ''}`;
 }
 
+function emailSubject(event: NotificationMessage, prefix: string): string {
+	const base =
+		event.eventType === 'down'
+			? `${event.monitorName} is DOWN`
+			: event.eventType === 'escalation'
+				? `${event.monitorName} STILL DOWN`
+				: `${event.monitorName} recovered`;
+	return prefix ? `${prefix} ${base}` : `HeartBeat: ${base}`;
+}
+
+function emailRecipients(value: unknown): string[] {
+	if (Array.isArray(value)) return value.map((v) => String(v)).filter((v) => v.length > 0);
+	if (typeof value === 'string' && value.length > 0) return [value];
+	return [];
+}
+
+function sanitizeError(error: unknown): string {
+	const message = error instanceof Error ? error.message : String(error);
+	return message.replace(/\s+/g, ' ').slice(0, 300);
+}
+
 // Attempts delivery to a single channel, records the outcome, and reports whether it succeeded.
 // `attemptCount` is the queue message's attempt number, so retried deliveries are tracked accurately.
 export async function sendToChannel(
@@ -140,11 +161,25 @@ export async function sendToChannel(
 				}
 				error = `HTTP ${res.status}${detail}`;
 			}
+		} else if (channel.type === 'email') {
+			const email = (env as Env & { EMAIL?: SendEmail }).EMAIL;
+			if (!email) throw new Error('missing EMAIL binding');
+			const fromEmail = resolve(cfg.from);
+			const to = emailRecipients(cfg.to)
+				.map((recipient) => resolve(recipient))
+				.filter((recipient) => recipient.length > 0);
+			if (!fromEmail || to.length === 0) throw new Error('missing from or to in channel configuration');
+			await email.send({
+				from: { email: fromEmail, name: resolve(cfg.from_name) || 'HeartBeat' },
+				to,
+				subject: emailSubject(event, resolve(cfg.subject_prefix)),
+				text,
+			});
 		} else {
 			error = `${channel.type} notifications not yet implemented`;
 		}
 	} catch (e) {
-		error = e instanceof Error ? e.message : String(e);
+		error = sanitizeError(e);
 	}
 	await env.DB.prepare(
 		`INSERT INTO notification_deliveries (id, incident_id, channel_id, status, attempt_count, last_attempt_at, error)

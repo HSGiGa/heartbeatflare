@@ -179,10 +179,9 @@ under/over-count by one — an accepted trade-off for a push monitor.
 Consumes the `NOTIFICATION_QUEUE`. For each message, resolves the monitor's
 channels (per-monitor assignments, else defaults) and delivers.
 
-- **Implemented channels:** Slack and generic Webhook (HTTP POST `{ text }`), plus
-  Telegram (`sendMessage` with HTML formatting).
-- Email is **not implemented** and would record a `failed` delivery —
-  do not configure it (email was removed from `config.yaml`).
+- **Implemented channels:** Slack and generic Webhook (HTTP POST), Telegram (`sendMessage` with
+  HTML formatting), and Cloudflare Email Service (`send_email` binding). Email notifications are
+  Free Plan compatible only for verified Email Routing destination addresses.
 - Each attempt is recorded in `notification_deliveries` with the real attempt
   count (`msg.attempts`).
 - **Retry:** if no channel succeeds, `msg.retry()` (the queue's `max_retries`
@@ -296,7 +295,7 @@ would degrade the UI. **Open incidents are never purged**, regardless of age.
 ```
 id
 name
-type                  -- slack | webhook | telegram  (email defined but not implemented)
+type                  -- slack | webhook | telegram | email
 configuration         -- JSON; string values may contain ${VAR} env references
 is_default            -- fallback channel when monitor has no explicit channels
 enabled
@@ -631,7 +630,7 @@ queue() consumer
         +-- Slack
         +-- Webhook
         +-- Telegram
-        (Email not implemented)
+        +-- Email (Cloudflare Email Service)
 ```
 
 ## Observability & Logging

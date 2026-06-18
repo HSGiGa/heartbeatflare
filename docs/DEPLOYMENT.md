@@ -114,9 +114,13 @@ Create a Cloudflare API token with the scopes for what you deploy:
 
 | Token | Required permissions | Notes |
 | --- | --- | --- |
-| `CLOUDFLARE_API_TOKEN` | Workers Scripts: Edit, D1: Edit, Queues: Edit | Used only by deploy/provision scripts and CI; never reaches the Worker. Add **Workers Routes: Edit** and **Zone: Read** if deploying a custom domain route. |
+| `CLOUDFLARE_API_TOKEN` | Workers Scripts: Edit, D1: Edit, Queues: Edit | Used only by deploy/provision scripts and CI; never reaches the Worker. Add **Workers Routes: Edit** and **Zone: Read** if deploying a custom domain route. Add **Email Routing Addresses: Read/Write** and **Email Sending: Write** when using `type: email` notification channels. |
 | `CLOUDFLARE_GRAPHQL_API_TOKEN` | Account Analytics: Read, D1: Read | Optional runtime secret for the private Infrastructure Usage block. Add **Account Billing: Read** to detect Free vs Workers Paid. |
 | Notification secrets | None in Cloudflare | Values like `MATTERMOST_WEBHOOK_URL` or `TELEGRAM_BOT_TOKEN` are third-party credentials, stored as Worker secrets and resolved at send time. |
+
+Email notifications use Cloudflare Email Service, not SMTP. On the Cloudflare Free Plan,
+heartbeatflare sends only to verified Email Routing destination addresses. `npm run provision`
+creates missing destination addresses and fails until they are verified.
 
 For `mode: internal` monitors using **Cloudflare Workers VPC** (beta), the deploy token also needs
 Workers VPC / Connectivity Directory permissions on the same account as the referenced Tunnel or VPC
