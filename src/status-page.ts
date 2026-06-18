@@ -589,6 +589,7 @@ ${usageHtml}
   function fmtDur(s,e){if(!e)return'ongoing';var m=Math.floor((new Date(e)-new Date(s))/60000);if(m<60)return m+'m';var h=Math.floor(m/60);if(h<24)return h+'h '+(m%60)+'m';return Math.floor(h/24)+'d '+(h%24)+'h';}
   function fmtDay(s){return new Date(s).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'});}
   function fmtTime(s){var d=new Date(s);return d.toLocaleDateString('en-US',{month:'long',day:'numeric',timeZone:'UTC'})+' at '+d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true,timeZone:'UTC'});}
+  function fmtClock(s){return new Date(s).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true,timeZone:'UTC'});}
   function relAgo(s){var m=Math.floor((Date.now()-new Date(s).getTime())/60000);if(m<1)return'just now';if(m<60)return m+'m ago';var h=Math.floor(m/60);if(h<24)return h+'h ago';var d=Math.floor(h/24);if(d<30)return d+'d ago';var mo=Math.floor(d/30);if(mo<12)return mo+' month'+(mo>1?'s':'')+' ago';var y=Math.floor(d/365);return y+' year'+(y>1?'s':'')+' ago';}
   function renderUpdate(cls,label,time,body){return '<div class="update '+cls+'"><div class="marker"></div><div><div class="update-title"><span class="label">'+label+'</span><span class="time">'+time+'</span></div>'+(body?'<div class="update-body">'+body+'</div>':'')+'</div></div>';}
 
@@ -668,7 +669,8 @@ ${usageHtml}
       if(incs&&incs.length){
         incs.forEach(function(inc){
           var icon=inc.severity==='critical'?'🔴':'🟡';
-          html+='<div class="tt-row">'+icon+' '+fmtDur(inc.started_at,inc.resolved_at)+(inc.reason?' — '+esc(inc.reason):'')+
+          var range=fmtClock(inc.started_at)+' – '+(inc.resolved_at?fmtClock(inc.resolved_at)+' UTC':'ongoing');
+          html+='<div class="tt-row">'+icon+' '+range+' · '+fmtDur(inc.started_at,inc.resolved_at)+(inc.reason?' — '+esc(inc.reason):'')+
           '</div>';
         });
       }
