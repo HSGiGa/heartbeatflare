@@ -58,8 +58,21 @@ async function cloudflareRequest<T>(token: string, path: string, init: RequestIn
 	return data.result;
 }
 
+// Max page size accepted by the Email Routing addresses endpoint; paginate so accounts with many
+// destination addresses don't drop an already-verified recipient and trigger a redundant create.
+const ADDRESSES_PER_PAGE = 50;
+
 async function listDestinationAddresses(token: string, accountId: string): Promise<EmailRoutingAddress[]> {
-	return cloudflareRequest<EmailRoutingAddress[]>(token, `/accounts/${accountId}/email/routing/addresses`);
+	const all: EmailRoutingAddress[] = [];
+	for (let page = 1; ; page++) {
+		const batch = await cloudflareRequest<EmailRoutingAddress[]>(
+			token,
+			`/accounts/${accountId}/email/routing/addresses?page=${page}&per_page=${ADDRESSES_PER_PAGE}`,
+		);
+		all.push(...batch);
+		if (batch.length < ADDRESSES_PER_PAGE) break;
+	}
+	return all;
 }
 
 async function createDestinationAddress(token: string, accountId: string, email: string): Promise<void> {
