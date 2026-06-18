@@ -99,9 +99,13 @@ function sanitizeError(error: unknown): string {
 }
 
 async function verifiedEmailDestinations(env: Env, nowMs: number = Date.now()): Promise<Set<string> | null> {
-	const runtimeEnv = env as Env & { CLOUDFLARE_ACCOUNT_ID?: string; CLOUDFLARE_RUNTIME_API_TOKEN?: string };
+	const runtimeEnv = env as Env & {
+		CLOUDFLARE_ACCOUNT_ID?: string;
+		CLOUDFLARE_RUNTIME_API_TOKEN?: string;
+		CLOUDFLARE_GRAPHQL_API_TOKEN?: string;
+	};
 	const accountId = runtimeEnv.CLOUDFLARE_ACCOUNT_ID;
-	const token = runtimeEnv.CLOUDFLARE_RUNTIME_API_TOKEN;
+	const token = runtimeEnv.CLOUDFLARE_RUNTIME_API_TOKEN ?? runtimeEnv.CLOUDFLARE_GRAPHQL_API_TOKEN;
 	if (!accountId || !token) return null;
 	if (emailDestinationCache?.accountId === accountId && emailDestinationCache.expiresAt > nowMs) {
 		return emailDestinationCache.verified;

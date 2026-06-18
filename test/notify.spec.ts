@@ -83,6 +83,22 @@ function deleteEmailBinding() {
 	delete (env as Partial<Env>).EMAIL;
 }
 
+function setRuntimeApiEnv() {
+	Object.defineProperty(env, 'CLOUDFLARE_ACCOUNT_ID', {
+		value: '89d28e8a0b084b635afa8fb2b35ac610',
+		configurable: true,
+	});
+	Object.defineProperty(env, 'CLOUDFLARE_RUNTIME_API_TOKEN', {
+		value: 'runtime-token',
+		configurable: true,
+	});
+}
+
+function deleteRuntimeApiEnv() {
+	delete (env as Partial<Env>).CLOUDFLARE_ACCOUNT_ID;
+	delete (env as Partial<Env>).CLOUDFLARE_RUNTIME_API_TOKEN;
+}
+
 function mockVerifiedEmailDestinations(recipients: string[]) {
 	return vi.spyOn(globalThis, 'fetch').mockResolvedValue(
 		new Response(
@@ -131,6 +147,7 @@ beforeEach(async () => {
 afterEach(() => {
 	vi.restoreAllMocks();
 	deleteEmailBinding();
+	deleteRuntimeApiEnv();
 	_resetEmailDestinationCacheForTest();
 });
 
@@ -342,6 +359,7 @@ describe('sendToChannel email', () => {
 			to: 'hsgiga@gmail.com',
 		});
 		const send = vi.fn<SendEmail['send']>().mockResolvedValue({ messageId: '<test@bubblech.com>' });
+		setRuntimeApiEnv();
 		setEmailBinding(send);
 		mockVerifiedEmailDestinations(['hsgiga@gmail.com']);
 
@@ -365,6 +383,7 @@ describe('sendToChannel email', () => {
 			subject_prefix: '[status]',
 		});
 		const send = vi.fn<SendEmail['send']>().mockResolvedValue({ messageId: '<test@bubblech.com>' });
+		setRuntimeApiEnv();
 		setEmailBinding(send);
 		mockVerifiedEmailDestinations(['ops@example.com', 'hsgiga@gmail.com']);
 
@@ -385,6 +404,7 @@ describe('sendToChannel email', () => {
 			templates: { down: '{monitor} custom {count}: {error}' },
 		});
 		const send = vi.fn<SendEmail['send']>().mockResolvedValue({ messageId: '<test@bubblech.com>' });
+		setRuntimeApiEnv();
 		setEmailBinding(send);
 		mockVerifiedEmailDestinations(['hsgiga@gmail.com']);
 
@@ -411,6 +431,7 @@ describe('sendToChannel email', () => {
 			to: ['pending@example.com'],
 		});
 		const send = vi.fn<SendEmail['send']>().mockResolvedValue({ messageId: '<unexpected@bubblech.com>' });
+		setRuntimeApiEnv();
 		setEmailBinding(send);
 		mockVerifiedEmailDestinations([]);
 
@@ -430,6 +451,7 @@ describe('sendToChannel email', () => {
 			to: ['verified@example.com', 'pending@example.com'],
 		});
 		const send = vi.fn<SendEmail['send']>().mockResolvedValue({ messageId: '<test@bubblech.com>' });
+		setRuntimeApiEnv();
 		setEmailBinding(send);
 		mockVerifiedEmailDestinations(['verified@example.com']);
 
@@ -445,6 +467,7 @@ describe('sendToChannel email', () => {
 			from: 'noreply@bubblech.com',
 			to: 'hsgiga@gmail.com',
 		});
+		setRuntimeApiEnv();
 
 		const ok = await sendToChannel(env, channel, event(), '2026-06-14T00:00:05Z', 1);
 
@@ -458,6 +481,7 @@ describe('sendToChannel email', () => {
 			to: 'hsgiga@gmail.com',
 		});
 		const send = vi.fn<SendEmail['send']>().mockRejectedValue(new Error('email.sending.error.invalid_request_schema\nwith detail'));
+		setRuntimeApiEnv();
 		setEmailBinding(send);
 		mockVerifiedEmailDestinations(['hsgiga@gmail.com']);
 

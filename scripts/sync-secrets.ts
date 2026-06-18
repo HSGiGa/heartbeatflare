@@ -17,6 +17,7 @@ import { heartbeatSecretName, slug } from './lib/naming';
 
 // Optional runtime secrets: warn-and-skip when absent instead of failing the deploy.
 const OPTIONAL_SECRETS = ['CLOUDFLARE_RUNTIME_API_TOKEN'];
+const LEGACY_RUNTIME_API_TOKEN = 'CLOUDFLARE_GRAPHQL_API_TOKEN';
 
 type HeartbeatMonitor = { name: string; id: string; secretName: string };
 
@@ -93,9 +94,12 @@ async function main() {
 			);
 	}
 	for (const name of OPTIONAL_SECRETS) {
-		const value = lookup(name);
+		const value = lookup(name) ?? (name === 'CLOUDFLARE_RUNTIME_API_TOKEN' ? lookup(LEGACY_RUNTIME_API_TOKEN) : undefined);
 		if (value) add(name, value);
 		else console.warn(`Optional secret ${name} not set — skipping (related feature stays disabled)`);
+	}
+	if (!lookup('CLOUDFLARE_RUNTIME_API_TOKEN') && lookup(LEGACY_RUNTIME_API_TOKEN)) {
+		console.warn(`Legacy secret ${LEGACY_RUNTIME_API_TOKEN} detected — using it for CLOUDFLARE_RUNTIME_API_TOKEN during transition.`);
 	}
 
 	// Heartbeat tokens: env override > existing Worker secret (kept) > generate a new random token.
