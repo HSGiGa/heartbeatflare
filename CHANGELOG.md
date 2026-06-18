@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-06-18
+
+### Fixed
+
+- **History scope on `/public`** — a logged-in user's History tab no longer loads private incidents on
+  the public page. Scope is now a function of the route (`/public` requests `scope=public`, `/private`
+  requests `scope=all`) instead of being inferred from the session cookie. `/api/history` still enforces
+  the session fail-closed: `scope=all` returns private data only with a valid session, otherwise it
+  degrades to public. ([#20](https://github.com/HSGiGa/heartbeatflare/issues/20))
+
 ## [1.1.0] - 2026-06-17
 
 ### Added
