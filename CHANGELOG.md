@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-06-18
+
+### Added
+
+- **Email notifications via Cloudflare Email Service** — `type: email` is now a first-class
+  notification channel, configured with `from`/`from_name`/`to` (plus optional `subject_prefix` and
+  custom `templates`) instead of SMTP. `npm run provision` creates and verifies Email Routing
+  destination addresses, `npm run wrangler:generate` emits a restricted `send_email` binding scoped to
+  the configured senders and recipients, and delivery goes through `env.EMAIL.send()` with outcomes
+  recorded in `notification_deliveries`. On the Cloudflare Free Plan every recipient must be a verified
+  Email Routing destination address. ([#27](https://github.com/HSGiGa/heartbeatflare/issues/27))
+
+### Changed
+
+- **Email channel config replaces SMTP fields** — `server`/`port`/`username`/`password` are no longer
+  accepted on `type: email` channels; existing SMTP-shaped email config must be migrated to the
+  Cloudflare Email Service shape.
+
 ## [1.1.2] - 2026-06-18
 
 ### Changed
