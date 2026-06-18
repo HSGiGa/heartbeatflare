@@ -113,7 +113,7 @@ export type IncidentRow = {
 export type RuntimeEnv = Env & {
 	CLOUDFLARE_ACCOUNT_ID?: string;
 	D1_DATABASE_ID?: string;
-	CLOUDFLARE_GRAPHQL_API_TOKEN?: string;
+	CLOUDFLARE_RUNTIME_API_TOKEN?: string;
 	WORKER_NAME?: string;
 	// Generated at deploy time from config.yaml: JSON map of monitor id → custom HTTP probe headers,
 	// with ${VAR} placeholders preserved (resolved against env at probe runtime). Non-secret.

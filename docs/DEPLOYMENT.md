@@ -115,12 +115,13 @@ Create a Cloudflare API token with the scopes for what you deploy:
 | Token | Required permissions | Notes |
 | --- | --- | --- |
 | `CLOUDFLARE_API_TOKEN` | Workers Scripts: Edit, D1: Edit, Queues: Edit | Used only by deploy/provision scripts and CI; never reaches the Worker. Add **Workers Routes: Edit** and **Zone: Read** if deploying a custom domain route. Add **Email Routing Addresses: Read/Write** and **Email Sending: Write** when using `type: email` notification channels. |
-| `CLOUDFLARE_GRAPHQL_API_TOKEN` | Account Analytics: Read, D1: Read | Optional runtime secret for the private Infrastructure Usage block. Add **Account Billing: Read** to detect Free vs Workers Paid. |
+| `CLOUDFLARE_RUNTIME_API_TOKEN` | Account Analytics: Read, D1: Read | Optional runtime secret for the private Infrastructure Usage block. Add **Account Billing: Read** to detect Free vs Workers Paid. Add **Email Routing Addresses: Read** when using runtime email-recipient verification. |
 | Notification secrets | None in Cloudflare | Values like `MATTERMOST_WEBHOOK_URL` or `TELEGRAM_BOT_TOKEN` are third-party credentials, stored as Worker secrets and resolved at send time. |
 
 Email notifications use Cloudflare Email Service, not SMTP. On the Cloudflare Free Plan,
 heartbeatflare sends only to verified Email Routing destination addresses. `npm run provision`
-creates missing destination addresses and fails until they are verified.
+creates missing destination addresses and logs a warning until they are verified; deploy continues,
+and runtime delivery skips unverified recipients with a warning until verification is complete.
 
 For `mode: internal` monitors using **Cloudflare Workers VPC** (beta), the deploy token also needs
 Workers VPC / Connectivity Directory permissions on the same account as the referenced Tunnel or VPC
@@ -144,8 +145,8 @@ account that owns the VPC Service / Tunnel.
 ## Runtime Worker secrets
 
 Values the Worker needs at **request time** — `CLOUDFLARE_ACCESS_TEAM_NAME` /
-`CLOUDFLARE_ACCESS_AUD` for Access verification, the optional `CLOUDFLARE_GRAPHQL_API_TOKEN` for the
-usage block, and one variable per `${VAR}` placeholder in `config.yaml` notification channels
+`CLOUDFLARE_ACCESS_AUD` for Access verification, the optional `CLOUDFLARE_RUNTIME_API_TOKEN` for the
+usage block and email-recipient verification, and one variable per `${VAR}` placeholder in `config.yaml` notification channels
 (e.g. `MATTERMOST_WEBHOOK_URL`). In local dev and tests these are read from `.env`. For production,
 both paths below work and can be mixed:
 
@@ -155,7 +156,7 @@ discovers required names from `${VAR}` references in `config.yaml` and pushes th
 Worker secrets in one bulk call. A referenced name absent from CI is skipped (value kept) when the
 secret already exists on the Worker. When a referenced secret exists in neither place, the step
 prints a warning and the deploy proceeds — the affected feature stays broken until the secret is
-added. Optional secrets (`CLOUDFLARE_GRAPHQL_API_TOKEN`) warn instead of failing. `npm run deploy:prod`
+added. Optional secrets (`CLOUDFLARE_RUNTIME_API_TOKEN`) warn instead of failing. `npm run deploy:prod`
 runs the same sync using your local `.env`.
 
 **Manual.** Upload each secret once by hand; it persists across deployments and the sync step simply
@@ -164,7 +165,7 @@ overwrites it with the same value on the next run:
 ```sh
 npx wrangler secret put CLOUDFLARE_ACCESS_TEAM_NAME
 npx wrangler secret put CLOUDFLARE_ACCESS_AUD
-npx wrangler secret put CLOUDFLARE_GRAPHQL_API_TOKEN
+npx wrangler secret put CLOUDFLARE_RUNTIME_API_TOKEN
 npx wrangler secret put MATTERMOST_WEBHOOK_URL
 ```
 

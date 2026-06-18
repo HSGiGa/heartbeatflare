@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { renderMessage, sendToChannel } from '../src/notify';
+import { _resetEmailDestinationCacheForTest, renderMessage, sendToChannel } from '../src/notify';
 import type { NotificationChannelDbRow, NotificationMessage } from '../src/types';
 // @ts-expect-error vite ?raw import
 import m01 from '../migrations/0001_initial_schema.sql?raw';
@@ -83,6 +83,24 @@ function deleteEmailBinding() {
 	delete (env as Partial<Env>).EMAIL;
 }
 
+function mockVerifiedEmailDestinations(recipients: string[]) {
+	return vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+		new Response(
+			JSON.stringify({
+				success: true,
+				errors: [],
+				messages: [],
+				result: recipients.map((email) => ({
+					email,
+					verified: '2026-06-18T00:00:00Z',
+					status: 'verified',
+				})),
+			}),
+			{ status: 200, headers: { 'Content-Type': 'application/json' } },
+		),
+	);
+}
+
 function event(overrides: Partial<NotificationMessage> = {}): NotificationMessage {
 	return {
 		incidentId: 'notify-incident',
@@ -113,6 +131,7 @@ beforeEach(async () => {
 afterEach(() => {
 	vi.restoreAllMocks();
 	deleteEmailBinding();
+	_resetEmailDestinationCacheForTest();
 });
 
 describe('renderMessage', () => {
@@ -324,6 +343,7 @@ describe('sendToChannel email', () => {
 		});
 		const send = vi.fn<SendEmail['send']>().mockResolvedValue({ messageId: '<test@bubblech.com>' });
 		setEmailBinding(send);
+		mockVerifiedEmailDestinations(['hsgiga@gmail.com']);
 
 		const ok = await sendToChannel(env, channel, event({ count: 3, error: 'boom' }), '2026-06-14T00:00:01Z', 1);
 
@@ -346,6 +366,7 @@ describe('sendToChannel email', () => {
 		});
 		const send = vi.fn<SendEmail['send']>().mockResolvedValue({ messageId: '<test@bubblech.com>' });
 		setEmailBinding(send);
+		mockVerifiedEmailDestinations(['ops@example.com', 'hsgiga@gmail.com']);
 
 		await sendToChannel(env, channel, event({ eventType: 'recovered', count: 2 }), '2026-06-14T00:00:02Z', 1);
 
@@ -365,6 +386,7 @@ describe('sendToChannel email', () => {
 		});
 		const send = vi.fn<SendEmail['send']>().mockResolvedValue({ messageId: '<test@bubblech.com>' });
 		setEmailBinding(send);
+		mockVerifiedEmailDestinations(['hsgiga@gmail.com']);
 
 		await sendToChannel(env, channel, event({ count: 2, error: 'timeout' }), '2026-06-14T00:00:03Z', 1);
 
@@ -381,6 +403,41 @@ describe('sendToChannel email', () => {
 		expect(ok).toBe(false);
 		expect(send).not.toHaveBeenCalled();
 		await expect(deliveryFor(channel.id)).resolves.toMatchObject({ status: 'failed', error: 'missing from or to in channel configuration' });
+	});
+
+	it('skips unverified recipients without retrying the queue message', async () => {
+		const channel = await upsertEmailChannel('email-unverified', {
+			from: 'noreply@bubblech.com',
+			to: ['pending@example.com'],
+		});
+		const send = vi.fn<SendEmail['send']>().mockResolvedValue({ messageId: '<unexpected@bubblech.com>' });
+		setEmailBinding(send);
+		mockVerifiedEmailDestinations([]);
+
+		const ok = await sendToChannel(env, channel, event(), '2026-06-14T00:00:05Z', 1);
+
+		expect(ok).toBe(true);
+		expect(send).not.toHaveBeenCalled();
+		await expect(deliveryFor(channel.id)).resolves.toMatchObject({
+			status: 'failed',
+			error: 'email recipient not verified: pending@example.com',
+		});
+	});
+
+	it('sends only to verified recipients when a channel has mixed recipients', async () => {
+		const channel = await upsertEmailChannel('email-mixed', {
+			from: 'noreply@bubblech.com',
+			to: ['verified@example.com', 'pending@example.com'],
+		});
+		const send = vi.fn<SendEmail['send']>().mockResolvedValue({ messageId: '<test@bubblech.com>' });
+		setEmailBinding(send);
+		mockVerifiedEmailDestinations(['verified@example.com']);
+
+		const ok = await sendToChannel(env, channel, event(), '2026-06-14T00:00:05Z', 1);
+
+		expect(ok).toBe(true);
+		expect(send).toHaveBeenCalledWith(expect.objectContaining({ to: ['verified@example.com'] }));
+		await expect(deliveryFor(channel.id)).resolves.toMatchObject({ status: 'sent', error: null });
 	});
 
 	it('records a missing EMAIL binding', async () => {
@@ -402,6 +459,7 @@ describe('sendToChannel email', () => {
 		});
 		const send = vi.fn<SendEmail['send']>().mockRejectedValue(new Error('email.sending.error.invalid_request_schema\nwith detail'));
 		setEmailBinding(send);
+		mockVerifiedEmailDestinations(['hsgiga@gmail.com']);
 
 		const ok = await sendToChannel(env, channel, event(), '2026-06-14T00:00:06Z', 2);
 

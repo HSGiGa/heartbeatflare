@@ -12,7 +12,6 @@ export interface EmailChannelConfig {
 export interface EmailBindingConfig {
 	name: 'EMAIL';
 	allowed_sender_addresses: string[];
-	allowed_destination_addresses: string[];
 }
 
 export function emailRecipients(channel: EmailChannelConfig): string[] {
@@ -38,10 +37,9 @@ export function collectEmailSendersAndRecipients(channels: EmailChannelConfig[])
 
 export function buildEmailBinding(channels: EmailChannelConfig[]): EmailBindingConfig | null {
 	if (channels.length === 0) return null;
-	const { senders, recipients } = collectEmailSendersAndRecipients(channels);
+	const { senders } = collectEmailSendersAndRecipients(channels);
 	return {
 		name: 'EMAIL',
 		allowed_sender_addresses: senders,
-		allowed_destination_addresses: recipients,
 	};
 }

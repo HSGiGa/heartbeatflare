@@ -36,7 +36,6 @@ describe('email config helpers', () => {
 		).toEqual({
 			name: 'EMAIL',
 			allowed_sender_addresses: ['noreply@example.com'],
-			allowed_destination_addresses: ['ops@example.com'],
 		});
 	});
 

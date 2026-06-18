@@ -173,8 +173,10 @@ fallback for monitors that don't name their own.
 
 **Email:** `npm run provision` checks all configured recipients against Cloudflare Email Routing
 destination addresses. Missing addresses are created through the API and must be verified from the
-Cloudflare confirmation email before deploy can complete. `wrangler.jsonc` gets a generated
-`send_email` binding restricted to the configured senders and recipients.
+Cloudflare confirmation email before mail can be delivered. Deploy continues while verification is
+pending; runtime delivery skips unverified recipients with a warning instead of retrying the queue.
+`wrangler.jsonc` gets a generated `send_email` binding restricted to the configured senders; recipients
+are filtered at runtime against verified Email Routing destination addresses.
 
 **Custom message text:** Slack, Telegram, webhook and email channels can override the notification text
 with `templates.down`, `templates.recovered` and `templates.escalation`. Supported placeholders:

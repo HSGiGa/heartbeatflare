@@ -16,7 +16,7 @@ import { assertUserConfig, loadConfig, loadConfigRaw, resolveDeploy, requireEnv,
 import { heartbeatSecretName, slug } from './lib/naming';
 
 // Optional runtime secrets: warn-and-skip when absent instead of failing the deploy.
-const OPTIONAL_SECRETS = ['CLOUDFLARE_GRAPHQL_API_TOKEN'];
+const OPTIONAL_SECRETS = ['CLOUDFLARE_RUNTIME_API_TOKEN'];
 
 type HeartbeatMonitor = { name: string; id: string; secretName: string };
 

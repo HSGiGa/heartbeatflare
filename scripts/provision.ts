@@ -105,9 +105,9 @@ async function ensureEmailDestinations(token: string, accountId: string, channel
 	}
 
 	if (unverified.length > 0) {
-		throw new Error(
-			`Email destination address verification required: ${unverified.join(', ')}. ` +
-				'Confirm the Cloudflare verification email before deploying email notifications.',
+		console.warn(
+			`Email destination address verification pending: ${unverified.join(', ')}. ` +
+				'Deploy will continue; email deliveries to unverified recipients will be skipped until they confirm the Cloudflare verification email.',
 		);
 	}
 }

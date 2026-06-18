@@ -88,7 +88,7 @@ export async function fetchUsage(env: RuntimeEnv): Promise<UsageSnapshot> {
 
 	const accountId = env.CLOUDFLARE_ACCOUNT_ID;
 	const databaseId = env.D1_DATABASE_ID;
-	const apiToken = env.CLOUDFLARE_GRAPHQL_API_TOKEN;
+	const apiToken = env.CLOUDFLARE_RUNTIME_API_TOKEN;
 	if (!accountId || !databaseId || !apiToken) {
 		return cachedUsage;
 	}
