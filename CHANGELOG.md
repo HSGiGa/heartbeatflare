@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tooltip only — so a short warning on an otherwise healthy day no longer marks the whole day as
   degraded. The down segment is floored to a few pixels so a tiny outage (e.g. 99.9%) stays visible.
   No schema or query changes. ([#23](https://github.com/HSGiGa/heartbeatflare/issues/23))
+- **Incident tooltip shows time range** — hovering a day's bar now shows each incident's start–end
+  clock time (UTC), e.g. `3:45 PM – 6:15 PM UTC`, alongside the existing duration and reason.
 
 ## [1.1.1] - 2026-06-18
 
