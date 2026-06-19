@@ -189,9 +189,9 @@ export function buildStatusPage({
 			} else if (avg >= 1) {
 				segs = `<span class="bar-seg" style="height:100%;background:#4ade80"></span>`;
 			} else {
-				// Floor the down segment so even a tiny outage (e.g. 99.9%) stays visible (~2px on
-				// the 26px bar). Amber for degraded days, red once the day drops below 75% uptime.
-				const downPct = Math.max((1 - avg) * 100, 8);
+				// Floor the down segment so even a tiny outage (e.g. 99.9%) stays visible on the
+				// 32px bar. Amber for degraded days, red once the day drops below 75% uptime.
+				const downPct = Math.max((1 - avg) * 100, 12);
 				const downColor = avg >= 0.75 ? '#fbbf24' : '#f87171';
 				segs =
 					`<span class="bar-seg" style="height:${downPct.toFixed(2)}%;background:${downColor}"></span>` +
@@ -481,7 +481,7 @@ header{background:${bannerBg};border-bottom:1px solid ${bannerBorder};padding:28
 .monitor-name{font-size:15px;font-weight:600}
 .incident-inline{font-size:12px;color:#b45309;background:var(--sev-warning-bg);border:1px solid #fde68a;border-radius:6px;padding:6px 10px;margin-bottom:10px}
 .bars-row{display:flex;gap:2px;margin-bottom:3px;overflow:hidden}
-.bar{flex:1;min-width:4px;max-width:20px;height:26px;border-radius:2px;cursor:default;transition:opacity .12s;display:flex;flex-direction:column;justify-content:flex-end;overflow:hidden}
+.bar{flex:1;min-width:4px;max-width:20px;height:32px;border-radius:2px;cursor:default;transition:opacity .12s;display:flex;flex-direction:column;justify-content:flex-end;overflow:hidden}
 .bar-seg{width:100%;flex-shrink:0}
 .bar:hover{opacity:.7}
 #bar-tt{position:fixed;z-index:100;pointer-events:none;background:#18181b;color:#f4f4f5;border-radius:8px;padding:10px 14px;font-size:12px;max-width:280px;box-shadow:0 4px 16px rgba(0,0,0,.35);line-height:1.5;white-space:normal}
