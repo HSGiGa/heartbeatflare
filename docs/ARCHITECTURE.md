@@ -82,13 +82,22 @@ delivers it). There are no Service Bindings and no separate Workers.
 - Probes inline (no Service Bindings, no separate Worker) with bounded
   concurrency (`MAX_CONCURRENT_CHECKS` = 5) and a per-check timeout
   (`PER_UNIT_MS`). Each probe writes results and evaluates alerts.
-- **Heartbeat (push) monitors are not probed.** The same tick checks each `heartbeat`
-  monitor for *missed* beats: the deadline is measured from the last beat received
-  (`monitor_state.last_check_at`, written by the `/beat` endpoint) or from `created_at`
-  if it has never beaten (a grace period). It records one synthetic `down` per newly-missed
-  interval — deduplicated on the stored failure count so uptime and the write budget stay
-  honest — then runs the normal alert evaluation, opening an incident once the misses reach
-  `failure_count`. These run inline, make no subrequest, and don't count toward the probe cap.
+- **Heartbeat (push) monitors are not probed.** The same tick checks each `heartbeat` monitor for
+  missed beats.
+
+  Deadline source:
+
+  - last beat received (`monitor_state.last_check_at`, written by `/beat`), or
+  - `created_at` when the monitor has never beaten, giving it a grace period.
+
+  Miss handling:
+
+  - records one synthetic `down` per newly missed interval,
+  - deduplicates on the stored failure count so uptime and write budget stay honest,
+  - runs normal alert evaluation,
+  - opens an incident once misses reach `failure_count`.
+
+  Heartbeat miss checks run inline, make no subrequest, and do not count toward the probe cap.
 - Hourly (`getUTCMinutes() === 0`): recomputes `uptime_daily` from `uptime_hourly`.
 - Daily (~04:30 UTC): cleanup (see Retention).
 
@@ -104,24 +113,45 @@ delivers it). There are no Service Bindings and no separate Workers.
 SSL expiry is probed alongside HTTP/TCP checks when the monitor has `ssl_check = 1`
 and a derivable hostname.
 
-**External vs internal monitors (Workers VPC).** `mode: external` monitors (the default) use the
-public Workers networking above. `mode: internal` monitors instead probe **private** targets through
-a Cloudflare Workers VPC binding (beta) named by the monitor's `vpc_binding`: HTTP via
-`binding.fetch()`, TCP via `binding.connect()`. The same `httpCheck` / `tcpCheck` run either way — the
-scheduler injects the binding's transport for internal monitors and falls back to global `fetch` /
-`cloudflare:sockets` for external ones, so VPC Networks and VPC Services need no special probe code.
-Bindings are generated into `wrangler.jsonc` only when `deploy.vpc` is configured (see
-[CONFIGURATION](CONFIGURATION.md#deployvpc-internal-monitors)); a monitor referencing an absent
-binding records a `down` configuration error rather than touching the public network. heartbeatflare
-consumes pre-existing VPC resources by id only — it never provisions Networks, Services, Tunnels,
-routes, CIDRs, or Zero Trust policies. v1 limitations: internal DNS is unsupported and internal SSL
-expiry is skipped (both rely on public services).
+#### External vs internal monitors (Workers VPC)
 
-Security boundary: `vpc_services` is the preferred narrow binding for a fixed private target because
-Cloudflare routes only to the service's configured host:port. A tunnel-backed `vpc_networks` binding
-is intentionally broader: the Worker can attempt to reach targets that the `cloudflared` connector
-can reach. In Kubernetes, protect the connector with NetworkPolicy / egress controls so a broad
-network binding cannot become unintended access to every service in the cluster.
+`mode: external` monitors (the default) use the public Workers networking above.
+
+`mode: internal` monitors probe **private** targets through a Cloudflare Workers VPC binding (beta)
+named by the monitor's `vpc_binding`:
+
+- HTTP uses `binding.fetch()`.
+- TCP uses `binding.connect()`.
+- The same `httpCheck` / `tcpCheck` run either way.
+- The scheduler injects the binding transport for internal monitors and falls back to global
+  `fetch` / `cloudflare:sockets` for external monitors.
+
+Bindings are generated into `wrangler.jsonc` only when `deploy.vpc` is configured. See
+[CONFIGURATION](CONFIGURATION.md#deployvpc-internal-monitors). A monitor referencing an absent binding
+records a `down` configuration error rather than touching the public network.
+
+heartbeatflare consumes pre-existing VPC resources by id only. It never provisions:
+
+- Networks
+- Services
+- Tunnels
+- routes or CIDRs
+- Zero Trust policies
+
+v1 limitations:
+
+- Internal DNS is unsupported because the DoH resolver is public.
+- Internal SSL expiry is skipped because certificate expiry checks rely on public services.
+
+#### Internal monitor security boundary
+
+`vpc_services` is the preferred narrow binding for a fixed private target because Cloudflare routes
+only to the service's configured host:port.
+
+A tunnel-backed `vpc_networks` binding is intentionally broader: the Worker can attempt to reach
+anything that the `cloudflared` connector can reach. In Kubernetes, protect the connector with
+NetworkPolicy / egress controls so a broad network binding cannot become unintended access to every
+service in the cluster.
 
 **Fan-out limit:** a single Worker invocation can make at most 50 subrequests on
 the Free Plan, and the cron tick itself has a CPU/time budget. `MAX_CHECKS_PER_RUN`
@@ -158,19 +188,31 @@ or the `__connectivity__` sentinel when `metric_name IS NULL`).
   severity when `ssl_days_left < threshold`, resolves when the cert no longer
   triggers any rule.
 
-The two classes do **not** block each other: an open SSL-warning no longer
-suppresses a connectivity down-incident. Incident open/resolve writes (incident
-row + `monitor_state.active_incident_id` hint) go through a single `DB.batch()`;
-the notification is enqueued only after that batch commits.
-`monitor_state.active_incident_id` is a denormalised hint for the active
-*connectivity* incident only; SSL incidents live solely in the `incidents` table.
+The two classes do **not** block each other. An open SSL-warning does not suppress a connectivity
+down-incident.
 
-**Writers.** For probe-based monitors the scheduler is the single writer (one evaluation per monitor
-per tick). `heartbeat` monitors add a second writer — the `/beat` endpoint, which records an `up`
-sample and runs recovery on an incoming beat while the scheduler still handles miss detection. The
-two never act on one monitor in the same instant in practice; the only shared-state hazard is
-`consecutive_successes` for heartbeat `recovery_count > 1` under concurrent beats, which may
-under/over-count by one — an accepted trade-off for a push monitor.
+Incident open/resolve writes go through one `DB.batch()`:
+
+- the incident row,
+- the `monitor_state.active_incident_id` hint for connectivity incidents.
+
+The notification is enqueued only after that batch commits.
+
+`monitor_state.active_incident_id` is denormalised and tracks only the active *connectivity*
+incident. SSL incidents live solely in the `incidents` table.
+
+#### Writers
+
+Probe-based monitors have one writer: the scheduler. It evaluates each monitor at most once per tick.
+
+Heartbeat monitors have two writers:
+
+- `/beat`, which records an `up` sample and runs recovery when a beat arrives.
+- the scheduler, which detects missed beats.
+
+In practice, both writers do not act on one monitor in the same instant. The only accepted shared
+state hazard is `consecutive_successes` for heartbeat `recovery_count > 1` under concurrent beats,
+which may under/over-count by one.
 
 ---
 
@@ -263,7 +305,15 @@ error
 worker_region
 ```
 
-**Written only on status change or failure** (not every successful check) to stay within the D1 write budget. A steady-state healthy monitor produces near-zero execution rows. Retention: **48 hours**, purged by the daily cleanup (not read by the UI).
+`monitor_executions` is written only on status change or failure, not every successful check. This
+keeps the table small enough for the D1 write budget.
+
+Operational notes:
+
+- A steady-state healthy monitor produces near-zero execution rows.
+- Retention is **48 hours**.
+- Daily cleanup purges old rows.
+- The UI does not read this table.
 
 **incidents**
 ```
@@ -285,11 +335,15 @@ The `incident_updates(id, incident_id, created_at, status, message)` table holds
 timeline (investigating → identified → resolved) for the manual-incidents feature — also inert
 until that code lands.
 
-Incident visibility is inherited from the monitor (`monitors.visibility`) — there is no separate column. The public status page shows incidents only for public monitors.
+Incident visibility is inherited from the monitor (`monitors.visibility`). There is no separate
+incident visibility column. The public status page shows incidents only for public monitors.
 
-Retention: resolved incidents are purged after **120 days** by the daily cleanup —
-the status page colours its 90-day uptime bars from incidents, so a shorter window
-would degrade the UI. **Open incidents are never purged**, regardless of age.
+Retention:
+
+- Resolved incidents are purged after **120 days** by the daily cleanup.
+- The status page colours its 90-day uptime bars from incidents, so a shorter retention window would
+  degrade the UI.
+- **Open incidents are never purged**, regardless of age.
 
 **notification_channels**
 ```
@@ -358,12 +412,23 @@ aggregates (≈900 rows for 90 days) instead of scanning `metric_series`.
 maintenance_windows:          id, title, body, starts_at, ends_at, enabled, created_at, updated_at
 maintenance_window_monitors:  (window_id, monitor_id)   -- empty set for a window = global (all monitors)
 ```
-Declared in `config.yaml` and imported into D1 like monitors/channels (the Worker never writes
-them). While a window is active (`starts_at <= now < ends_at`) the scheduler **skips probing** the
-affected monitors — no probe means no check result, so no connectivity incident is opened and uptime
-isn't dragged down by expected downtime; escalations for those monitors are also suppressed. The
-status page renders a maintenance banner and marks affected monitors "Maintenance"; the Atom feed
-includes windows as entries. Bars during a window show as "no data" (grey).
+Declared in `config.yaml` and imported into D1 like monitors/channels. The Worker never writes
+maintenance windows.
+
+While a window is active (`starts_at <= now < ends_at`):
+
+- the scheduler **skips probing** affected monitors,
+- no probe means no check result,
+- no connectivity incident is opened for expected downtime,
+- uptime is not dragged down,
+- escalations for affected monitors are suppressed.
+
+Status surfaces:
+
+- status pages render a maintenance banner,
+- affected monitors are marked "Maintenance",
+- the Atom feed includes windows as entries,
+- uptime bars during a window show as "no data" (grey).
 
 **Free Plan write budget (D1: 100k writes/day):**
 ```
@@ -372,15 +437,23 @@ Per check:  1 monitor_state upsert + 1 uptime_hourly upsert = 2 writes
 
 30 monitors × 60s interval:  30 × 1,440 × 2  =  86,400 writes/day  (near ceiling)
 ```
-The MVP comfortably supports ~25–30 external monitors at a 60s interval. Larger fleets use longer intervals.
+The MVP comfortably supports ~25–30 external monitors at a 60s interval. Larger fleets should use
+longer intervals.
 
-Used for:
-- Dashboards
-- Historical views
+The aggregate tables are used for:
+
+- dashboards
+- historical views
 - SLA calculations
-- Trend analysis
+- trend analysis
 
-**Phase 2 upgrade path:** when Analytics Engine availability on Free Plan is confirmed or the project moves to a paid plan, `metric_series` writes can be migrated to Analytics Engine with no changes to the rest of the system — Result Store is the only write point.
+**Phase 2 upgrade path:** move `metric_series` writes to Analytics Engine when either:
+
+- Analytics Engine Free Plan fit is confirmed for this project, or
+- the project moves to a paid plan.
+
+The migration is localized because Result Store is the only write point for raw metric samples. The
+rest of the system can keep reading the same higher-level aggregates and incident state.
 
 ---
 
@@ -509,7 +582,13 @@ down      → Outage
 unknown   → Operational   (transient pre-first-check state; see note)
 ```
 
-**Note on `unknown`:** a public page should not show alarming or confusing states to external users. `unknown` only occurs in the ~1-minute window before a monitor's first check completes, so it is mapped to `Operational`. A monitor *stuck* in `unknown` (e.g. scheduler not running) is an operational fault surfaced on the private page, where operators see the real `Unknown` value.
+**Note on `unknown`:** the public page avoids alarming external users during normal startup.
+
+`unknown` usually lasts only until the first scheduled check completes, roughly one minute. Public
+views map that transient state to `Operational`.
+
+A monitor *stuck* in `unknown` is different: it may mean the scheduler is not running. Operators see
+the real `Unknown` value on the private page.
 
 Per-monitor display: `Name`, `Status`.
 Per-incident display: `Title`, `Status`, `Started At`, `Resolved At`.
@@ -533,15 +612,33 @@ Per-monitor display: `Name`, `Type`, `Status`, `Last Check`.
 
 ### Free Plan considerations
 
-The public page is unauthenticated and may receive bursty traffic. Each render is a D1 read; uncached, high traffic could pressure the 100k requests/day and 5M reads/day budgets.
+The public page is unauthenticated and may receive bursty traffic. Each uncached render is a D1 read,
+so high traffic could pressure the 100k requests/day and 5M reads/day budgets.
 
-**Mitigation:** the public response sets `Cache-Control: public, max-age=30`, so Cloudflare's edge serves repeat requests from cache without re-invoking the Worker or touching D1. At most one render per 30s per colo regardless of traffic. A 30-second-stale status page is acceptable for the MVP.
+Mitigation:
 
-The private page is low-traffic (operators behind Access) and is not cached, so it always reflects current state.
+- Public responses use `Cache-Control: public, max-age=30`.
+- Cloudflare edge serves repeat requests from cache without re-invoking the Worker or touching D1.
+- At most one render per 30s per colo reaches the Worker.
+- A 30-second-stale public status page is acceptable for the MVP.
+
+The private page is low-traffic because it is for operators behind Access. It is not cached, so it
+always reflects current state.
 
 ### Out of scope (MVP)
 
-Component groups, dependencies, subscriptions, email updates, status page API, SLA reporting, uptime charts, custom incident messages, multiple status pages. (Maintenance windows, an Atom feed and SVG status badges are now implemented.)
+Deferred beyond the MVP:
+
+- component groups
+- dependencies
+- subscriptions and email updates
+- status page API
+- SLA reporting
+- uptime charts
+- custom incident messages
+- multiple status pages
+
+Maintenance windows, an Atom feed and SVG status badges are now implemented.
 
 ## OpenMetrics Model — Phase 2 (not implemented)
 
@@ -549,7 +646,15 @@ Planned design for internal monitors. The platform would evaluate a curated
 subset of OpenMetrics values against configured rules in `alert_rules`; raw metric
 streams would not be persisted.
 
-**CPU budget note (Free Plan: 10ms CPU per invocation):** Exporters like `node_exporter` emit thousands of metric lines. Parsing the full payload can exceed the 10ms CPU limit. A scraper must parse only the metrics referenced by the monitor's `alert_rules` (filter by `metric_name` while streaming), not deserialize the entire document. Oversized payloads are capped.
+**CPU budget note (Free Plan: 10ms CPU per invocation):** exporters like `node_exporter` emit
+thousands of metric lines. Parsing the full payload can exceed the CPU limit.
+
+A future scraper must:
+
+- parse only metrics referenced by the monitor's `alert_rules`,
+- filter by `metric_name` while streaming,
+- avoid deserializing the entire document,
+- cap oversized payloads.
 
 Example metrics from blackbox_exporter:
 ```
@@ -635,15 +740,24 @@ queue() consumer
 
 ## Observability & Logging
 
-Runtime logging goes to **Cloudflare Workers Logs** (`observability.enabled = true`,
-`head_sampling_rate = 1`), viewed under Workers & Pages → the Worker → Observability (not Cloudflare
-One Insights). Runtime logs are deliberately **not** written to D1 — that would burn the Free Plan
-write budget. D1 holds long-term audit only for domain events (`incidents`, `notification_deliveries`).
+Runtime logging goes to **Cloudflare Workers Logs**:
 
-All logs are structured single-line JSON via `src/log.ts` (`log(level, event, fields)`), gated by a
-`LOG_LEVEL` var (default `info`; `debug` adds successful checks and probe timings). Level ordering:
-`debug < info < warn < error`; `configureLogging(env)` sets the threshold once per invocation at each
-entry point.
+- `observability.enabled = true`
+- `head_sampling_rate = 1`
+- viewed under Workers & Pages → the Worker → Observability
+- not Cloudflare One Insights
+
+Runtime logs are deliberately **not** written to D1 because that would burn the Free Plan write
+budget. D1 holds long-term audit only for domain events such as `incidents` and
+`notification_deliveries`.
+
+All logs are structured single-line JSON via `src/log.ts` (`log(level, event, fields)`). They are
+gated by the `LOG_LEVEL` var:
+
+- default: `info`
+- `debug`: adds successful checks and probe timings
+- level ordering: `debug < info < warn < error`
+- `configureLogging(env)` sets the threshold once per invocation at each entry point
 
 | When | Level | Events |
 |---|---|---|
@@ -652,9 +766,15 @@ entry point.
 | Always | error | `check.error`, `auth.error` |
 | Debug only | debug | `check.ok` (per successful check + probe timings) |
 
-**Never logged:** secrets or full webhook URLs (delivery-failure logs carry only channel id/type +
-error), and per-request public traffic. The Free Plan target is operational visibility, not long-term
-log retention; if logs approach the Free limit, lower `head_sampling_rate` or raise `LOG_LEVEL`.
+Never logged:
+
+- secrets
+- full webhook URLs
+- per-request public traffic
+
+Delivery-failure logs carry only channel id/type plus the error. The Free Plan target is operational
+visibility, not long-term log retention. If logs approach the Free limit, lower `head_sampling_rate`
+or raise `LOG_LEVEL`.
 
 ## Cloudflare Free Plan Constraints
 
@@ -676,20 +796,39 @@ incident open/resolve (not per check), volume stays far below the Free Plan's
 100k ops/day. The probing hot path runs inline in the cron tick — no Queues, no
 Service Bindings, no second Worker.
 
-**Analytics Engine** is available on the Free Plan (100k data points/day, 10k read queries/day). The MVP deliberately keeps time-series in D1 anyway, for:
-- a single storage backend (simpler backup, reconciliation, and import model),
-- read-after-write consistency (AE is eventually consistent and queried via the SQL API, not a binding),
-- straightforward local development and testing (`@cloudflare/vitest-pool-workers`).
+**Analytics Engine** is available on the Free Plan: 100k data points/day and 10k read queries/day.
+The MVP deliberately keeps time-series in D1 anyway.
 
-Per the design principle *"introduce services only for a demonstrated scaling problem,"* AE is a **Phase 2 path**, not an MVP dependency. The trigger is concrete: as monitor count approaches the D1 write ceiling (~30 at 60s), moving `metric_series` to AE removes ~half of all D1 writes and roughly doubles capacity to ~60 monitors. At 30 monitors that would be 30 × 1,440 ≈ 43k data points/day — under half the AE free limit. Result Store is the only write point, so the migration is localised.
+Reasons:
 
-**Request budget:** 1,440 Scheduler ticks/day + N monitor checks/day. At 30 monitors / 60s: 1,440 + 30×1,440 ≈ 45k requests/day, well under 100k.
+- One storage backend is simpler for backup, reconciliation and import behavior.
+- D1 gives read-after-write consistency; Analytics Engine is eventually consistent and queried via
+  the SQL API, not a binding.
+- Local development and testing stay straightforward with `@cloudflare/vitest-pool-workers`.
+
+Analytics Engine remains a **Phase 2 path**, not an MVP dependency. The trigger is concrete: when
+monitor count approaches the D1 write ceiling, around 30 monitors at 60-second intervals.
+
+Moving `metric_series` to Analytics Engine would:
+
+- remove roughly half of all D1 writes,
+- roughly double capacity to about 60 monitors,
+- use about 43k data points/day at 30 monitors (`30 × 1,440`), under half the AE free limit.
+
+Result Store is the only raw metric write point, so the migration is localized.
+
+**Request budget:**
+
+- 1,440 scheduler ticks/day
+- N monitor checks/day
+- at 30 monitors / 60s: `1,440 + 30 × 1,440 ≈ 45k` requests/day, well under 100k
 
 ---
 
 ## Configuration as Code
 
-All platform configuration is defined in YAML and is the source of truth. Workers never read YAML directly — they operate exclusively against D1.
+All platform configuration is defined in YAML and is the source of truth. Workers never read YAML
+directly; they operate exclusively against D1.
 
 ### Flow
 
@@ -740,7 +879,8 @@ The import step is idempotent and runs on every push to main via CI/CD.
 - `incidents`
 - `notification_deliveries`
 
-**Deletion semantics:** removing a monitor from YAML sets `monitors.enabled = false` (soft delete). Runtime history and open incidents are preserved.
+**Deletion semantics:** removing a monitor from YAML sets `monitors.enabled = false`, a soft delete.
+Runtime history and open incidents are preserved.
 
 ---
 
@@ -753,18 +893,48 @@ implemented MVP is described throughout the sections above (and summarised in th
 
 ## Design Principles
 
-- External probing runs natively in the Worker — no external probe agents.
+### Runtime shape
+
+- External probing runs natively in the Worker; there are no external probe agents.
 - TCP connect is the reachability primitive; ICMP is not required.
-- Alert evaluation works with operational state + the open-incident snapshot (D1), not with metrics history.
-- Incidents are tracked independently per metric class (connectivity vs `ssl_expiry`); the `incidents` table is the source of truth.
-- All data lives in D1: operational state, execution history (`monitor_executions`), time-series (`metric_series`), and uptime aggregates.
-- The probing hot path runs inline in the cron tick. Queues are used only for notifications (low volume); no Service Bindings, no second Worker.
-- Writes are minimised: `monitor_state` + one `uptime_hourly` upsert per check; `metric_series` only when actionable; `monitor_executions` only on status change.
+- The probing hot path runs inline in the cron tick.
+- Queues are used only for low-volume notification delivery.
+- There are no Service Bindings and no second Worker.
+
+### Data and writes
+
+- All data lives in D1: operational state, execution history, time-series and uptime aggregates.
+- Writes are minimized:
+  - `monitor_state` upsert per check,
+  - one `uptime_hourly` upsert per check,
+  - `metric_series` only when actionable,
+  - `monitor_executions` only on status change.
 - The MVP must run entirely within Cloudflare Free Plan limits.
 - Additional Cloudflare services are introduced only for a demonstrated scaling problem.
-- Alerting is incident-based, not check-based. Severity and thresholds are defined in `alert_rules`.
-- Notifications are asynchronous via a queue; delivery state is tracked in `notification_deliveries`; failed deliveries retry up to `max_retries`.
-- Notification routing: per-monitor channels take precedence; default channels are the fallback.
-- Configuration is defined in YAML (version-controlled) and imported into D1 via CI/CD. The Worker never reads YAML.
-- Secrets are referenced as `${VAR}` placeholders in config/D1 and resolved from the Worker's environment at send time — credentials never appear as literals in `config.yaml` or D1.
-- Status pages are read-only views over the same data; one Worker routes by **path** (`/public`, `/private`). Visibility is **fail-closed**: private data requires a valid session, enforced in Worker code independently of Cloudflare Access.
+
+### Alerting and notifications
+
+- Alerting is incident-based, not check-based.
+- Severity and thresholds are defined in `alert_rules`.
+- Alert evaluation uses operational state plus the D1 open-incident snapshot, not metrics history.
+- Incidents are tracked independently per metric class: connectivity vs `ssl_expiry`.
+- The `incidents` table is the source of truth.
+- Notifications are asynchronous via a queue.
+- Delivery state is tracked in `notification_deliveries`.
+- Failed deliveries retry up to `max_retries`.
+- Per-monitor notification channels take precedence; default channels are the fallback.
+
+### Configuration and security
+
+- Configuration is version-controlled YAML and imported into D1 via CI/CD.
+- The Worker never reads YAML.
+- Secrets are referenced as `${VAR}` placeholders in config/D1.
+- Secret values are resolved from the Worker's environment at send time.
+- Credentials never appear as literals in `config.yaml` or D1.
+
+### Status pages
+
+- Status pages are read-only views over the same data.
+- One Worker routes by **path** (`/public`, `/private`).
+- Visibility is **fail-closed**: private data requires a valid session.
+- Visibility is enforced in Worker code independently of Cloudflare Access.
