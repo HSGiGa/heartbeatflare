@@ -133,7 +133,7 @@ window and `${VAR}` secret — is in [CONFIGURATION.md](docs/CONFIGURATION.md).
   manual Cloudflare resources, secrets, verification
 - [Troubleshooting](docs/TROUBLESHOOTING.md) — common Cloudflare setup failures
 - [Architecture](docs/ARCHITECTURE.md) — system design, data model, free-plan budgets
-- [Roadmap](ROADMAP.md) — planned work and scaling directions
+- [Roadmap](docs/ROADMAP.md) — planned work and scaling directions
 
 The docs are plain Markdown today. The structure is intentionally close to what an MkDocs site can
 use later for Cloudflare Pages or GitHub Pages: overview first, task guides next, then reference

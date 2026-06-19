@@ -7,7 +7,7 @@
 > **Implementation status.** This document describes the system that runs today: one Cloudflare
 > Worker (`src/index.ts`) with `fetch` (status pages + API), `scheduled` (cron probing +
 > maintenance) and `queue` (notification delivery) entry points. For planned work, see
-> [ROADMAP.md](../ROADMAP.md).
+> [ROADMAP.md](ROADMAP.md).
 
 ## Overview
 
