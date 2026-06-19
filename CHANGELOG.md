@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Status page uptime bars are easier to read** — daily uptime bars are now taller, and warning/error
   segments have a larger minimum visible height so short degraded periods stand out more clearly.
 
+### Fixed
+
+- **Slack-compatible notification headers validate correctly** — `type: slack` channels now accept
+  `headers` in `config.schema.json`, matching the runtime support used by Slack-compatible webhooks
+  behind an authenticated proxy. ([#30](https://github.com/HSGiGa/heartbeatflare/issues/30))
+
 ## [1.2.0] - 2026-06-18
 
 ### Added

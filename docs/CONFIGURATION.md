@@ -139,7 +139,7 @@ implemented:
 
 | `type` | Required fields | Notes |
 | --- | --- | --- |
-| `slack` | `name`, `url` | Slack-compatible incoming webhook (works with Mattermost, etc.). Optional `channel`. |
+| `slack` | `name`, `url` | Slack-compatible incoming webhook (works with Mattermost, etc.). Optional `channel`; use `headers` for auth when a compatible webhook sits behind a proxy. |
 | `webhook` | `name`, `url` | Generic structured JSON webhook. Use `headers` for auth. |
 | `telegram` | `name`, `bot_token`, `chat_id` | Telegram Bot API. |
 | `email` | `name`, `from`, `to` | Cloudflare Email Service. On the Free Plan, every `to` address must be a verified Email Routing destination address. |
@@ -151,6 +151,8 @@ notification_channels:
     is_default: true                     # used when a monitor has no per-monitor channel
     url: ${MATTERMOST_WEBHOOK_URL}
     channel: "#alerts"
+    headers:
+      X-Healthcheck-Token: ${HEALTHCHECK_TOKEN}
 
   - name: Demo Webhook
     type: webhook

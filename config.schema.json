@@ -198,6 +198,13 @@
 					"type": "string",
 					"description": "Channel name for display purposes, e.g. \"#alerts\"."
 				},
+				"headers": {
+					"type": "object",
+					"description": "Additional HTTP headers. Values support ${VAR} substitution.",
+					"additionalProperties": {
+						"type": "string"
+					}
+				},
 				"templates": {
 					"$ref": "#/$defs/notification_templates"
 				},
