@@ -13,6 +13,41 @@ name into the generated `wrangler.jsonc`, so no resource IDs are ever stored in 
 
 You only need to supply credentials (below) and edit [`config.yaml`](CONFIGURATION.md).
 
+## What is automated, and what is manual
+
+heartbeatflare automates the Cloudflare resources that are safe to create by name on every deploy,
+and leaves account/security resources for you to create explicitly. This keeps deploys repeatable
+without hiding sensitive Cloudflare control-plane choices in application code.
+
+### Created or reconciled by the deploy pipeline
+
+| Resource | Created by | Notes |
+| --- | --- | --- |
+| Worker script | `wrangler deploy` | Name comes from `deploy.name`. |
+| D1 database | `npm run provision` | Created by name. Default: `${deploy.name}-prod-db`; override with `deploy.database_name`. |
+| Notification queue | `npm run provision` | Created by name. Default: `${deploy.name}-notifications`; override with `deploy.queue_name`. |
+| D1 schema | `npm run d1:migrate:prod` | Applies tracked migrations to the remote D1 database. |
+| Config rows in D1 | `npm run config:import` | Imports monitors, alert rules, notification channels, auth config and maintenance windows. |
+| Worker secrets referenced by `${VAR}` | `npm run secrets:sync` | Uploads values from `.env`, CI variables or GitHub `secrets` context when available. |
+| Heartbeat tokens | `npm run secrets:sync` | Auto-generates missing `HEARTBEAT_<ID>_TOKEN` secrets and prints the new token once. |
+| Email send binding | `npm run deploy` | Generated in `wrangler.jsonc` when `type: email` channels exist. |
+
+### Must be prepared manually in Cloudflare
+
+| Resource or setting | Why it is manual | Where to configure it |
+| --- | --- | --- |
+| Cloudflare account and `CLOUDFLARE_ACCOUNT_ID` | The project cannot choose the account for you. | Cloudflare dashboard account overview; store the id in `.env` or CI secrets. |
+| Deploy API token | Token scope is a security decision and depends on enabled features. | Cloudflare dashboard → My Profile → API Tokens; see [token permissions](#cloudflare-api-token-permissions). |
+| GitHub/GitLab secrets or local `.env` | CI credentials and third-party secrets must be supplied outside the repo. | GitHub Actions secrets, GitLab CI/CD variables, or local `.env`. |
+| Custom-domain zone | Cloudflare must already host the zone before a Worker route can use it. | Cloudflare dashboard → Websites / DNS. |
+| Cloudflare Access application for `/private` | Access policy, identity provider and allowed users are security policy. | Zero Trust dashboard → Access → Applications; scope it to `<host>/private`. |
+| Email Routing destination verification | Recipients must confirm Cloudflare's verification email before delivery is allowed. | Cloudflare dashboard → Email Routing → Destination addresses. |
+| Workers VPC Networks, Services, Tunnels and policies | Private-network reachability and egress policy are infrastructure decisions. | Cloudflare dashboard, Wrangler VPC commands, Terraform or your infrastructure repo. |
+| Third-party notification receivers | Slack/Mattermost/Telegram/webhook endpoints are owned outside Cloudflare. | The relevant external service; put resulting tokens/URLs in secrets. |
+
+A good first deploy order is: create the API token, add CI secrets, create `config.yaml`, deploy once,
+verify `/public`, then add optional pieces such as Access, Email and Workers VPC.
+
 ## GitHub Actions (recommended)
 
 The workflow `.github/workflows/deploy-cloudflare.yml` deploys on push to `main` and on manual
@@ -226,6 +261,10 @@ npm run provision -- --dry-run
 
 One prerequisite that can't be automated: the zone for `deploy.domain` must already exist in the
 Cloudflare account.
+
+`npm run provision` does not create Cloudflare Access applications, API tokens, zones, Workers VPC
+resources, Cloudflare Tunnels, Email Routing policies or third-party webhooks. Those resources are
+security/infrastructure boundaries and should be reviewed where they are owned.
 
 ## Verification
 

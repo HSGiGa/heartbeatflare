@@ -1,20 +1,25 @@
 # Configuration
 
-All platform configuration lives in `config.yaml`, validated by
-[`config.schema.json`](../config.schema.json). The repo ships a ready-to-edit
-[`config.example.yaml`](../config.example.yaml) — copy it to your own `config.yaml`, edit it, and
-**commit it in your repo** (`cp config.example.yaml config.yaml`). Local dev and tests fall back to
-the example when `config.yaml` is absent, but a **production deploy fails fast** without your own
-`config.yaml`, so a forgotten copy can't ship the demo.
+`config.yaml` describes the service you want heartbeatflare to run: the Worker name, optional
+Cloudflare Access settings, notification channels, monitors, alert rules and maintenance windows. It
+is validated by [`config.schema.json`](../config.schema.json).
 
-`config.yaml` is the single source of truth: the Worker never reads YAML at runtime — it is
-imported into D1 by the `config:import` deploy step, and the Worker operates exclusively against D1.
+Start from the tracked example and commit your own copy:
 
-Editing configuration is a git change: commit `config.yaml` and deploy (or push to `main`).
-The import is idempotent — removing a monitor, channel or window soft-disables or deletes it
-(see [Import semantics](#import-semantics)).
+```sh
+cp config.example.yaml config.yaml
+```
 
+Local dev and tests can fall back to `config.example.yaml`, but production deploys require your own
+`config.yaml`. That deliberate failure mode prevents the demo config from being shipped by accident.
+
+The Worker does **not** read YAML at runtime. During deploy, `config:import` reads `config.yaml`,
+reconciles the relevant D1 tables, and the deployed Worker reads D1 plus Worker secrets. Treat every
+config edit as a normal git change: edit YAML, commit it, deploy it.
+
+- [Mental model](#mental-model)
 - [File overview](#file-overview)
+- [Editing workflow](#editing-workflow)
 - [`deploy`](#deploy)
 - [`auth` (optional)](#auth-optional)
 - [`notification_channels`](#notification_channels)
@@ -26,19 +31,46 @@ The import is idempotent — removing a monitor, channel or window soft-disables
 - [Import semantics](#import-semantics)
 - [Full example](#full-example)
 
+## Mental model
+
+The YAML file answers five questions:
+
+| Question | Config block | Runtime effect |
+| --- | --- | --- |
+| What Worker and Cloudflare data resources should this deployment use? | `deploy` | Generates `wrangler.jsonc`; creates or finds D1 and Queue by name. |
+| Should `/private` trust Cloudflare Access JWTs? | `auth` | Stores Access verifier settings in D1; actual Access app is configured in Cloudflare. |
+| Where should incident messages go? | `notification_channels` | Stores channel definitions in D1; secret values stay in Worker Secrets. |
+| What should be checked? | `monitors` | Stores monitors, probe intervals, alert rules and routing in D1. |
+| Is planned work happening? | `maintenance` | Stores windows in D1; active windows suppress checks and show a banner. |
+
+`config.yaml` owns desired state. Runtime history, incidents, executions, metrics and notification
+delivery attempts are owned by the Worker and are not overwritten by config import.
+
 ## File overview
 
 ```yaml
-deploy:       # required — worker name, optional custom domain, resource name overrides
-auth:         # optional — Cloudflare Access verification for the /private page
+deploy:                  # required — worker name, optional custom domain, resource name overrides
+auth:                    # optional — Cloudflare Access verification for the /private page
 notification_channels:   # optional — where incident notifications are delivered
-monitors:     # required — what to probe and the alert rules for each
-maintenance:  # optional — planned-work windows that suppress probing + show a banner
+monitors:                # required — what to probe and the alert rules for each monitor
+maintenance:             # optional — planned-work windows that suppress probing + show a banner
 ```
 
-Only `deploy` and `monitors` are required. Everything else is optional — in particular the
-`auth` block: omit it and `/public` still deploys and serves normally (the `/private` page
-simply shows the same public-only view until you configure Access).
+Only `deploy` and `monitors` are required. Everything else is optional. In particular, omit `auth`
+if you only need the public status page: `/public`, `/feed.xml` and public badges still work.
+
+## Editing workflow
+
+1. Edit `config.yaml`.
+2. Keep secrets as `${VAR}` placeholders instead of literal tokens or webhook URLs.
+3. Run a local check when possible: `npm run wrangler:generate:local` catches deploy-time config
+   issues such as VPC binding references and invalid probe headers.
+4. Commit the config change.
+5. Deploy locally with `npm run deploy:prod`, or push and let CI run the same pipeline.
+
+The import is idempotent. Adding or changing items updates D1 in place. Removing a monitor or
+channel soft-disables it so runtime history is preserved; removing a maintenance window deletes that
+window. Details are in [Import semantics](#import-semantics).
 
 ## `deploy`
 
@@ -56,8 +88,8 @@ deploy:
 
 | Field | Required | Description |
 | --- | --- | --- |
-| `name` | yes | Worker name. The D1 database (`${name}-prod-db`) and queue (`${name}-notifications`) derive from it. |
-| `domain` | no | Custom domain route. Omit to serve only on `<name>.<subdomain>.workers.dev`. The zone must already exist in the Cloudflare account. |
+| `name` | yes | Worker name, lowercase letters/numbers/dashes. Used for the Worker script and as the default prefix for D1 and Queue names. |
+| `domain` | no | Custom domain route, for example `status.example.com`. Omit it to serve only on `<name>.<subdomain>.workers.dev`. The DNS zone must already exist in the Cloudflare account. |
 | `database_name` | no | Override the derived D1 database name. |
 | `queue_name` | no | Override the derived queue name. |
 | `vpc` | no | Cloudflare Workers VPC bindings for `mode: internal` monitors. See [`deploy.vpc`](#deployvpc-internal-monitors). |
@@ -132,6 +164,12 @@ to the `/private` path** — see [Cloudflare Access for `/private`](DEPLOYMENT.m
 in the deployment guide. `team_name` and `aud` are `${VAR}` placeholders resolved from Worker
 secrets at runtime (see [Secrets](#secrets-and-var-placeholders)).
 
+| Field | Required | Description |
+| --- | --- | --- |
+| `provider` | yes | Must be `cloudflare_access`. |
+| `team_name` | yes | Zero Trust team name, usually the label before `.cloudflareaccess.com`; use `${CLOUDFLARE_ACCESS_TEAM_NAME}`. |
+| `aud` | yes | Access Application AUD tag from the Cloudflare dashboard; use `${CLOUDFLARE_ACCESS_AUD}`. |
+
 ## `notification_channels`
 
 Where incident open / resolve / escalation messages are delivered. Four channel types are
@@ -193,6 +231,31 @@ with `templates.down`, `templates.recovered` and `templates.escalation`. Support
       recovered: "{monitor} recovered after {count} checks"
 ```
 
+Common channel fields:
+
+| Field | Applies to | Description |
+| --- | --- | --- |
+| `name` | all | Human-readable channel name. Also used by monitor-level `notification_channels`; keep it stable. |
+| `type` | all | One of `slack`, `webhook`, `telegram`, `email`. |
+| `is_default` | all | When `true`, this channel receives alerts for monitors that do not define their own channel list. Default `false`. |
+| `templates.down` | all | Optional message text for incident-open notifications. |
+| `templates.recovered` | all | Optional message text for recovery notifications. |
+| `templates.escalation` | all | Optional message text for escalation reminders. |
+
+Type-specific fields:
+
+| Field | Applies to | Description |
+| --- | --- | --- |
+| `url` | `slack`, `webhook` | Incoming webhook URL. Prefer `${VAR}` instead of a literal secret URL. |
+| `headers` | `slack`, `webhook` | Extra HTTP headers for the notification request. Values can use `${VAR}` placeholders. |
+| `channel` | `slack` | Optional Slack/Mattermost channel label for display or compatible webhooks. |
+| `bot_token` | `telegram` | Telegram bot token. Use `${TELEGRAM_BOT_TOKEN}` or similar. |
+| `chat_id` | `telegram` | Telegram chat, group or channel id. Can be a literal id or `${VAR}`. |
+| `from` | `email` | Sender address allowed by the generated Cloudflare Email binding. |
+| `from_name` | `email` | Sender display name. Defaults to `HeartBeat`. |
+| `to` | `email` | One verified Email Routing destination address or a list of them. |
+| `subject_prefix` | `email` | Optional prefix for email subjects, for example `[heartbeatflare]`. |
+
 ### Generic webhook payload
 
 `type: webhook` channels POST JSON:
@@ -234,6 +297,51 @@ monitors:
         failures: 2
         recovery: 2
         cooldown: 300s
+```
+
+Monitor-level fields:
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `name` | yes | Human-readable name. The stable monitor id is derived from it by lowercasing and hyphenating, so rename carefully if you want to preserve history under the same id. |
+| `type` | yes | `http`, `tcp`, `dns` or `heartbeat`. `openmetrics` is reserved and not documented as a ready monitor type yet. |
+| `mode` | yes | `external` probes over the public internet. `internal` probes through a `deploy.vpc` binding and currently supports only `http` and `tcp`. |
+| `visibility` | no | `public` shows on `/public`, feed and badges. `private` shows only on `/private`. Default `private`. |
+| `target` | yes, except heartbeat | URL for HTTP, `host:port` for TCP, hostname for DNS. Omit for `type: heartbeat`. |
+| `interval` | no | Check interval or expected heartbeat period. Minimum `60s`; examples: `60s`, `5m`, `6h`, `1d`. Default `5m`. |
+| `alerts` | no | Alert rules for this monitor. If omitted, no connectivity incident is opened for that monitor. HTTP/TCP SSL expiry defaults may still be added when SSL checks are enabled. |
+| `enabled` | no | Set `false` to pause the monitor while keeping it visible and preserving history. Default `true`. |
+| `ssl` | no | For external HTTP/TCP monitors, enables SSL expiry checks. Default `true`; set `false` for plaintext TCP or when certificate checks do not apply. |
+| `headers` | HTTP only | Extra HTTP probe headers. Values can use `${VAR}` Worker secrets. `User-Agent` cannot be set here. |
+| `notification_channels` | no | List of channel names for this monitor. If omitted or empty, the monitor uses channels with `is_default: true`. |
+| `vpc_binding` | internal only | Name of a `deploy.vpc.networks[].binding` or `deploy.vpc.services[].binding`. Required for `mode: internal`; invalid for `mode: external`. |
+
+Per-monitor notification routing example:
+
+```yaml
+notification_channels:
+  - name: Ops Webhook
+    type: webhook
+    url: ${OPS_WEBHOOK_URL}
+    is_default: true
+  - name: Database Team
+    type: telegram
+    bot_token: ${TELEGRAM_BOT_TOKEN}
+    chat_id: ${DATABASE_TEAM_CHAT_ID}
+
+monitors:
+  - name: Primary Postgres
+    type: tcp
+    mode: external
+    visibility: private
+    target: db.example.com:5432
+    interval: 60s
+    notification_channels: [Database Team]
+    alerts:
+      - condition: "connect != true"
+        severity: critical
+        failures: 2
+        recovery: 2
 ```
 
 ### HTTP / HTTPS monitors
@@ -496,6 +604,13 @@ every `${VAR}` referenced in `config.yaml` and pushes the matching secrets to th
 `url: ${MY_NEW_HOOK}` just means providing `MY_NEW_HOOK` as a CI secret or `wrangler secret put`.
 For how secrets are supplied and synced, see [Runtime Worker secrets](DEPLOYMENT.md#runtime-worker-secrets)
 in the deployment guide.
+
+Two placeholder timings matter:
+
+| Placeholder location | Resolved when | Why |
+| --- | --- | --- |
+| Notification channels, `auth`, HTTP probe `headers`, Telegram tokens | Runtime | The Worker can read Worker Secrets while handling requests, probes and queue messages. |
+| `deploy.vpc` resource ids | Deploy-time wrangler generation | VPC bindings require literal resource ids in `wrangler.jsonc` before the Worker is deployed. |
 
 ## Import semantics
 
