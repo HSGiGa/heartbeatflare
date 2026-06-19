@@ -4,12 +4,10 @@
 > heartbeatflare, start with [GETTING_STARTED.md](GETTING_STARTED.md); for `config.yaml` fields see
 > [CONFIGURATION.md](CONFIGURATION.md), and for deploy paths see [DEPLOYMENT.md](DEPLOYMENT.md).
 
-> **Implementation status (MVP).** This document describes the implemented system.
-> The MVP is a **single Cloudflare Worker** (`src/index.ts`) exposing three entry
-> points — `fetch` (status pages + API), `scheduled` (cron probing + maintenance),
-> and `queue` (notification delivery). The earlier multi-Worker / Service-Bindings
-> design and OpenMetrics scraping are **not implemented**; OpenMetrics remains a
-> Phase 2 path. Sections below reflect the code as built.
+> **Implementation status.** This document describes the system that runs today: one Cloudflare
+> Worker (`src/index.ts`) with `fetch` (status pages + API), `scheduled` (cron probing +
+> maintenance) and `queue` (notification delivery) entry points. For planned work, see
+> [ROADMAP.md](../ROADMAP.md).
 
 ## Overview
 
@@ -28,9 +26,6 @@ Supported monitoring capabilities (implemented):
 - Maintenance windows (planned work; affected monitors not probed while active)
 - Public + private status pages (one Worker, path-based routing)
 - Atom feed (`/feed.xml`) and embeddable SVG status badges (`/badge/<monitor>.svg`)
-
-Planned (Phase 2, not implemented): OpenMetrics collection from internal services
-via Cloudflare Tunnel.
 
 ## Architecture
 
@@ -243,7 +238,7 @@ Stores operational state and execution history.
 ```
 id                    -- slug derived from name
 name
-type                  -- http | tcp | dns | heartbeat (openmetrics reserved); plain TEXT, no CHECK
+type                  -- http | tcp | dns | heartbeat; plain TEXT, no CHECK
 mode                  -- external | internal
 visibility            -- public | private  (controls status page exposure)
 scrape_url            -- target (URL / host:port / hostname); NULL for heartbeat (push) monitors
@@ -252,7 +247,6 @@ vpc_binding           -- mode: internal only: name of the deploy.vpc binding pro
 interval_seconds      -- probe interval; for heartbeat, the expected beat period
 enabled
 paused                -- 1 = temporarily not probed (still shown)
-group_id              -- nullable FK → monitor_groups (feature: components/groups; inert until built)
 heartbeat_token       -- heartbeat monitors only: `secret:<NAME>` ref to the token's Worker Secret (never the value)
 created_at
 updated_at
@@ -281,7 +275,7 @@ http/tcp monitors with `ssl` enabled when none are specified.
 **monitor_state** — current operational state per monitor
 ```
 monitor_id
-status                    -- up | degraded | down | unknown
+status                    -- up | down | unknown
 last_check_at
 last_success_at
 consecutive_failures
@@ -299,7 +293,7 @@ id                    -- per-check execution UUID
 monitor_id
 started_at
 completed_at
-status                -- up | degraded | down
+status                -- up | down
 latency_ms
 error
 worker_region
@@ -326,14 +320,7 @@ started_at
 resolved_at
 reason
 last_notified_at      -- last notification time (escalation re-notify cadence)
-acknowledged_at       -- nullable (feature: acknowledge; inert until built)
-acknowledged_by       -- nullable (feature: acknowledge)
-created_by            -- nullable operator id for manual incidents; NULL = system-generated
 ```
-
-The `incident_updates(id, incident_id, created_at, status, message)` table holds the incident
-timeline (investigating → identified → resolved) for the manual-incidents feature — also inert
-until that code lands.
 
 Incident visibility is inherited from the monitor (`monitors.visibility`). There is no separate
 incident visibility column. The public status page shows incidents only for public monitors.
@@ -447,14 +434,6 @@ The aggregate tables are used for:
 - SLA calculations
 - trend analysis
 
-**Phase 2 upgrade path:** move `metric_series` writes to Analytics Engine when either:
-
-- Analytics Engine Free Plan fit is confirmed for this project, or
-- the project moves to a paid plan.
-
-The migration is localized because Result Store is the only write point for raw metric samples. The
-rest of the system can keep reading the same higher-level aggregates and incident state.
-
 ---
 
 ### Schema evolution under additive-only migrations
@@ -462,63 +441,26 @@ rest of the system can keep reading the same higher-level aggregates and inciden
 Migrations are **additive-only** (`npm run migration:lint` blocks `DROP`/`RENAME`). In SQLite,
 changing a `CHECK` constraint or dropping `NOT NULL` is impossible via `ALTER` — it requires a full
 table rebuild (`CREATE …_new` → `INSERT … SELECT` → `DROP TABLE` → `RENAME` under
-`PRAGMA foreign_keys=OFF`, with a `-- lint-ok:` override). So every `CHECK (… IN (…))` enum and every
-`NOT NULL` column is effectively a **one-way door**. The v1 baseline is forward-proofed accordingly
-so these future features need no schema migration:
+`PRAGMA foreign_keys=OFF`, with a `-- lint-ok:` override).
 
-- **Growable enums carry no `CHECK`.** `monitors.type`, `alert_rules.condition`/`severity`,
-  `incidents.severity`, `notification_channels.type` are plain `TEXT` — input is validated at import
-  by `config.schema.json`. New monitor types, conditions, severities or channel types add no rebuild.
-- **`incidents.alert_rule_id` is nullable**, plus `acknowledged_at` / `acknowledged_by` / `created_by`
-  columns and an `incident_updates` timeline table — for manual incidents and acknowledge/timeline.
-- **OpenMetrics / arbitrary metrics:** `metric_samples(monitor_id, metric_name, value, recorded_at,
-  labels)` (raw key/value) plus `metric_sample_hourly` / `metric_sample_daily` aggregates
-  (count/sum/min/max → avg), mirroring the uptime rollups. Result store is the only write point.
-- **Components/groups:** `monitor_groups` + `monitors.group_id` (nullable, `ON DELETE SET NULL`).
-- **Push heartbeat** (implemented): `monitors.heartbeat_token` holds the `secret:<NAME>` token
-  reference; `type=heartbeat` is a plain-`TEXT` value. The `/beat` endpoint and scheduler miss
-  detection landed with no schema migration.
-- **Maintenance windows** (implemented): `maintenance_windows` + `maintenance_window_monitors`;
-  active windows are handled by skipping probes, so no per-sample "during maintenance" marker is needed.
-
-These tables/columns exist in the baseline but are inert until the corresponding feature code lands.
-
-**Out of scope (single-account self-host).** Multi-tenancy / `account_id` is deferred;
-it can be added additively (nullable) if ever needed. **Multi-region probing** is also deferred — it
-would add a region dimension to `monitor_state`/`uptime_*` primary keys (a rebuild), so it is left
-out of the baseline intentionally.
+That makes `CHECK (… IN (…))` enums and `NOT NULL` columns effectively one-way doors. To keep future
+schema changes additive, growable enums such as `monitors.type`, `alert_rules.condition` /
+`severity`, `incidents.severity` and `notification_channels.type` are plain `TEXT`. Input is
+validated at import by `config.schema.json`.
 
 ---
-
-### Optional R2 Storage
-
-Used for:
-- Raw OpenMetrics payloads
-- Debug snapshots
-- Audit archives
-- Incident evidence
-
-Not required for MVP.
 
 ## Monitor Status Model
 
 ```
 unknown   -- no checks completed yet
 up        -- all checks passing within thresholds
-degraded  -- checks passing but a warning threshold exceeded
 down      -- check failing (probe_success == 0 or connection refused)
 ```
 
-> **Status note:** the current probe path sets only `up` or `down` on
-> `monitor_state.status`. `degraded` is defined in the schema and rendered by the
-> status page, but is **not currently produced** — warning conditions (e.g. SSL
-> expiry) open a *warning incident* without changing the monitor's status. Driving
-> `monitor_state.status = 'degraded'` from warning thresholds is a Phase 2 item.
-
-Intended meaning of `degraded` (Phase 2):
-- SSL certificate expires soon
-- HTTP response latency > configured threshold
-- TCP connect time > configured threshold
+> **Status note:** the current probe path sets `monitor_state.status` to `up` or `down`.
+> Warning conditions, such as SSL expiry, open a warning incident without changing the monitor's
+> status.
 
 ## Status Pages
 
@@ -577,7 +519,6 @@ Status vocabulary (mapped from internal `monitor_state.status`):
 ```
 internal    public
 up        → Operational
-degraded  → Degraded
 down      → Outage
 unknown   → Operational   (transient pre-first-check state; see note)
 ```
@@ -603,7 +544,6 @@ Status vocabulary (internal values shown directly):
 
 ```
 Up
-Degraded
 Down
 Unknown
 ```
@@ -624,46 +564,6 @@ Mitigation:
 
 The private page is low-traffic because it is for operators behind Access. It is not cached, so it
 always reflects current state.
-
-### Out of scope (MVP)
-
-Deferred beyond the MVP:
-
-- component groups
-- dependencies
-- subscriptions and email updates
-- status page API
-- SLA reporting
-- uptime charts
-- custom incident messages
-- multiple status pages
-
-Maintenance windows, an Atom feed and SVG status badges are now implemented.
-
-## OpenMetrics Model — Phase 2 (not implemented)
-
-Planned design for internal monitors. The platform would evaluate a curated
-subset of OpenMetrics values against configured rules in `alert_rules`; raw metric
-streams would not be persisted.
-
-**CPU budget note (Free Plan: 10ms CPU per invocation):** exporters like `node_exporter` emit
-thousands of metric lines. Parsing the full payload can exceed the CPU limit.
-
-A future scraper must:
-
-- parse only metrics referenced by the monitor's `alert_rules`,
-- filter by `metric_name` while streaming,
-- avoid deserializing the entire document,
-- cap oversized payloads.
-
-Example metrics from blackbox_exporter:
-```
-probe_success
-probe_duration_seconds
-probe_http_status_code
-probe_ssl_earliest_cert_expiry
-probe_tcp_connect_duration_seconds
-```
 
 ## Monitoring Types
 
@@ -704,10 +604,6 @@ TLS introspection is unavailable in the Workers sandbox, so cert expiry is fetch
 from an external API (ssl-checker.io, fallback crt.sh) and cached 6h in the Cache
 API. Treated as a best-effort signal (`ssl_days_left`); the authoritative
 connectivity signal remains the HTTP/TCP check itself.
-
-### OpenMetrics (internal) — Phase 2, not implemented
-Planned: scrape `/metrics` or `/probe` through a Cloudflare Tunnel and evaluate a
-configured subset of metrics. No code today.
 
 ## Alerting Flow
 
@@ -789,33 +685,11 @@ The platform runs entirely within the Cloudflare Free Plan.
 | Edge cache | Free | Public pages/API cached 60s via Cache API — caps Worker + D1 load |
 | D1 | 5M reads/day, 100k writes/day, 5GB | All data; ~2 writes/check → ~30 monitors at 60s |
 | Queues | 100k ops/day (Free) | Notifications only — low volume (only on incident open/resolve) |
-| R2 | 10GB, 1M ops/month | Optional, not used |
 
 **Queues are used for notifications only.** Because messages are produced only on
 incident open/resolve (not per check), volume stays far below the Free Plan's
 100k ops/day. The probing hot path runs inline in the cron tick — no Queues, no
 Service Bindings, no second Worker.
-
-**Analytics Engine** is available on the Free Plan: 100k data points/day and 10k read queries/day.
-The MVP deliberately keeps time-series in D1 anyway.
-
-Reasons:
-
-- One storage backend is simpler for backup, reconciliation and import behavior.
-- D1 gives read-after-write consistency; Analytics Engine is eventually consistent and queried via
-  the SQL API, not a binding.
-- Local development and testing stay straightforward with `@cloudflare/vitest-pool-workers`.
-
-Analytics Engine remains a **Phase 2 path**, not an MVP dependency. The trigger is concrete: when
-monitor count approaches the D1 write ceiling, around 30 monitors at 60-second intervals.
-
-Moving `metric_series` to Analytics Engine would:
-
-- remove roughly half of all D1 writes,
-- roughly double capacity to about 60 monitors,
-- use about 43k data points/day at 30 monitors (`30 × 1,440`), under half the AE free limit.
-
-Result Store is the only raw metric write point, so the migration is localized.
 
 **Request budget:**
 
@@ -883,13 +757,6 @@ The import step is idempotent and runs on every push to main via CI/CD.
 Runtime history and open incidents are preserved.
 
 ---
-
-## Roadmap
-
-Planned (Phase 2) and deferred work is tracked in the
-[Roadmap issue](https://github.com/HSGiGa/heartbeatflare/issues/12), not in this document. The
-implemented MVP is described throughout the sections above (and summarised in the
-[Implementation status](#monitoring-platform-architecture) note at the top).
 
 ## Design Principles
 

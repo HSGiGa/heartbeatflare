@@ -329,8 +329,7 @@ Monitor-level fields:
 
 - `name` (required): human-readable name. The stable monitor id is derived from it by lowercasing
   and hyphenating, so rename carefully if you want to preserve history under the same id.
-- `type` (required): `http`, `tcp`, `dns` or `heartbeat`. `openmetrics` is reserved and not
-  documented as a ready monitor type yet.
+- `type` (required): `http`, `tcp`, `dns` or `heartbeat`.
 - `mode` (required): `external` probes over the public internet. `internal` probes through a
   `deploy.vpc` binding and currently supports only `http` and `tcp`.
 - `visibility`: `public` shows on `/public`, feed and badges. `private` shows only on `/private`.
