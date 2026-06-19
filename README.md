@@ -23,14 +23,15 @@ pages.
 - **Heartbeat checks** for jobs that push their own success signal: backups, cron jobs, queue
   consumers, ETL runs and similar background work.
 
-Each monitor has its own interval (60s minimum), visibility (`public` or `private`), alert rules and
-optional notification routing.
+Each monitor has its own interval (60s minimum), visibility (`public` or `private`), network mode
+(`external` or `internal`), alert rules and optional notification routing. Visibility controls where
+the result is shown; mode controls how the Worker reaches the target.
 
 ### Status pages
 
 - **Public page** for customer-facing service status at `/public`.
-- **Private page** for internal monitors at `/private`, protected by Cloudflare Access when you turn
-  it on.
+- **Private page** for operator-only monitors at `/private`, protected by Cloudflare Access when you
+  turn it on.
 - **90-day uptime bars, latency sparklines and incident history** for quick triage.
 - **Atom feed and SVG badges** so you can embed service status in docs, dashboards or README files.
 

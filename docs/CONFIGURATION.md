@@ -299,6 +299,22 @@ monitors:
         cooldown: 300s
 ```
 
+Two monitor fields are easy to mix up, but they are independent:
+
+| Axis | Values | Controls | Does not control |
+| --- | --- | --- | --- |
+| `visibility` | `public`, `private` | Who can see the monitor result on status pages, feeds and badges. | How the Worker reaches the target. |
+| `mode` | `external`, `internal` | Which network path the probe uses. | Whether the result is public or private. |
+
+That means all four combinations are valid when the monitor type supports the selected mode:
+
+| Example | Meaning |
+| --- | --- |
+| `mode: external`, `visibility: public` | Public internet target shown on the public status page. |
+| `mode: external`, `visibility: private` | Public internet target monitored for operators only. |
+| `mode: internal`, `visibility: private` | Private-network target shown only on `/private`. |
+| `mode: internal`, `visibility: public` | Private-network target whose status is safe to publish, while the target itself remains unreachable from the public internet. |
+
 Monitor-level fields:
 
 | Field | Required | Description |
@@ -404,6 +420,10 @@ By default monitors are `mode: external` and probe over the public internet. `mo
 monitors probe **private** targets through a Workers VPC binding declared under
 [`deploy.vpc`](#deployvpc-internal-monitors). Set `vpc_binding` to the name of a network or service
 binding; HTTP probes use the binding's `fetch()`, TCP probes its `connect()`.
+
+`mode: internal` does not automatically mean `visibility: private`. Use `visibility` deliberately:
+set it to `private` for operator-only checks, or `public` when it is acceptable to publish only the
+status of a private dependency.
 
 ```yaml
   - name: Internal API
