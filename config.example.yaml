@@ -19,10 +19,6 @@ deploy:
   #   services:                # scoped access to a single private service (host:port fixed by the service)
   #     - binding: DEMO_SERVICE
   #       service_id: ${DEMO_VPC_SERVICE_ID}
-  vpc:
-    services:
-      - binding: DEMO_SERVICE
-        service_id: ${DEMO_VPC_SERVICE_ID}
 
 auth:
   provider: cloudflare_access
@@ -41,8 +37,8 @@ notification_channels:
     from: noreply@bubblech.com
     from_name: HeartBeat
     to:
-      - vbondarenko@modem.by
-      - admin@modem.by
+      - ops@example.com
+      - oncall@example.com
     is_default: true
 
 monitors:
@@ -142,18 +138,21 @@ monitors:
   #       severity: critical
   #       failures: 2
   #       recovery: 2
-  - name: Demo Internal Service (Public)
-    type: http
-    mode: internal
-    vpc_binding: DEMO_SERVICE
-    visibility: public
-    target: http://127.0.0.1/identity
-    interval: 5m
-    alerts:
-      - condition: "status != 200"
-        severity: critical
-        failures: 2
-        recovery: 2
+  # mode: internal does not imply visibility: private. Publish the status of a private dependency
+  # by setting visibility: public — the target itself stays unreachable from the public internet.
+  # - name: Demo Internal Service (Public)
+  #   type: http
+  #   mode: internal
+  #   vpc_binding: DEMO_SERVICE
+  #   visibility: public
+  #   target: http://demo.internal/identity
+  #   interval: 5m
+  #   ssl: false
+  #   alerts:
+  #     - condition: "status != 200"
+  #       severity: critical
+  #       failures: 2
+  #       recovery: 2
   - name: Demo Failing Endpoint
     type: http
     mode: external

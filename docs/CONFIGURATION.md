@@ -21,11 +21,12 @@ config edit as a normal git change: edit YAML, commit it, deploy it.
 - [File overview](#file-overview)
 - [Editing workflow](#editing-workflow)
 - [`deploy`](#deploy)
-- [`auth` (optional)](#auth-optional)
-- [`notification_channels`](#notification_channels)
 - [`monitors`](#monitors)
 - [`alerts`](#alerts)
+- [`notification_channels`](#notification_channels)
+- [`auth` (optional)](#auth-optional)
 - [`maintenance`](#maintenance)
+- [Internal monitors via Workers VPC](#deployvpc-internal-monitors)
 - [Public endpoints](#public-endpoints)
 - [Secrets and `${VAR}` placeholders](#secrets-and-var-placeholders)
 - [Import semantics](#import-semantics)
@@ -99,196 +100,6 @@ Fields:
 - `queue_name`: override the derived queue name.
 - `vpc`: Cloudflare Workers VPC bindings for `mode: internal` monitors. See
   [`deploy.vpc`](#deployvpc-internal-monitors).
-
-### `deploy.vpc` (internal monitors)
-
-> **Beta.** [Cloudflare Workers VPC](https://developers.cloudflare.com/workers-vpc/) is in beta; its
-> API/config may change. Verify the current Cloudflare docs before relying on it in production.
-
-`mode: internal` monitors probe **private** targets through a Workers VPC binding instead of the
-public internet. heartbeatflare only *consumes* pre-existing VPC resources by id/binding — it never
-provisions Networks, Services, Tunnels, routes, CIDRs, or Zero Trust policies. Manage those through
-the Cloudflare dashboard, Terraform, or a dedicated infrastructure repo.
-
-```yaml
-deploy:
-  name: status
-  vpc:
-    networks:                      # tunnel-backed VPC Networks → generated as wrangler vpc_networks
-      - binding: DEMO_NETWORK
-        tunnel_id: ${DEMO_TUNNEL_ID}
-        # remote: true             # default true; harmless for production deploys
-    services:                      # scoped VPC Services → generated as wrangler vpc_services
-      - binding: DEMO_SERVICE
-        service_id: ${DEMO_VPC_SERVICE_ID}
-```
-
-- A monitor selects a binding by name via [`vpc_binding`](#internal-monitors-mode-internal).
-- **Networks** give broad access to any target reachable through a Cloudflare Tunnel; the monitor's
-  `target` host:port is the real private address. Cloudflare Mesh (`network_id: cf1:network`) is
-  **not supported in v1** — tunnel-backed networks only (use `tunnel_id`).
-- **Services** scope access to a single private host:port fixed by `service_id`. For a service the
-  monitor's `target` host:port is **ignored** for routing (it only sets the HTTP `Host` / TLS SNI);
-  only the path matters.
-- **Network risk:** a tunnel-backed `vpc_networks` binding exposes the Worker to whatever the
-  `cloudflared` connector can reach from its runtime environment. In Kubernetes, that can include
-  other `*.svc.cluster.local` services, ClusterIP services in other namespaces, pod IPs, node/internal
-  networks, kube-dns, and possibly the Kubernetes API unless egress is restricted. Prefer
-  `vpc_services` for a fixed target. If you use `vpc_networks`, add Kubernetes NetworkPolicy or
-  equivalent firewall rules around the `cloudflared` connector so it can reach only the intended
-  private services plus required DNS/Cloudflare egress.
-- Resource ids (`tunnel_id`, `service_id`) are account/environment specific — provide them via
-  `.env` locally and CI env/secrets in deployment, referenced as `${VAR}` placeholders. Unlike
-  `headers` (`PROBE_HEADERS`, resolved at probe runtime), VPC ids are substituted at
-  **`wrangler.jsonc` generation time** because a binding needs a literal id at deploy time. Binding
-  names are not secret and may stay in `config.yaml`. In local mode an unset `${VAR}` simply omits
-  that binding (so dev/test never fail on absent infrastructure ids); a deploy fails fast.
-
-Fields:
-
-- `networks[].binding` (required): Worker binding name referenced by a monitor's `vpc_binding`.
-  Unique across networks and services.
-- `networks[].tunnel_id` (required): Cloudflare Tunnel UUID, or `${VAR}`. `network_id` / Mesh is
-  unsupported in v1.
-- `networks[].remote`: use the remote resource during local dev. Default `true`.
-- `services[].binding` (required): Worker binding name referenced by a monitor's `vpc_binding`.
-  Unique across networks and services.
-- `services[].service_id` (required): VPC Service UUID, or `${VAR}`.
-- `services[].remote`: use the remote resource during local dev. Default `true`.
-
-## `auth` (optional)
-
-Enables Cloudflare Access JWT verification for the `/private` page. **This block is optional** —
-without it, `/public` works and `/private` falls back to the public-only view.
-
-```yaml
-auth:
-  provider: cloudflare_access
-  team_name: "${CLOUDFLARE_ACCESS_TEAM_NAME}"
-  aud: "${CLOUDFLARE_ACCESS_AUD}"
-```
-
-The Access application itself is created manually in the Cloudflare dashboard and **must be scoped
-to the `/private` path** — see [Cloudflare Access for `/private`](DEPLOYMENT.md#cloudflare-access-for-private)
-in the deployment guide. `team_name` and `aud` are `${VAR}` placeholders resolved from Worker
-secrets at runtime (see [Secrets](#secrets-and-var-placeholders)).
-
-Fields:
-
-- `provider` (required): must be `cloudflare_access`.
-- `team_name` (required): Zero Trust team name, usually the label before `.cloudflareaccess.com`;
-  use `${CLOUDFLARE_ACCESS_TEAM_NAME}`.
-- `aud` (required): Access Application AUD tag from the Cloudflare dashboard; use
-  `${CLOUDFLARE_ACCESS_AUD}`.
-
-## `notification_channels`
-
-Where incident open / resolve / escalation messages are delivered. Four channel types are
-implemented:
-
-Supported channel types:
-
-- `slack`: requires `name` and `url`. Slack-compatible incoming webhook; works with Mattermost and
-  similar tools. Optional `channel`; use `headers` for auth when a compatible webhook sits behind a
-  proxy.
-- `webhook`: requires `name` and `url`. Sends a structured JSON payload. Use `headers` for auth.
-- `telegram`: requires `name`, `bot_token` and `chat_id`. Uses the Telegram Bot API.
-- `email`: requires `name`, `from` and `to`. Uses Cloudflare Email Service. On the Free Plan, every
-  `to` address must be a verified Email Routing destination address.
-
-```yaml
-notification_channels:
-  - name: Mattermost
-    type: slack
-    is_default: true                     # used when a monitor has no per-monitor channel
-    url: ${MATTERMOST_WEBHOOK_URL}
-    channel: "#alerts"
-    headers:
-      X-Healthcheck-Token: ${HEALTHCHECK_TOKEN}
-
-  - name: Demo Webhook
-    type: webhook
-    url: ${DEMO_WEBHOOK_URL}             # create a temporary receiver at webhook.site or Beeceptor
-    headers:
-      Authorization: Bearer ${DEMO_WEBHOOK_TOKEN}
-    is_default: false
-
-  - name: Email
-    type: email
-    from: noreply@example.com
-    from_name: HeartBeat
-    to:
-      - ops@example.com
-    is_default: true
-```
-
-**Routing:** per-monitor channels take precedence; channels marked `is_default: true` are the
-fallback for monitors that don't name their own.
-
-**Email:** `npm run provision` checks all configured recipients against Cloudflare Email Routing
-destination addresses. Missing addresses are created through the API and must be verified from the
-Cloudflare confirmation email before mail can be delivered. Deploy continues while verification is
-pending; runtime delivery skips unverified recipients with a warning instead of retrying the queue.
-`wrangler.jsonc` gets a generated `send_email` binding restricted to the configured senders; recipients
-are filtered at runtime against verified Email Routing destination addresses.
-
-**Custom message text:** Slack, Telegram, webhook and email channels can override the notification text
-with `templates.down`, `templates.recovered` and `templates.escalation`. Supported placeholders:
-`{monitor}`, `{count}`, `{error}`, `{status}`.
-
-```yaml
-  - name: Ops Webhook
-    type: webhook
-    url: ${OPS_WEBHOOK_URL}
-    templates:
-      down: "{monitor} is {status}: {error}"
-      recovered: "{monitor} recovered after {count} checks"
-```
-
-Common channel fields:
-
-- `name`: human-readable channel name. Also used by monitor-level `notification_channels`; keep it
-  stable.
-- `type`: one of `slack`, `webhook`, `telegram`, `email`.
-- `is_default`: when `true`, this channel receives alerts for monitors that do not define their own
-  channel list. Default `false`.
-- `templates.down`: optional message text for incident-open notifications.
-- `templates.recovered`: optional message text for recovery notifications.
-- `templates.escalation`: optional message text for escalation reminders.
-
-Type-specific fields:
-
-- `url` (`slack`, `webhook`): incoming webhook URL. Prefer `${VAR}` instead of a literal secret URL.
-- `headers` (`slack`, `webhook`): extra HTTP headers for the notification request. Values can use
-  `${VAR}` placeholders.
-- `channel` (`slack`): optional Slack/Mattermost channel label for display or compatible webhooks.
-- `bot_token` (`telegram`): Telegram bot token. Use `${TELEGRAM_BOT_TOKEN}` or similar.
-- `chat_id` (`telegram`): Telegram chat, group or channel id. Can be a literal id or `${VAR}`.
-- `from` (`email`): sender address allowed by the generated Cloudflare Email binding.
-- `from_name` (`email`): sender display name. Defaults to `HeartBeat`.
-- `to` (`email`): one verified Email Routing destination address or a list of them.
-- `subject_prefix` (`email`): optional prefix for email subjects, for example `[heartbeatflare]`.
-
-### Generic webhook payload
-
-`type: webhook` channels POST JSON:
-
-```json
-{
-  "monitor": { "id": "example-api", "name": "Example API" },
-  "incidentId": "incident-123",
-  "status": "error",
-  "eventType": "down",
-  "count": 3,
-  "errorMessage": "Connection refused",
-  "message": "🔴 **Example API is DOWN** — 3 consecutive failures: Connection refused",
-  "cronTimestamp": 1781395201000,
-  "timestamp": "2026-06-14T00:00:01Z"
-}
-```
-
-`errorMessage`, `message` and `cronTimestamp` are optional. Use `headers` for authentication,
-e.g. `Authorization: Bearer ${DEMO_WEBHOOK_TOKEN}`.
 
 ## `monitors`
 
@@ -589,6 +400,141 @@ Fields:
   `>`, `<`, `>=` and `<=` are supported.
 - `ssl_expiry < 14` (`http`, `tcp` with `ssl`): days until certificate expiry below the threshold.
 
+## `notification_channels`
+
+Where incident open / resolve / escalation messages are delivered. Four channel types are
+implemented:
+
+Supported channel types:
+
+- `slack`: requires `name` and `url`. Slack-compatible incoming webhook; works with Mattermost and
+  similar tools. Optional `channel`; use `headers` for auth when a compatible webhook sits behind a
+  proxy.
+- `webhook`: requires `name` and `url`. Sends a structured JSON payload. Use `headers` for auth.
+- `telegram`: requires `name`, `bot_token` and `chat_id`. Uses the Telegram Bot API.
+- `email`: requires `name`, `from` and `to`. Uses the Cloudflare Email Workers `send_email` binding.
+  On the Free Plan, every
+  `to` address must be a verified Email Routing destination address.
+
+```yaml
+notification_channels:
+  - name: Mattermost
+    type: slack
+    is_default: true                     # used when a monitor has no per-monitor channel
+    url: ${MATTERMOST_WEBHOOK_URL}
+    channel: "#alerts"
+    headers:
+      X-Healthcheck-Token: ${HEALTHCHECK_TOKEN}
+
+  - name: Demo Webhook
+    type: webhook
+    url: ${DEMO_WEBHOOK_URL}             # create a temporary receiver at webhook.site or Beeceptor
+    headers:
+      Authorization: Bearer ${DEMO_WEBHOOK_TOKEN}
+    is_default: false
+
+  - name: Email
+    type: email
+    from: noreply@example.com
+    from_name: HeartBeat
+    to:
+      - ops@example.com
+    is_default: true
+```
+
+**Routing:** per-monitor channels take precedence; channels marked `is_default: true` are the
+fallback for monitors that don't name their own.
+
+**Email:** `npm run provision` checks all configured recipients against Cloudflare Email Routing
+destination addresses. Missing addresses are created through the API and must be verified from the
+Cloudflare confirmation email before mail can be delivered. Deploy continues while verification is
+pending; runtime delivery skips unverified recipients with a warning instead of retrying the queue.
+`wrangler.jsonc` gets a generated `send_email` binding restricted to the configured senders; recipients
+are filtered at runtime against verified Email Routing destination addresses.
+
+**Custom message text:** Slack, Telegram, webhook and email channels can override the notification text
+with `templates.down`, `templates.recovered` and `templates.escalation`. Supported placeholders:
+`{monitor}`, `{count}`, `{error}`, `{status}`.
+
+```yaml
+  - name: Ops Webhook
+    type: webhook
+    url: ${OPS_WEBHOOK_URL}
+    templates:
+      down: "{monitor} is {status}: {error}"
+      recovered: "{monitor} recovered after {count} checks"
+```
+
+Common channel fields:
+
+- `name`: human-readable channel name. Also used by monitor-level `notification_channels`; keep it
+  stable.
+- `type`: one of `slack`, `webhook`, `telegram`, `email`.
+- `is_default`: when `true`, this channel receives alerts for monitors that do not define their own
+  channel list. Default `false`.
+- `templates.down`: optional message text for incident-open notifications.
+- `templates.recovered`: optional message text for recovery notifications.
+- `templates.escalation`: optional message text for escalation reminders.
+
+Type-specific fields:
+
+- `url` (`slack`, `webhook`): incoming webhook URL. Prefer `${VAR}` instead of a literal secret URL.
+- `headers` (`slack`, `webhook`): extra HTTP headers for the notification request. Values can use
+  `${VAR}` placeholders.
+- `channel` (`slack`): optional Slack/Mattermost channel label for display or compatible webhooks.
+- `bot_token` (`telegram`): Telegram bot token. Use `${TELEGRAM_BOT_TOKEN}` or similar.
+- `chat_id` (`telegram`): Telegram chat, group or channel id. Can be a literal id or `${VAR}`.
+- `from` (`email`): sender address allowed by the generated Cloudflare Email binding.
+- `from_name` (`email`): sender display name. Defaults to `HeartBeat`.
+- `to` (`email`): one verified Email Routing destination address or a list of them.
+- `subject_prefix` (`email`): optional prefix for email subjects, for example `[heartbeatflare]`.
+
+### Generic webhook payload
+
+`type: webhook` channels POST JSON:
+
+```json
+{
+  "monitor": { "id": "example-api", "name": "Example API" },
+  "incidentId": "incident-123",
+  "status": "error",
+  "eventType": "down",
+  "count": 3,
+  "errorMessage": "Connection refused",
+  "message": "🔴 **Example API is DOWN** — 3 consecutive failures: Connection refused",
+  "cronTimestamp": 1781395201000,
+  "timestamp": "2026-06-14T00:00:01Z"
+}
+```
+
+`errorMessage`, `message` and `cronTimestamp` are optional. Use `headers` for authentication,
+e.g. `Authorization: Bearer ${DEMO_WEBHOOK_TOKEN}`.
+
+## `auth` (optional)
+
+Enables Cloudflare Access JWT verification for the `/private` page. **This block is optional** —
+without it, `/public` works and `/private` falls back to the public-only view.
+
+```yaml
+auth:
+  provider: cloudflare_access
+  team_name: "${CLOUDFLARE_ACCESS_TEAM_NAME}"
+  aud: "${CLOUDFLARE_ACCESS_AUD}"
+```
+
+The Access application itself is created manually in the Cloudflare dashboard and **must be scoped
+to the `/private` path** — see [Cloudflare Access for `/private`](DEPLOYMENT.md#cloudflare-access-for-private)
+in the deployment guide. `team_name` and `aud` are `${VAR}` placeholders resolved from Worker
+secrets at runtime (see [Secrets](#secrets-and-var-placeholders)).
+
+Fields:
+
+- `provider` (required): must be `cloudflare_access`.
+- `team_name` (required): Zero Trust team name, usually the label before `.cloudflareaccess.com`;
+  use `${CLOUDFLARE_ACCESS_TEAM_NAME}`.
+- `aud` (required): Access Application AUD tag from the Cloudflare dashboard; use
+  `${CLOUDFLARE_ACCESS_AUD}`.
+
 ## `maintenance`
 
 Announce planned work with an optional top-level `maintenance:` list. While a window is active the
@@ -606,6 +552,62 @@ maintenance:
 
 Windows are imported into D1 by `config:import` like everything else — declaring one is a config
 change (commit + deploy). Removing a window from YAML deletes it.
+
+## `deploy.vpc` (internal monitors)
+
+> **Beta.** [Cloudflare Workers VPC](https://developers.cloudflare.com/workers-vpc/) is in beta; its
+> API/config may change. Verify the current Cloudflare docs before relying on it in production.
+
+`mode: internal` monitors probe **private** targets through a Workers VPC binding instead of the
+public internet. heartbeatflare only *consumes* pre-existing VPC resources by id/binding — it never
+provisions Networks, Services, Tunnels, routes, CIDRs, or Zero Trust policies. Manage those through
+the Cloudflare dashboard, Terraform, or a dedicated infrastructure repo.
+
+```yaml
+deploy:
+  name: status
+  vpc:
+    networks:                      # tunnel-backed VPC Networks → generated as wrangler vpc_networks
+      - binding: DEMO_NETWORK
+        tunnel_id: ${DEMO_TUNNEL_ID}
+        # remote: true             # default true; harmless for production deploys
+    services:                      # scoped VPC Services → generated as wrangler vpc_services
+      - binding: DEMO_SERVICE
+        service_id: ${DEMO_VPC_SERVICE_ID}
+```
+
+- A monitor selects a binding by name via [`vpc_binding`](#internal-monitors-mode-internal).
+- **Networks** give broad access to any target reachable through a Cloudflare Tunnel; the monitor's
+  `target` host:port is the real private address. Cloudflare Mesh (`network_id: cf1:network`) is
+  **not supported in v1** — tunnel-backed networks only (use `tunnel_id`).
+- **Services** scope access to a single private host:port fixed by `service_id`. For a service the
+  monitor's `target` host:port is **ignored** for routing (it only sets the HTTP `Host` / TLS SNI);
+  only the path matters.
+- **Network risk:** a tunnel-backed `vpc_networks` binding exposes the Worker to whatever the
+  `cloudflared` connector can reach from its runtime environment. In Kubernetes, that can include
+  other `*.svc.cluster.local` services, ClusterIP services in other namespaces, pod IPs, node/internal
+  networks, kube-dns, and possibly the Kubernetes API unless egress is restricted. Prefer
+  `vpc_services` for a fixed target. If you use `vpc_networks`, add Kubernetes NetworkPolicy or
+  equivalent firewall rules around the `cloudflared` connector so it can reach only the intended
+  private services plus required DNS/Cloudflare egress.
+- Resource ids (`tunnel_id`, `service_id`) are account/environment specific — provide them via
+  `.env` locally and CI env/secrets in deployment, referenced as `${VAR}` placeholders. Unlike
+  `headers` (`PROBE_HEADERS`, resolved at probe runtime), VPC ids are substituted at
+  **`wrangler.jsonc` generation time** because a binding needs a literal id at deploy time. Binding
+  names are not secret and may stay in `config.yaml`. In local mode an unset `${VAR}` simply omits
+  that binding (so dev/test never fail on absent infrastructure ids); a deploy fails fast.
+
+Fields:
+
+- `networks[].binding` (required): Worker binding name referenced by a monitor's `vpc_binding`.
+  Unique across networks and services.
+- `networks[].tunnel_id` (required): Cloudflare Tunnel UUID, or `${VAR}`. `network_id` / Mesh is
+  unsupported in v1.
+- `networks[].remote`: use the remote resource during local dev. Default `true`.
+- `services[].binding` (required): Worker binding name referenced by a monitor's `vpc_binding`.
+  Unique across networks and services.
+- `services[].service_id` (required): VPC Service UUID, or `${VAR}`.
+- `services[].remote`: use the remote resource during local dev. Default `true`.
 
 ## Public endpoints
 

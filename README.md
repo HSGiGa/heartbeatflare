@@ -50,7 +50,8 @@ the result is shown; mode controls how the Worker reaches the target.
 - **Slack-compatible webhooks** including Mattermost and similar tools.
 - **Generic JSON webhooks** for incident routers, automation platforms or custom receivers.
 - **Telegram Bot API** for chat alerts.
-- **Cloudflare Email Service** for email notifications without SMTP credentials.
+- **Cloudflare Email Workers** (`send_email` binding) for email notifications without SMTP
+  credentials — delivered to verified Email Routing addresses.
 - **Cloudflare Queues delivery** so notification sends can retry outside the probe request.
 
 ### Deployment model
@@ -63,18 +64,6 @@ the result is shown; mode controls how the Worker reaches the target.
   verification, custom-domain zones and Workers VPC resources stay explicit and reviewable.
 - **Free-plan aware:** designed around D1 write budgets and edge caching, with roughly 30 monitors at
   60-second intervals as a practical baseline.
-
-## How it works
-
-One Worker, three entry points:
-
-- `scheduled()` runs every minute to probe due monitors, evaluate alert rules and open/resolve
-  incidents.
-- `fetch()` serves `/public`, `/private`, the JSON API, the Atom feed and SVG badges.
-- `queue()` delivers notifications with retry.
-
-State lives in Cloudflare D1. See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design, data
-model and free-plan budgets.
 
 ## Quick start
 
@@ -124,6 +113,18 @@ monitors:
 
 The full field reference — every monitor type, alert condition, notification channel, maintenance
 window and `${VAR}` secret — is in [CONFIGURATION.md](docs/CONFIGURATION.md).
+
+## How it works
+
+One Worker, three entry points:
+
+- `scheduled()` runs every minute to probe due monitors, evaluate alert rules and open/resolve
+  incidents.
+- `fetch()` serves `/public`, `/private`, the JSON API, the Atom feed and SVG badges.
+- `queue()` delivers notifications with retry.
+
+State lives in Cloudflare D1. See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design, data
+model and free-plan budgets.
 
 ## Documentation
 

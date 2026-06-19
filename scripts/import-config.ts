@@ -25,7 +25,7 @@ interface AlertConfig {
 
 interface MonitorConfig {
 	name: string;
-	type: 'http' | 'tcp' | 'dns' | 'heartbeat' | 'openmetrics';
+	type: 'http' | 'tcp' | 'dns' | 'heartbeat';
 	mode: 'external' | 'internal';
 	visibility?: 'public' | 'private';
 	ssl?: boolean;

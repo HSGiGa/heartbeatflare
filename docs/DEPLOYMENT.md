@@ -190,7 +190,8 @@ Add these when needed:
 Values like `MATTERMOST_WEBHOOK_URL` or `TELEGRAM_BOT_TOKEN` are third-party credentials. They do
 not require Cloudflare token scopes; they are stored as Worker secrets and resolved at send time.
 
-Email notifications use Cloudflare Email Service, not SMTP. On the Cloudflare Free Plan,
+Email notifications use the Cloudflare Email Workers `send_email` binding, not SMTP. On the
+Cloudflare Free Plan,
 heartbeatflare sends only to verified Email Routing destination addresses. `npm run provision`
 creates missing destination addresses and logs a warning until they are verified; deploy continues,
 and runtime delivery skips unverified recipients with a warning until verification is complete.

@@ -217,7 +217,7 @@ Consumes the `NOTIFICATION_QUEUE`. For each message, resolves the monitor's
 channels (per-monitor assignments, else defaults) and delivers.
 
 - **Implemented channels:** Slack and generic Webhook (HTTP POST), Telegram (`sendMessage` with
-  HTML formatting), and Cloudflare Email Service (`send_email` binding). Email notifications are
+  HTML formatting), and Cloudflare Email Workers (`send_email` binding). Email notifications are
   Free Plan compatible only for verified Email Routing destination addresses.
 - Each attempt is recorded in `notification_deliveries` with the real attempt
   count (`msg.attempts`).
@@ -631,7 +631,7 @@ queue() consumer
         +-- Slack
         +-- Webhook
         +-- Telegram
-        +-- Email (Cloudflare Email Service)
+        +-- Email (Cloudflare Email Workers)
 ```
 
 ## Observability & Logging
