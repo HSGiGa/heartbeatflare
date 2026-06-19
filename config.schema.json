@@ -352,7 +352,7 @@
 				},
 				"type": {
 					"type": "string",
-					"enum": ["http", "tcp", "dns", "heartbeat", "openmetrics"]
+					"enum": ["http", "tcp", "dns", "heartbeat"]
 				},
 				"mode": {
 					"type": "string",

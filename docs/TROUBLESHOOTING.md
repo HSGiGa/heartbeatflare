@@ -43,6 +43,45 @@ errors:
   `npm run deploy:prod` (or the individual `d1:migrate:prod` + `config:import` steps) and check
   [migrations](DEPLOYMENT.md#verification).
 
+## Runtime logs in Cloudflare
+
+heartbeatflare runtime logs go to **Cloudflare Workers Logs**, not to D1. This is intentional: D1 is
+kept for monitor state, incidents and notification delivery history, while logs stay in Cloudflare's
+observability pipeline so the Free Plan D1 write budget is not burned by debug output.
+
+The generated `wrangler.jsonc` uses the current project defaults from `wrangler.template.jsonc`:
+
+- `observability.enabled: true`
+- `observability.head_sampling_rate: 1` — log 100% of sampled invocations by default
+- `vars.LOG_LEVEL: "info"` — `debug` adds successful checks and probe timings
+
+Where to look:
+
+- Dashboard: **Workers & Pages → your Worker → Observability / Logs**. This is Workers Logs, not
+  Cloudflare One Insights.
+- CLI, when your token has Workers Tail access: `npx wrangler tail <worker-name>`.
+
+Useful event names to filter for:
+
+- Scheduler health: `scheduler.tick`. If this never appears, the cron trigger may not be running.
+- Probe failures: `check.failed` and `check.error`. These include the monitor id and error message.
+- Incidents: `incident.open`, `incident.resolved`, `incident.escalation`.
+- Notifications: `notification.delivery_failed`, `notification.retry`, and email verification events
+  such as `notification.email_recipient_unverified`.
+- Access/auth problems: `auth.error`.
+- Heartbeats: `heartbeat.missed` and `heartbeat.secret_missing`.
+
+To temporarily make probe debugging noisier, change `LOG_LEVEL` from `info` to `debug` in the
+generated Worker vars path (`wrangler.template.jsonc` → regenerate/deploy). Debug logging adds
+`check.ok` events for successful checks and probe timings. Turn it back to `info` after diagnosis if
+logs are too noisy.
+
+Logs are structured single-line JSON and intentionally avoid secrets and full webhook URLs. Delivery
+failure logs include channel id/type and the error, but not the secret value.
+
+If Cloudflare Logs volume becomes a problem, lower `observability.head_sampling_rate` or keep
+`LOG_LEVEL=info`; do not move runtime logs into D1.
+
 ## `/private` is public, or Access walls off the whole site
 
 This is almost always the Access **path scope**.
