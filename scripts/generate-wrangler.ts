@@ -45,7 +45,7 @@ interface WranglerTemplate {
 }
 
 async function main() {
-	const config = loadConfig<{ deploy?: DeployConfig; monitors?: MonitorHeaders[]; notification_channels?: EmailChannelConfig[] }>();
+	const config = loadConfig<{ deploy?: DeployConfig; site?: { title?: string }; monitors?: MonitorHeaders[]; notification_channels?: EmailChannelConfig[] }>();
 	const { name, domain, databaseName, queueName } = resolveDeploy(config);
 
 	// Generated PROBE_HEADERS var (feature: WAF-safe monitoring). buildProbeHeadersMap throws if a
@@ -73,6 +73,10 @@ async function main() {
 
 	const wrangler = parseJsonc(readFileSync('wrangler.template.jsonc', 'utf-8')) as WranglerTemplate;
 
+	// Baked into the bundle so the status page footer can show the deployed version. Read from
+	// package.json at generation time — stays in lockstep with the release commit.
+	const appVersion = (JSON.parse(readFileSync('package.json', 'utf-8')) as { version?: string }).version ?? '';
+
 	wrangler.name = name;
 	// Preserve template vars (e.g. LOG_LEVEL) and overwrite only the generated ones.
 	wrangler.vars = {
@@ -80,6 +84,8 @@ async function main() {
 		CLOUDFLARE_ACCOUNT_ID: accountId,
 		D1_DATABASE_ID: databaseId,
 		WORKER_NAME: name,
+		APP_VERSION: appVersion,
+		SITE_TITLE: config.site?.title ?? '',
 		PROBE_HEADERS: probeHeaders,
 	};
 	wrangler.d1_databases[0].database_name = databaseName;

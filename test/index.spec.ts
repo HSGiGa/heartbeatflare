@@ -431,9 +431,29 @@ describe('maintenance windows, feed and badges', () => {
 		expect(res.headers.get('Content-Type')).toContain('image/svg+xml');
 		const svg = await res.text();
 		expect(svg).toContain('<svg');
-		expect(svg).toContain('Operational');
-		expect(svg).toContain('transform="translate(7 4) scale(.011)"');
+		expect(svg).toContain('operational');
+		expect(svg).toContain('transform="translate(7 4) scale(0.0096)"');
 		expect(svg).toContain('M316 904c-88');
+	});
+
+	it('serves an overall site badge at /badge.svg', async () => {
+		const res = await SELF.fetch('https://example.com/badge.svg');
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('image/svg+xml');
+		const svg = await res.text();
+		expect(svg).toContain('<svg');
+		// SITE_TITLE is unset in the test config, so the label falls back to the default name.
+		expect(svg).toContain('HeartbeatFlare');
+		// The badge aggregates every public monitor in the DB, so assert a valid status token rather
+		// than a specific one (other suites seed monitors of varying status into the shared store).
+		expect(svg).toMatch(/aria-label="HeartbeatFlare: (operational|degraded|outage|maintenance|paused|unknown)"/);
+	});
+
+	it('honours a custom ?label= on the overall badge', async () => {
+		const res = await SELF.fetch('https://example.com/badge.svg?label=My%20Service');
+		expect(res.status).toBe(200);
+		const svg = await res.text();
+		expect(svg).toContain('My Service');
 	});
 
 	it('returns 404 for a private monitor badge (no leak)', async () => {
@@ -485,8 +505,10 @@ describe('maintenance windows, feed and badges', () => {
 			const res = await SELF.fetch(`https://example.com/badges?t=${Date.now()}-empty`);
 			expect(res.status).toBe(200);
 			const html = await res.text();
-			expect(html).toContain('No public badges yet');
-			expect(html).not.toContain('<article class="badge-row">');
+			// The overall site badge always renders; only the per-monitor section is empty.
+			expect(html).toContain('No per-monitor badges yet');
+			expect(html).toContain('src="/badge.svg"');
+			expect(html).toContain('overall site status');
 		} finally {
 			for (const m of publicMonitors) {
 				await env.DB.prepare(`UPDATE monitors SET enabled = 1 WHERE id = ?`).bind(m.id).run();
@@ -527,9 +549,9 @@ describe('maintenance windows, feed and badges', () => {
 		expect(html).not.toContain('id="range-picker"');
 		expect(html).not.toContain('data-days=');
 		expect(html.indexOf('Active Incidents')).toBeGreaterThan(html.indexOf('</header>'));
-		expect(header).not.toContain('Updated ');
 		expect(header).not.toContain('pub boom');
-		expect(footer).toContain('Updated ');
+		expect(footer).toContain('github.com/HSGiGa/heartbeatflare');
+		expect(footer).toContain('heartbeatflare v');
 		expect(activeIncidents).toContain('incident-line sev-critical');
 		expect(activeIncidents).not.toContain('Partial Outage');
 	});

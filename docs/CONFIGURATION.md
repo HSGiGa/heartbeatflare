@@ -54,6 +54,7 @@ delivery attempts are owned by the Worker and are not overwritten by config impo
 
 ```yaml
 deploy:                  # required — worker name, optional custom domain, resource name overrides
+site:                    # optional — status page branding (page title / header)
 auth:                    # optional — Cloudflare Access verification for the /private page
 notification_channels:   # optional — where incident notifications are delivered
 monitors:                # required — what to probe and the alert rules for each monitor
@@ -100,6 +101,22 @@ Fields:
 - `queue_name`: override the derived queue name.
 - `vpc`: Cloudflare Workers VPC bindings for `mode: internal` monitors. See
   [`deploy.vpc`](#deployvpc-internal-monitors).
+
+## `site` (optional)
+
+Status page branding. Omit the whole section to use the default `HeartbeatFlare` name.
+
+```yaml
+site:
+  title: Acme Status   # heading in the page header + browser tab
+```
+
+Fields:
+
+- `title`: text shown as the header heading (next to the logo) and in the browser tab
+  (`<title>`). Defaults to `HeartbeatFlare` when unset. Applied at deploy time — it is baked into
+  the generated `wrangler.jsonc` as the `SITE_TITLE` var, so changing it requires a redeploy
+  (`npm run wrangler:generate` runs as part of `deploy`).
 
 ## `monitors`
 
@@ -614,7 +631,10 @@ Fields:
 - `/public`: public status page, public monitors only.
 - `/feed.xml`: Atom 1.0 feed of public incidents and maintenance windows.
 - `/badges`: public badge gallery with rendered previews, direct SVG URLs, Markdown snippets and
-  HTML snippets for all public monitors.
+  HTML snippets for the overall site badge and every public monitor.
+- `/badge.svg`: overall site badge — the worst status across all public monitors (outage > degraded >
+  operational). The label defaults to `site.title` (falling back to `HeartbeatFlare`); `?label=`
+  overrides it.
 - `/badge/<monitor>.svg`: SVG status badge for a public monitor. `?label=` overrides the left text.
   Private or unknown monitors return 404.
 - `POST /beat/<monitor-id>/<token>`: heartbeat ingest. Returns `204` on success and

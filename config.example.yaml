@@ -20,6 +20,9 @@ deploy:
   #     - binding: DEMO_SERVICE
   #       service_id: ${DEMO_VPC_SERVICE_ID}
 
+# site:
+#   title: Acme Status   # heading in the page header + browser tab; defaults to "HeartbeatFlare"
+
 auth:
   provider: cloudflare_access
   team_name: "${CLOUDFLARE_ACCESS_TEAM_NAME}"

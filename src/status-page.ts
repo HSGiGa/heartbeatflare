@@ -44,6 +44,9 @@ function formatBytes(bytes: number): string {
 
 const brandIconSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1254 1254" aria-hidden="true" focusable="false"><defs><radialGradient id="hbf-cloud" cx="728" cy="392" r="640" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#ff7a7a"/><stop offset=".42" stop-color="#ef2f2f"/><stop offset="1" stop-color="#9f1239"/></radialGradient><linearGradient id="hbf-shade" x1="560" y1="640" x2="560" y2="904" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#7f1d1d" stop-opacity="0"/><stop offset="1" stop-color="#7f1d1d" stop-opacity=".32"/></linearGradient><clipPath id="hbf-clip"><path d="M316 904c-88 0-158-70-158-158s70-164 158-164c-5-73 49-135 114-135 17 0 33 3 46 8 34-87 121-148 220-148 127 0 232 101 237 228 12-2 24-3 37-3 86 0 154 69 154 154 0 119-88 218-196 218H316Z"/></clipPath><linearGradient id="hbf-bolt" x1="1028" y1="532" x2="740" y2="790" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fecaca"/><stop offset=".5" stop-color="#ef4444"/><stop offset="1" stop-color="#991b1b"/></linearGradient></defs><path fill="url(#hbf-cloud)" d="M316 904c-88 0-158-70-158-158s70-164 158-164c-5-73 49-135 114-135 17 0 33 3 46 8 34-87 121-148 220-148 127 0 232 101 237 228 12-2 24-3 37-3 86 0 154 69 154 154 0 119-88 218-196 218H316Z"/><rect x="158" y="620" width="966" height="284" fill="url(#hbf-shade)" clip-path="url(#hbf-clip)"/><path fill="url(#hbf-bolt)" d="M935 535 733 716l119-29-14 98 190-187-123 78 30-141Z"/><g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round"><path d="M166 759h198c10 0 19-4 25-12l24-32 55 75 80-277 73 349 64-190 47 87h187" stroke-width="31"/><circle cx="962" cy="759" r="32" stroke-width="31"/></g></svg>`;
 
+// GitHub mark (Octicon), inlined so the footer link needs no external asset.
+const githubIconSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true" focusable="false" style="vertical-align:-2px"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>`;
+
 function renderSparkline(points: number[]): string {
 	if (points.length < 2) return '';
 	const w = 80, h = 24, pad = 2;
@@ -74,6 +77,8 @@ export function buildStatusPage({
 	authEnabled,
 	scope,
 	workerName,
+	version,
+	siteTitle,
 	host,
 }: {
 	nowMs: number;
@@ -88,6 +93,8 @@ export function buildStatusPage({
 	authEnabled: boolean;
 	scope: 'public' | 'all';
 	workerName: string;
+	version: string;
+	siteTitle: string;
 	host: string;
 }): string {
 	const uptimeByMonitor = new Map<string, Map<string, number>>();
@@ -428,8 +435,9 @@ export function buildStatusPage({
 	</section>`;
 	})() : '';
 
-	const nowDisplay = new Date(nowMs).toUTCString().replace(' GMT', ' UTC');
 	const faviconHref = `data:image/svg+xml,${encodeURIComponent(brandIconSvg)}`;
+	const versionLabel = version ? `heartbeatflare v${version}` : 'heartbeatflare';
+	const pageTitle = siteTitle.trim() || 'HeartbeatFlare';
 
 	return `<!DOCTYPE html>
 <html lang="en">
@@ -437,7 +445,7 @@ export function buildStatusPage({
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" type="image/svg+xml" href="${escHtml(faviconHref)}">
-<title>HeartbeatFlare Status</title>
+<title>${escHtml(pageTitle)} Status</title>
 <style>
 :root{--c-up:#22c55e;--c-down:#ef4444;--c-degraded:#f59e0b;--c-unknown:#a1a1aa;--c-maint:#3b82f6;--sev-critical:#ef4444;--sev-warning:#f59e0b;--sev-critical-bg:#fef2f2;--sev-warning-bg:#fffbeb;--c-card:#fff;--c-bg:#fafafa;--c-border:#e4e4e7;--c-border-soft:#f4f4f5;--c-text:#18181b;--c-text-muted:#71717a;--c-text-faint:#a1a1aa}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -540,7 +548,7 @@ footer{border-top:1px solid var(--c-border);padding:20px 0;margin-top:8px}
 <header>
 <div class="container">
 <div class="header-inner">
-<div class="logo"><span class="brand-icon">${brandIconSvg}</span>HeartbeatFlare</div>
+<div class="logo"><span class="brand-icon">${brandIconSvg}</span>${escHtml(pageTitle)}</div>
 <div class="overall-badge"><span class="overall-dot"></span>${overallText}</div>
 ${session
 	? `<div style="display:flex;align-items:center;gap:10px"><span class="meta-text" title="${escHtml(session.email)}">${escHtml(session.name)}</span><a href="/auth/logout" style="font-size:12px;font-weight:600;padding:5px 12px;border-radius:5px;border:1px solid #e4e4e7;background:#fff;color:#18181b;text-decoration:none">Sign out</a></div>`
@@ -572,8 +580,8 @@ ${usageHtml}
 <div class="container">
 <div class="footer-inner">
 <span class="meta-text">${host}</span>
-<span class="meta-text">Updated ${nowDisplay}</span>
-<span class="meta-text">Powered by <a href="https://workers.cloudflare.com" target="_blank" rel="noopener" style="color:#71717a;text-decoration:underline">Cloudflare Workers</a></span>
+<span class="meta-text"><a href="https://github.com/HSGiGa/heartbeatflare" target="_blank" rel="noopener" style="color:#71717a;text-decoration:none;display:inline-flex;align-items:center;gap:5px">${githubIconSvg}${escHtml(versionLabel)}</a></span>
+<span class="meta-text">Powered by <a href="https://workers.cloudflare.com" target="_blank" rel="noopener" style="color:#71717a;text-decoration:underline">Cloudflare Workers</a> · Built with <a href="https://claude.com/claude-code" target="_blank" rel="noopener" style="color:#71717a;text-decoration:underline">Claude</a> and <a href="https://openai.com/codex" target="_blank" rel="noopener" style="color:#71717a;text-decoration:underline">Codex</a></span>
 </div>
 </div>
 </footer>
