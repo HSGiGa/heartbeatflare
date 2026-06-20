@@ -586,7 +586,7 @@ ${usageHtml}
   var tabHistory=document.getElementById('tab-history');
   var histList=document.getElementById('history-list');
   var histPager=document.getElementById('history-pagination');
-  var histMonth=toMonthStr(new Date()),histLoaded=false;
+  var histMonth=toMonthStr(new Date()),histMonths=[],histLoaded=false;
 
   function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
   function fmtDur(s,e){if(!e)return'ongoing';var m=Math.floor((new Date(e)-new Date(s))/60000);if(m<60)return m+'m';var h=Math.floor(m/60);if(h<24)return h+'h '+(m%60)+'m';return Math.floor(h/24)+'d '+(h%24)+'h';}
@@ -596,8 +596,7 @@ ${usageHtml}
   function relAgo(s){var m=Math.floor((Date.now()-new Date(s).getTime())/60000);if(m<1)return'just now';if(m<60)return m+'m ago';var h=Math.floor(m/60);if(h<24)return h+'h ago';var d=Math.floor(h/24);if(d<30)return d+'d ago';var mo=Math.floor(d/30);if(mo<12)return mo+' month'+(mo>1?'s':'')+' ago';var y=Math.floor(d/365);return y+' year'+(y>1?'s':'')+' ago';}
   function toMonthStr(d){var m=d.getUTCMonth()+1;return d.getUTCFullYear()+'-'+(m<10?'0'+m:m);}
   function monthLabel(ym){return new Date(ym+'-01T00:00:00Z').toLocaleDateString('en-US',{month:'long',year:'numeric',timeZone:'UTC'});}
-  function prevMonth(ym){var y=parseInt(ym,10),m=parseInt(ym.slice(5),10)-1;if(m<1){m=12;y--;}return y+'-'+(m<10?'0'+m:m);}
-  function nextMonth(ym){var y=parseInt(ym,10),m=parseInt(ym.slice(5),10)+1;if(m>12){m=1;y++;}return y+'-'+(m<10?'0'+m:m);}
+  function navMonth(dir){var i=histMonths.indexOf(histMonth);if(i<0)return null;var j=i+dir;return j>=0&&j<histMonths.length?histMonths[j]:null;}
   function relDay(day){var diff=Math.floor((Date.now()-new Date(day+'T00:00:00Z').getTime())/86400000);if(diff===0)return'today';if(diff===1)return'yesterday';return diff+'d ago';}
   function renderUpdate(cls,label,time,body){return '<div class="update '+cls+'"><div class="marker"></div><div><div class="update-title"><span class="label">'+label+'</span><span class="time">'+time+'</span></div>'+(body?'<div class="update-body">'+body+'</div>':'')+'</div></div>';}
 
@@ -635,12 +634,11 @@ ${usageHtml}
   }
 
   function renderMonthNav(){
-    var now=toMonthStr(new Date());
-    var isLatest=histMonth===now;
+    var prev=navMonth(1),next=navMonth(-1);
     return '<div class="month-nav">'+
-      '<button class="range-btn" id="hist-prev-month">&#8592; '+monthLabel(prevMonth(histMonth))+'</button>'+
+      '<button class="range-btn" id="hist-prev-month"'+(prev?'':' disabled')+'>&#8592; '+(prev?monthLabel(prev):'Earlier')+'</button>'+
       '<span class="month-label">'+monthLabel(histMonth)+'</span>'+
-      '<button class="range-btn" id="hist-next-month"'+(isLatest?' disabled':'')+'>'+monthLabel(nextMonth(histMonth))+' &#8594;</button>'+
+      '<button class="range-btn" id="hist-next-month"'+(next?'':' disabled')+'>'+(next?monthLabel(next):'Later')+' &#8594;</button>'+
     '</div>';
   }
 
@@ -652,10 +650,13 @@ ${usageHtml}
       .then(function(r){return r.json();})
       .then(function(data){
         histLoaded=true;
+        var list=(data.months||[]).slice();
+        [month,toMonthStr(new Date())].forEach(function(m){if(list.indexOf(m)<0)list.push(m);});
+        histMonths=list.sort().reverse();
         histList.innerHTML=renderMonthNav()+renderRows(data.incidents);
         var p=document.getElementById('hist-prev-month'),n=document.getElementById('hist-next-month');
-        if(p)p.addEventListener('click',function(){loadHistory(prevMonth(histMonth));});
-        if(n)n.addEventListener('click',function(){loadHistory(nextMonth(histMonth));});
+        if(p)p.addEventListener('click',function(){var t=navMonth(1);if(t)loadHistory(t);});
+        if(n)n.addEventListener('click',function(){var t=navMonth(-1);if(t)loadHistory(t);});
       })
       .catch(function(){histList.innerHTML='<div class="meta-text" style="padding:24px 0;text-align:center">Failed to load.</div>';});
   }

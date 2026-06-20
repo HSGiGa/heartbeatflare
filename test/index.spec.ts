@@ -109,6 +109,40 @@ describe('other routes', () => {
 	});
 });
 
+describe('history month list (skip months without incidents)', () => {
+	beforeAll(async () => {
+		await env.DB.prepare(
+			`INSERT OR IGNORE INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, enabled)
+			 VALUES ('mh-mon', 'Month History', 'http', 'external', 'public', 'https://mh.example.com', 60, 1)`,
+		).run();
+		await env.DB.batch([
+			env.DB.prepare(
+				`INSERT OR IGNORE INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, resolved_at, reason)
+				 VALUES ('mh-mar', 'mh-mon', NULL, 'resolved', 'critical', '2026-03-10T00:00:00Z', '2026-03-10T01:00:00Z', 'down')`,
+			),
+			env.DB.prepare(
+				`INSERT OR IGNORE INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, resolved_at, reason)
+				 VALUES ('mh-jan', 'mh-mon', NULL, 'resolved', 'critical', '2026-01-05T00:00:00Z', '2026-01-05T01:00:00Z', 'down')`,
+			),
+		]);
+	});
+
+	it('GET /api/history?month= returns only months that have incidents', async () => {
+		const response = await SELF.fetch('https://example.com/api/history?month=2026-03&t=monthlist');
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as { incidents: Array<{ id: string }>; month: string; months: string[] };
+		expect(body.month).toBe('2026-03');
+		expect(body.incidents.map((i) => i.id)).toContain('mh-mar');
+		// The navigable month list spans months that actually have incidents...
+		expect(body.months).toContain('2026-03');
+		expect(body.months).toContain('2026-01');
+		// ...and never an empty in-between month like February.
+		expect(body.months).not.toContain('2026-02');
+		// Sorted descending so the frontend can index prev/next directly.
+		expect(body.months).toStrictEqual([...body.months].sort().reverse());
+	});
+});
+
 describe('SSL cert fields', () => {
 	it('/api/status includes ssl_not_after: null for monitors without cert data', async () => {
 		const response = await SELF.fetch('https://example.com/api/status');
