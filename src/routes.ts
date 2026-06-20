@@ -166,16 +166,26 @@ async function handleHistoryApi(env: Env, searchParams: URLSearchParams, showAll
 	const validMonth = /^\d{4}-\d{2}$/.test(monthParam ?? '') ? monthParam : null;
 
 	if (validMonth) {
-		const { results: incidents } = await env.DB.prepare(
-			`SELECT i.id, i.monitor_id, i.severity, i.status, i.started_at, i.resolved_at, i.reason,
-			        m.name AS monitor_name, m.type AS monitor_type
-			 FROM incidents i JOIN monitors m ON m.id = i.monitor_id
-			 WHERE m.enabled = 1 ${visWhere}
-			   AND strftime('%Y-%m', i.started_at) = ?
-			 ORDER BY i.started_at DESC`,
-		).bind(validMonth).all<IncidentRow>();
+		const [{ results: incidents }, { results: monthRows }] = await Promise.all([
+			env.DB.prepare(
+				`SELECT i.id, i.monitor_id, i.severity, i.status, i.started_at, i.resolved_at, i.reason,
+				        m.name AS monitor_name, m.type AS monitor_type
+				 FROM incidents i JOIN monitors m ON m.id = i.monitor_id
+				 WHERE m.enabled = 1 ${visWhere}
+				   AND strftime('%Y-%m', i.started_at) = ?
+				 ORDER BY i.started_at DESC`,
+			).bind(validMonth).all<IncidentRow>(),
+			env.DB.prepare(
+				`SELECT DISTINCT strftime('%Y-%m', i.started_at) AS ym
+				 FROM incidents i JOIN monitors m ON m.id = i.monitor_id
+				 WHERE m.enabled = 1 ${visWhere}
+				 ORDER BY ym DESC`,
+			).all<{ ym: string }>(),
+		]);
 
-		return Response.json({ incidents, month: validMonth }, { headers: { 'Cache-Control': showAll ? 'no-store' : `public, max-age=${PUBLIC_MAXAGE}` } });
+		const months = monthRows.map((r) => r.ym);
+
+		return Response.json({ incidents, month: validMonth, months }, { headers: { 'Cache-Control': showAll ? 'no-store' : `public, max-age=${PUBLIC_MAXAGE}` } });
 	}
 
 	const page = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10) || 1);
