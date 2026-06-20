@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # npm dependencies — weekly, grouped into a single PR to keep noise low.
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      npm:
+        patterns:
+          - "*"
+
+  # GitHub Actions used in workflows — weekly, grouped.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - "*"
