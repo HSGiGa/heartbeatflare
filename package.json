@@ -42,13 +42,13 @@
 		"typecheck:scripts": "tsc -p tsconfig.scripts.json"
 	},
 	"devDependencies": {
-		"@cloudflare/vitest-pool-workers": "^0.16.13",
-		"@types/node": "^25.9.3",
-		"cloudflare": "^6.3.0",
+		"@cloudflare/vitest-pool-workers": "^0.16.18",
+		"@types/node": "^26.0.0",
+		"cloudflare": "^6.4.0",
 		"jsonc-parser": "^3.3.1",
 		"tsx": "^4.22.4",
 		"typescript": "^6.0.3",
-		"vitest": "~4.1.8",
+		"vitest": "~4.1.9",
 		"wrangler": "^4.98.0",
 		"yaml": "^2.9.0"
 	}
