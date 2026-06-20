@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2026-06-20
+
+### Fixed
+
+- **History month navigation skips months without incidents** — the History tab's month navigator
+  no longer steps into months that never had incidents. The `/api/history?month=` response now
+  reports the months that actually have incidents, and the ← / → arrows navigate only within that
+  list (the current month is always included), disabling at the ends.
+  ([#35](https://github.com/HSGiGa/heartbeatflare/issues/35))
+
 ## [1.2.2] - 2026-06-20
 
 ### Added
