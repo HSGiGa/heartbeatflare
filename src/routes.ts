@@ -161,10 +161,26 @@ async function handleStatusApi(env: Env, runtimeEnv: RuntimeEnv, showAll: boolea
 }
 
 async function handleHistoryApi(env: Env, searchParams: URLSearchParams, showAll: boolean): Promise<Response> {
+	const visWhere = showAll ? '' : `AND m.visibility = 'public'`;
+	const monthParam = searchParams.get('month');
+	const validMonth = /^\d{4}-\d{2}$/.test(monthParam ?? '') ? monthParam : null;
+
+	if (validMonth) {
+		const { results: incidents } = await env.DB.prepare(
+			`SELECT i.id, i.monitor_id, i.severity, i.status, i.started_at, i.resolved_at, i.reason,
+			        m.name AS monitor_name, m.type AS monitor_type
+			 FROM incidents i JOIN monitors m ON m.id = i.monitor_id
+			 WHERE m.enabled = 1 ${visWhere}
+			   AND strftime('%Y-%m', i.started_at) = ?
+			 ORDER BY i.started_at DESC`,
+		).bind(validMonth).all<IncidentRow>();
+
+		return Response.json({ incidents, month: validMonth }, { headers: { 'Cache-Control': showAll ? 'no-store' : `public, max-age=${PUBLIC_MAXAGE}` } });
+	}
+
 	const page = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10) || 1);
 	const limit = 10;
 	const offset = (page - 1) * limit;
-	const visWhere = showAll ? '' : `AND m.visibility = 'public'`;
 
 	const [{ results: incidents }, countRow] = await Promise.all([
 		env.DB.prepare(
