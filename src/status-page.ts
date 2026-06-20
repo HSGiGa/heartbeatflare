@@ -506,12 +506,15 @@ footer{border-top:1px solid var(--c-border);padding:20px 0;margin-top:8px}
 .footer-inner{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
 .dot-pulse{animation:pulse 2s ease-in-out infinite}
+.month-nav{display:flex;align-items:center;justify-content:center;gap:8px;padding:0 0 16px}
+.month-nav .month-label{font-weight:600;font-size:14px;min-width:110px;text-align:center;color:var(--c-text)}
 .events{display:flex;flex-direction:column}
-.event{display:grid;grid-template-columns:128px 1fr;gap:20px;padding:18px 0}
+.day-group+.day-group{margin-top:12px}
+.day-header{display:flex;align-items:center;gap:8px;padding:14px 0 10px;border-bottom:1px solid var(--c-border-soft)}
+.day-header .date{font-size:15px;font-weight:700;color:var(--c-text)}
+.day-header .relative{display:inline-block;font-size:11px;color:var(--c-text-muted);background:var(--c-border-soft);border-radius:5px;padding:2px 7px}
+.event{padding:14px 0}
 .event+.event{border-top:1px solid var(--c-border-soft)}
-.event-date{padding-top:2px}
-.event-date .date{font-size:15px;font-weight:700;color:var(--c-text)}
-.event-date .relative{display:inline-block;margin-top:6px;font-size:11px;color:var(--c-text-muted);background:var(--c-border-soft);border-radius:5px;padding:2px 7px}
 .event-title{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
 .event-title .name{font-size:16px;font-weight:600;color:var(--c-text)}
 .event-card{background:var(--c-card);border:1px solid var(--c-border);border-radius:10px;padding:16px 18px 0}
@@ -529,7 +532,7 @@ footer{border-top:1px solid var(--c-border);padding:20px 0;margin-top:8px}
 .update.down .label{color:#b91c1c}
 .update.degraded .marker{background:var(--c-degraded)}
 .update.degraded .label{color:#b45309}
-@media(max-width:640px){.event{grid-template-columns:1fr;gap:10px}.event-date .relative{margin-top:0;margin-left:8px}}
+@media(max-width:640px){.month-nav{flex-wrap:wrap}.day-header{padding:10px 0 8px}}
 @media(max-width:640px){.incident-card{margin-top:-16px}.incident-line{flex-wrap:wrap}.incident-line-time{width:100%}}
 </style>
 </head>
@@ -583,7 +586,7 @@ ${usageHtml}
   var tabHistory=document.getElementById('tab-history');
   var histList=document.getElementById('history-list');
   var histPager=document.getElementById('history-pagination');
-  var histPage=1,histPages=1,histLoaded=false;
+  var histMonth=toMonthStr(new Date()),histLoaded=false;
 
   function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
   function fmtDur(s,e){if(!e)return'ongoing';var m=Math.floor((new Date(e)-new Date(s))/60000);if(m<60)return m+'m';var h=Math.floor(m/60);if(h<24)return h+'h '+(m%60)+'m';return Math.floor(h/24)+'d '+(h%24)+'h';}
@@ -591,49 +594,69 @@ ${usageHtml}
   function fmtTime(s){var d=new Date(s);return d.toLocaleDateString('en-US',{month:'long',day:'numeric',timeZone:'UTC'})+' at '+d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true,timeZone:'UTC'});}
   function fmtClock(s){return new Date(s).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true,timeZone:'UTC'});}
   function relAgo(s){var m=Math.floor((Date.now()-new Date(s).getTime())/60000);if(m<1)return'just now';if(m<60)return m+'m ago';var h=Math.floor(m/60);if(h<24)return h+'h ago';var d=Math.floor(h/24);if(d<30)return d+'d ago';var mo=Math.floor(d/30);if(mo<12)return mo+' month'+(mo>1?'s':'')+' ago';var y=Math.floor(d/365);return y+' year'+(y>1?'s':'')+' ago';}
+  function toMonthStr(d){var m=d.getUTCMonth()+1;return d.getUTCFullYear()+'-'+(m<10?'0'+m:m);}
+  function monthLabel(ym){return new Date(ym+'-01T00:00:00Z').toLocaleDateString('en-US',{month:'long',year:'numeric',timeZone:'UTC'});}
+  function prevMonth(ym){var y=parseInt(ym,10),m=parseInt(ym.slice(5),10)-1;if(m<1){m=12;y--;}return y+'-'+(m<10?'0'+m:m);}
+  function nextMonth(ym){var y=parseInt(ym,10),m=parseInt(ym.slice(5),10)+1;if(m>12){m=1;y++;}return y+'-'+(m<10?'0'+m:m);}
+  function relDay(day){var diff=Math.floor((Date.now()-new Date(day+'T00:00:00Z').getTime())/86400000);if(diff===0)return'today';if(diff===1)return'yesterday';return diff+'d ago';}
   function renderUpdate(cls,label,time,body){return '<div class="update '+cls+'"><div class="marker"></div><div><div class="update-title"><span class="label">'+label+'</span><span class="time">'+time+'</span></div>'+(body?'<div class="update-body">'+body+'</div>':'')+'</div></div>';}
 
   function renderRows(rows){
     if(!rows.length)return'<div class="meta-text" style="padding:24px 0;text-align:center">No incidents recorded.</div>';
-    var h='<div class="events">';
+    var byDay={},days=[];
     rows.forEach(function(inc){
-      var crit=inc.severity==='critical';
-      var openCls=crit?'down':'degraded';
-      var openLabel=crit?'Down':'Degraded';
-      var ups='';
-      if(inc.resolved_at){
-        var dur=fmtDur(inc.started_at,inc.resolved_at);
-        ups+=renderUpdate('resolved','Resolved',fmtTime(inc.resolved_at)+' (in '+dur+')','Recovered after '+dur+'.');
-      }
-      var openTime=fmtTime(inc.started_at)+(inc.resolved_at?' ('+fmtDur(inc.started_at,inc.resolved_at)+' earlier)':' (ongoing)');
-      ups+=renderUpdate(openCls,openLabel,openTime,inc.reason?esc(inc.reason):'');
-      var badge=inc.monitor_type?'<span style="font-size:11px;font-weight:600;padding:2px 6px;border-radius:4px;background:#f4f4f5;color:#71717a;text-transform:uppercase;letter-spacing:0.04em">'+esc(inc.monitor_type)+'</span>':'';
-      h+='<article class="event">'+
-        '<aside class="event-date"><div class="date">'+fmtDay(inc.started_at)+'</div><div class="relative">'+relAgo(inc.started_at)+'</div></aside>'+
-        '<div class="event-content"><div class="event-title"><span class="name">'+esc(inc.monitor_name||inc.monitor_id)+'</span>'+badge+'</div>'+
-        '<div class="event-card">'+ups+'</div></div>'+
-      '</article>';
+      var day=inc.started_at.slice(0,10);
+      if(!byDay[day]){byDay[day]=[];days.push(day);}
+      byDay[day].push(inc);
+    });
+    var h='<div class="events">';
+    days.forEach(function(day){
+      h+='<div class="day-group"><div class="day-header"><span class="date">'+fmtDay(day+'T00:00:00Z')+'</span><span class="relative">'+relDay(day)+'</span></div>';
+      byDay[day].forEach(function(inc){
+        var crit=inc.severity==='critical';
+        var openCls=crit?'down':'degraded';
+        var openLabel=crit?'Down':'Degraded';
+        var ups='';
+        if(inc.resolved_at){
+          var dur=fmtDur(inc.started_at,inc.resolved_at);
+          ups+=renderUpdate('resolved','Resolved',fmtTime(inc.resolved_at)+' (in '+dur+')','Recovered after '+dur+'.');
+        }
+        var openTime=fmtTime(inc.started_at)+(inc.resolved_at?' ('+fmtDur(inc.started_at,inc.resolved_at)+' earlier)':' (ongoing)');
+        ups+=renderUpdate(openCls,openLabel,openTime,inc.reason?esc(inc.reason):'');
+        var badge=inc.monitor_type?'<span style="font-size:11px;font-weight:600;padding:2px 6px;border-radius:4px;background:#f4f4f5;color:#71717a;text-transform:uppercase;letter-spacing:0.04em">'+esc(inc.monitor_type)+'</span>':'';
+        h+='<article class="event">'+
+          '<div class="event-content"><div class="event-title"><span class="name">'+esc(inc.monitor_name||inc.monitor_id)+'</span>'+badge+'</div>'+
+          '<div class="event-card">'+ups+'</div></div>'+
+        '</article>';
+      });
+      h+='</div>';
     });
     return h+'</div>';
   }
 
-  function renderPager(){
-    if(histPages<=1){histPager.innerHTML='';return;}
-    histPager.innerHTML=
-      '<button class="range-btn" id="hist-prev"'+(histPage<=1?' disabled':'')+'>&#8592; Prev</button>'+
-      '<span class="meta-text">Page '+histPage+' of '+histPages+'</span>'+
-      '<button class="range-btn" id="hist-next"'+(histPage>=histPages?' disabled':'')+'>Next &#8594;</button>';
-    var p=document.getElementById('hist-prev'),n=document.getElementById('hist-next');
-    if(p)p.addEventListener('click',function(){if(histPage>1)loadHistory(histPage-1);});
-    if(n)n.addEventListener('click',function(){if(histPage<histPages)loadHistory(histPage+1);});
+  function renderMonthNav(){
+    var now=toMonthStr(new Date());
+    var isLatest=histMonth===now;
+    return '<div class="month-nav">'+
+      '<button class="range-btn" id="hist-prev-month">&#8592; '+monthLabel(prevMonth(histMonth))+'</button>'+
+      '<span class="month-label">'+monthLabel(histMonth)+'</span>'+
+      '<button class="range-btn" id="hist-next-month"'+(isLatest?' disabled':'')+'>'+monthLabel(nextMonth(histMonth))+' &#8594;</button>'+
+    '</div>';
   }
 
-  function loadHistory(page){
+  function loadHistory(month){
+    histMonth=month;
     histList.innerHTML='<div class="meta-text" style="padding:24px 0;text-align:center">Loading…</div>';
     histPager.innerHTML='';
-    fetch('/api/history?scope='+SCOPE+'&page='+page)
+    fetch('/api/history?scope='+SCOPE+'&month='+month)
       .then(function(r){return r.json();})
-      .then(function(data){histPage=data.page;histPages=data.pages;histLoaded=true;histList.innerHTML=renderRows(data.incidents);renderPager();})
+      .then(function(data){
+        histLoaded=true;
+        histList.innerHTML=renderMonthNav()+renderRows(data.incidents);
+        var p=document.getElementById('hist-prev-month'),n=document.getElementById('hist-next-month');
+        if(p)p.addEventListener('click',function(){loadHistory(prevMonth(histMonth));});
+        if(n)n.addEventListener('click',function(){loadHistory(nextMonth(histMonth));});
+      })
       .catch(function(){histList.innerHTML='<div class="meta-text" style="padding:24px 0;text-align:center">Failed to load.</div>';});
   }
 
@@ -642,7 +665,7 @@ ${usageHtml}
     document.querySelectorAll('.tab-btn').forEach(function(b){b.classList.toggle('active',b.dataset.tab===tab);});
     tabMonitors.hidden=isHist;
     tabHistory.hidden=!isHist;
-    if(isHist&&!histLoaded)loadHistory(1);
+    if(isHist&&!histLoaded)loadHistory(toMonthStr(new Date()));
   }
   function tabFromHash(){return location.hash.slice(1)==='history'?'history':'monitors';}
   document.querySelectorAll('.tab-btn').forEach(function(btn){
