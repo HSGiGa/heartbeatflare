@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.4] - 2026-06-20
+
+### Added
+
+- **Configurable status page title** — a new optional `site.title` in `config.yaml` sets the heading
+  shown in the page header and the browser tab, replacing the default `HeartbeatFlare`. Baked into
+  the deploy as the `SITE_TITLE` var.
+- **Overall site badge** — `/badge.svg` renders a single badge summarising every public monitor
+  (precedence: outage > active global maintenance > degraded > operational). The label defaults to
+  `site.title`; `?label=` overrides it. It also appears on the `/badges` gallery.
+- **Footer version link** — the status page footer now shows a GitHub-marked link to
+  `heartbeatflare v<deployed version>` (from `package.json`, exposed as the `APP_VERSION` var) and a
+  "Built with Claude and Codex" credit alongside the existing Cloudflare Workers link.
+
+### Changed
+
+- **Status badges restyled to the flat GitHub/Shields.io look** — accurate padding, a 12px
+  vertically-centred logo, crisp `geometricPrecision` text pinned via `textLength`, lowercase status
+  words, and a purple `maintenance` colour.
+
 ## [1.2.3] - 2026-06-20
 
 ### Fixed

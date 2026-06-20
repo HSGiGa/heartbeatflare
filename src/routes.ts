@@ -264,15 +264,40 @@ async function handleStatusPage(
 		showAll ? fetchUsage(runtimeEnv) : Promise.resolve(null),
 	]);
 
-	const html = buildStatusPage({ nowMs, monitors, uptimeDays, latencyPoints, activeIncidents, allIncidents, maintenanceWindows, d1Usage, session, authEnabled, scope: showAll ? 'all' : 'public', workerName: runtimeEnv.WORKER_NAME ?? '', host });
+	const html = buildStatusPage({ nowMs, monitors, uptimeDays, latencyPoints, activeIncidents, allIncidents, maintenanceWindows, d1Usage, session, authEnabled, scope: showAll ? 'all' : 'public', workerName: runtimeEnv.WORKER_NAME ?? '', version: runtimeEnv.APP_VERSION ?? '', siteTitle: runtimeEnv.SITE_TITLE ?? '', host });
 
 	// Unauthenticated (public) renders are cacheable at the edge; authenticated views are always fresh.
 	const resolvedCacheControl = cacheControl ?? (session ? NO_STORE : `public, max-age=${PUBLIC_MAXAGE}`);
 	return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': resolvedCacheControl } });
 }
 
-async function handleBadgesPage(env: Env, origin: string): Promise<Response> {
+async function handleBadgesPage(env: Env, origin: string, siteTitle: string): Promise<Response> {
 	const monitors = await fetchMonitorRows(env, false);
+
+	// Overall site badge: one badge for the whole site, label taken from the configured site title.
+	const overallName = siteTitle.trim() || 'HeartbeatFlare';
+	const overallPath = `/badge.svg`;
+	const overallUrl = `${origin}${overallPath}`;
+	const overallMarkdown = `![${escapeMarkdownAlt(overallName)} status](${overallUrl})`;
+	const overallHtmlSnippet = `<img src="${escHtml(overallUrl)}" alt="${escHtml(overallName)} status">`;
+	const overallRow = `<article class="badge-row">
+  <div class="badge-head">
+    <div>
+      <h2>${escHtml(overallName)}</h2>
+      <div class="monitor-id">overall site status · all public monitors</div>
+    </div>
+    <img class="badge-preview" src="${escHtml(overallPath)}" alt="${escHtml(overallName)} status badge" loading="lazy">
+  </div>
+  <label>SVG URL</label>
+  <pre><code>${escHtml(overallUrl)}</code></pre>
+  <label>Markdown</label>
+  <pre><code>${escHtml(overallMarkdown)}</code></pre>
+  <label>HTML</label>
+  <pre><code>${escHtml(overallHtmlSnippet)}</code></pre>
+  <label>Custom label example</label>
+  <pre><code>${escHtml(`${overallUrl}?label=My%20Service`)}</code></pre>
+</article>`;
+
 	const rows = monitors
 		.map((m) => {
 			const badgePath = `/badge/${encodeURIComponent(m.id)}.svg`;
@@ -299,10 +324,11 @@ async function handleBadgesPage(env: Env, origin: string): Promise<Response> {
 </article>`;
 		})
 		.join('\n');
-	const body =
+	const monitorsBody =
 		monitors.length === 0
-			? `<section class="empty"><h2>No public badges yet</h2><p>Add an enabled public monitor to config.yaml and deploy to generate badge snippets.</p></section>`
+			? `<section class="empty"><h2>No per-monitor badges yet</h2><p>Add an enabled public monitor to config.yaml and deploy to generate per-monitor badge snippets.</p></section>`
 			: `<section class="badge-list">${rows}</section>`;
+	const body = `<section class="badge-list">${overallRow}</section>${monitorsBody}`;
 	const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -337,7 +363,7 @@ async function handleBadgesPage(env: Env, origin: string): Promise<Response> {
     <header>
       <div>
         <h1>Status badges</h1>
-        <p>Embeddable SVG badges for public monitors.</p>
+        <p>Embeddable SVG badges: an overall site badge plus one per public monitor.</p>
       </div>
       <a href="/public">Status page</a>
     </header>
@@ -387,6 +413,27 @@ async function handleBadge(env: Env, pathname: string, searchParams: URLSearchPa
 	});
 }
 
+// Overall site badge: a single badge summarising every public monitor. Precedence is
+// down > maintenance (active global window) > degraded > up; the label defaults to the site title.
+async function handleOverallBadge(env: Env, runtimeEnv: RuntimeEnv, searchParams: URLSearchParams): Promise<Response> {
+	const nowIso = new Date().toISOString();
+	const [monitors, maintenanceWindows] = await Promise.all([
+		fetchMonitorRows(env, false),
+		fetchMaintenanceWindows(env, false, nowIso),
+	]);
+	const hasDown = monitors.some((m) => m.status === 'down');
+	const hasDegraded = monitors.some((m) => m.status === 'degraded');
+	// A global window (no affected monitors) that is active right now puts the whole site in maintenance.
+	const globalMaintenance = maintenanceWindows.some((w) => w.monitor_ids.length === 0 && w.starts_at <= nowIso && nowIso < w.ends_at);
+	// No public monitors at all → unknown; otherwise worst-of.
+	const status = monitors.length === 0 ? null : hasDown ? 'down' : globalMaintenance ? 'maintenance' : hasDegraded ? 'degraded' : 'up';
+	const label = searchParams.get('label') ?? runtimeEnv.SITE_TITLE?.trim() ?? '';
+	const svg = buildBadgeSvg(label || 'HeartbeatFlare', status, false);
+	return new Response(svg, {
+		headers: { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': `public, max-age=${PUBLIC_MAXAGE}` },
+	});
+}
+
 export async function handleFetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 	const origin = new URL(request.url).origin;
 	const { pathname } = new URL(request.url);
@@ -430,7 +477,12 @@ export async function handleFetch(request: Request, env: Env, ctx: ExecutionCont
 	}
 
 	if (request.method === 'GET' && pathname === '/badges') {
-		return withPublicEdgeCache(request, ctx, () => handleBadgesPage(env, origin));
+		return withPublicEdgeCache(request, ctx, () => handleBadgesPage(env, origin, runtimeEnv.SITE_TITLE ?? ''));
+	}
+
+	if (request.method === 'GET' && pathname === '/badge.svg') {
+		const searchParams = new URL(request.url).searchParams;
+		return withPublicEdgeCache(request, ctx, () => handleOverallBadge(env, runtimeEnv, searchParams));
 	}
 
 	if (request.method === 'GET' && pathname.startsWith('/badge/') && pathname.endsWith('.svg')) {

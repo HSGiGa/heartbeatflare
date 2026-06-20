@@ -115,6 +115,11 @@ export type RuntimeEnv = Env & {
 	D1_DATABASE_ID?: string;
 	CLOUDFLARE_RUNTIME_API_TOKEN?: string;
 	WORKER_NAME?: string;
+	// Generated at deploy time from package.json: the deployed version, shown in the status page footer.
+	APP_VERSION?: string;
+	// Generated at deploy time from config.yaml site.title: the status page heading + browser tab title.
+	// Empty falls back to "HeartbeatFlare".
+	SITE_TITLE?: string;
 	// Generated at deploy time from config.yaml: JSON map of monitor id → custom HTTP probe headers,
 	// with ${VAR} placeholders preserved (resolved against env at probe runtime). Non-secret.
 	PROBE_HEADERS?: string;

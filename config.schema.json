@@ -9,6 +9,9 @@
 		"deploy": {
 			"$ref": "#/$defs/deploy_config"
 		},
+		"site": {
+			"$ref": "#/$defs/site_config"
+		},
 		"auth": {
 			"$ref": "#/$defs/auth_config"
 		},
@@ -47,6 +50,18 @@
 		}
 	},
 	"$defs": {
+		"site_config": {
+			"type": "object",
+			"description": "Status page branding. Optional; omit to use the default \"HeartbeatFlare\" name.",
+			"additionalProperties": false,
+			"properties": {
+				"title": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Heading shown in the page header and browser tab, replacing \"HeartbeatFlare\"."
+				}
+			}
+		},
 		"notification_templates": {
 			"type": "object",
 			"description": "Optional custom notification text templates by event type. Placeholders: {monitor}, {count}, {error}, {status}.",
