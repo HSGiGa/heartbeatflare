@@ -44,7 +44,7 @@
 	],
 	"queues": {
 		"producers": [{ "queue": "", "binding": "NOTIFICATION_QUEUE" }], // generated: deploy.queue_name
-		"consumers": [{ "queue": "", "max_batch_size": 1, "max_batch_timeout": 1, "max_retries": 8 }] // one check per consumer invocation keeps the Free-plan CPU bounded
+		"consumers": [{ "queue": "", "max_batch_size": 10, "max_batch_timeout": 5, "max_retries": 8 }] // notifications only; 8 retries × backoff (src/queue.ts) ≈ ~14 min budget
 	},
 	"send_email": [], // generated from type: email notification channels; omitted when none are configured
 	// Rate limiters for the public heartbeat endpoint (POST /beat/<id>/<token>), checked before any

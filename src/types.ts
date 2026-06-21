@@ -74,10 +74,6 @@ export type NotificationMessage = {
 	error?: string;
 };
 
-// Probe jobs are produced only by the scheduler. The consumer re-reads configuration from D1 so a
-// config deployment made after dispatch is honoured and queue payloads contain no target/secrets.
-export type CheckMessage = { kind: 'check'; monitorId: string };
-
 export type NotificationChannelDbRow = {
 	id: string;
 	name: string;

@@ -3,7 +3,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import worker from '../src/index';
 import { _invalidateAuthCache, resolveAuthConfig } from '../src/auth';
 import { CONNECTIVITY_CLASS, evaluateAlerts } from '../src/alerts';
-import { handleQueuedCheck, handleScheduled } from '../src/scheduler';
+import { handleScheduled } from '../src/scheduler';
 import type { AlertRuleDbRow, MonitorRow } from '../src/types';
 // Apply the single consolidated baseline so the test schema matches production. If the schema is
 // ever split into further migrations, import and apply each one here in order.
@@ -738,7 +738,6 @@ describe('scheduler internal (Workers VPC) monitors', () => {
 		await seedInternal('int-http', 'http', 'http://demo.internal/health', 'TEST_VPC');
 
 		await handleScheduled(env);
-		await handleQueuedCheck(env, 'int-http');
 
 		expect(vpcFetch).toHaveBeenCalledTimes(1);
 		expect(String(vpcFetch.mock.calls[0][0])).toBe('http://demo.internal/health');
@@ -751,7 +750,6 @@ describe('scheduler internal (Workers VPC) monitors', () => {
 		await seedInternal('int-tcp', 'tcp', '10.0.1.50:6379', 'TEST_VPC');
 
 		await handleScheduled(env);
-		await handleQueuedCheck(env, 'int-tcp');
 
 		expect(vpcConnect).toHaveBeenCalledTimes(1);
 		expect(vpcConnect.mock.calls[0][0]).toBe('10.0.1.50:6379');
@@ -763,7 +761,6 @@ describe('scheduler internal (Workers VPC) monitors', () => {
 		await seedInternal('int-missing', 'http', 'http://demo.internal/', 'NOPE_BINDING');
 
 		await handleScheduled(env);
-		await handleQueuedCheck(env, 'int-missing');
 
 		const st = await env.DB
 			.prepare(`SELECT status FROM monitor_state WHERE monitor_id = 'int-missing'`)
