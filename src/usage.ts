@@ -2,7 +2,9 @@
 // invocations for today, fetched from the Cloudflare GraphQL API and cached 60s per isolate.
 // Limits are plan-dependent; plan detection needs Billing:Read on the token and falls back to
 // Free Plan limits without it. Errors keep serving the last (or fallback) snapshot.
-import type { RuntimeEnv, D1Usage, D1UsagePercent, UsageSnapshot, UsageGraphQLResponse, QueueGraphQLResponse, PlanInfo, QueueUsage, EmailRoutingUsage, VpcItemStatus } from './types';
+import type { RuntimeEnv, D1Usage, D1UsagePercent, UsageSnapshot, UsageGraphQLResponse, QueueGraphQLResponse, TrendsGraphQLResponse, HourlyGroup, PlanInfo, QueueUsage, EmailRoutingUsage, VpcItemStatus, UsageTrends } from './types';
+
+export const TREND_HOURS = 24;
 
 // Core usage (D1 + Workers) and the optional datasets (queues) are fetched as separate GraphQL
 // requests on purpose: GraphQL collapses the whole document to data:null on any field/permission
@@ -16,6 +18,59 @@ const CORE_USAGE_QUERY =
 // notifications queue, so we aggregate by actionType across the account instead.
 const QUEUE_USAGE_QUERY =
 	'query QueueUsage($accountTag: string!, $date: Date) { viewer { accounts(filter: { accountTag: $accountTag }) { queueMessageOperationsAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date }) { sum { billableOperations } dimensions { actionType } } } } }';
+
+// Hourly buckets for the last TREND_HOURS, for the sparklines. Same Account Analytics:Read scope as
+// the core query; fetched separately so a failure here can't take down the core block.
+const TREND_QUERY =
+	'query Trends($accountTag: string!, $since: Time, $databaseId: string, $scriptName: string) { viewer { accounts(filter: { accountTag: $accountTag }) { d1AnalyticsAdaptiveGroups(limit: 1000, orderBy: [datetimeHour_ASC], filter: { datetime_geq: $since, databaseId: $databaseId }) { sum { rowsRead rowsWritten } dimensions { datetimeHour } } workersInvocationsAdaptive(limit: 1000, orderBy: [datetimeHour_ASC], filter: { datetime_geq: $since, scriptName: $scriptName }) { sum { requests errors } dimensions { datetimeHour } } } } }';
+
+// The ISO top-of-hour keys for the last `hours` buckets, oldest→newest, ending at the current hour.
+export function hourKeys(nowMs: number, hours: number): string[] {
+	const top = Math.floor(nowMs / 3_600_000) * 3_600_000;
+	// top-of-hour ISO has zero minutes/seconds; strip millis to match the API's datetimeHour format.
+	return Array.from({ length: hours }, (_, i) => new Date(top - (hours - 1 - i) * 3_600_000).toISOString().replace(/\.\d{3}Z$/, 'Z'));
+}
+
+// Maps datetimeHour-grouped rows onto a fixed-length, gap-filled series aligned to `keys`.
+export function hourlySeries<S extends Record<string, number | undefined>>(
+	groups: Array<HourlyGroup<S>>,
+	field: keyof S,
+	keys: string[],
+): number[] {
+	const byHour = new Map<string, number>();
+	for (const g of groups) {
+		if (g.dimensions?.datetimeHour) byHour.set(g.dimensions.datetimeHour, (g.sum?.[field] as number | undefined) ?? 0);
+	}
+	return keys.map((k) => byHour.get(k) ?? 0);
+}
+
+let cachedTrends: UsageTrends | null = null;
+let cachedTrendsUntil = 0;
+
+async function fetchUsageTrends(accountId: string, apiToken: string, databaseId: string, scriptName: string, nowMs: number): Promise<UsageTrends | null> {
+	if (nowMs < cachedTrendsUntil) return cachedTrends;
+
+	const keys = hourKeys(nowMs, TREND_HOURS);
+	const body = await cfGraphQL<TrendsGraphQLResponse>(apiToken, TREND_QUERY, {
+		accountTag: accountId,
+		since: keys[0],
+		databaseId,
+		scriptName,
+	});
+	const account = body?.data?.viewer?.accounts?.[0];
+	if (!body || body.errors?.length || !account) return cachedTrends;
+
+	const d1 = account.d1AnalyticsAdaptiveGroups ?? [];
+	const workers = account.workersInvocationsAdaptive ?? [];
+	cachedTrends = {
+		d1RowsRead: hourlySeries(d1, 'rowsRead', keys),
+		d1RowsWritten: hourlySeries(d1, 'rowsWritten', keys),
+		workerRequests: hourlySeries(workers, 'requests', keys),
+		workerErrors: hourlySeries(workers, 'errors', keys),
+	};
+	cachedTrendsUntil = nowMs + 60_000;
+	return cachedTrends;
+}
 
 async function cfGraphQL<T>(apiToken: string, query: string, variables: Record<string, unknown>): Promise<T | null> {
 	try {
@@ -190,6 +245,7 @@ let cachedUsage: UsageSnapshot = {
 	queues: null,
 	email: null,
 	vpc: null,
+	trends: null,
 	fetchedAt: null,
 	plan: null,
 };
@@ -221,8 +277,8 @@ export async function fetchUsage(env: RuntimeEnv): Promise<UsageSnapshot> {
 	}
 
 	const today = utcDateString(new Date(nowMs));
-	// Core query gates the snapshot; the optional ones (queue/email/vpc) degrade to null on their own.
-	const [plan, coreBody, queues, emailUsage, vpcStatus] = await Promise.all([
+	// Core query gates the snapshot; the optional ones (queue/email/vpc/trends) degrade to null on their own.
+	const [plan, coreBody, queues, emailUsage, vpcStatus, trends] = await Promise.all([
 		fetchPlanInfo(accountId, apiToken),
 		cfGraphQL<UsageGraphQLResponse>(apiToken, CORE_USAGE_QUERY, {
 			accountTag: accountId,
@@ -233,6 +289,7 @@ export async function fetchUsage(env: RuntimeEnv): Promise<UsageSnapshot> {
 		fetchQueueUsage(accountId, apiToken, today),
 		fetchEmailRoutingUsage(accountId, apiToken),
 		fetchVpcStatus(accountId, apiToken, env),
+		fetchUsageTrends(accountId, apiToken, databaseId, env.WORKER_NAME ?? '', nowMs),
 	]);
 
 	const account = coreBody?.data?.viewer?.accounts?.[0];
@@ -262,6 +319,7 @@ export async function fetchUsage(env: RuntimeEnv): Promise<UsageSnapshot> {
 		queues,
 		email: emailUsage,
 		vpc: vpcStatus,
+		trends,
 		fetchedAt: new Date(nowMs).toISOString(),
 		plan,
 	};

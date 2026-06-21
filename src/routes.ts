@@ -120,7 +120,7 @@ async function handleStatusApi(env: Env, runtimeEnv: RuntimeEnv, showAll: boolea
 
 	return Response.json({
 		...(showAll && snapshot
-			? { d1: snapshot.d1, d1Percent: snapshot.d1Percent, workers: snapshot.workers, queues: snapshot.queues, email: snapshot.email, vpc: snapshot.vpc, usageResetsIn: usageResetsIn(Date.now()) }
+			? { d1: snapshot.d1, d1Percent: snapshot.d1Percent, workers: snapshot.workers, queues: snapshot.queues, email: snapshot.email, vpc: snapshot.vpc, trends: snapshot.trends, usageResetsIn: usageResetsIn(Date.now()) }
 			: {}),
 		monitors: monitors.map((m) => ({
 			id: m.id,

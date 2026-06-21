@@ -181,6 +181,15 @@ export type PlanInfo = {
 	storageBytes: number;
 };
 
+// Hourly time series for the last ~24h, oldest→newest, gap-filled to a fixed length. Drives the
+// sparklines on the usage page. Optional — degrades to null without breaking the rest of the block.
+export type UsageTrends = {
+	d1RowsRead: number[];
+	d1RowsWritten: number[];
+	workerRequests: number[];
+	workerErrors: number[];
+};
+
 export type UsageSnapshot = {
 	d1: D1Usage;
 	d1Percent: D1UsagePercent;
@@ -188,6 +197,7 @@ export type UsageSnapshot = {
 	queues: QueueUsage | null;
 	email: EmailRoutingUsage | null;
 	vpc: VpcItemStatus[] | null;
+	trends: UsageTrends | null;
 	fetchedAt: string | null;
 	plan: PlanInfo | null;
 };
@@ -240,6 +250,20 @@ export type QueueGraphQLResponse = {
 					sum?: { billableOperations?: number };
 					dimensions?: { actionType?: string };
 				}>;
+			}>;
+		};
+	};
+	errors?: unknown[];
+};
+
+// Hourly buckets for the sparklines, grouped by the datetimeHour dimension.
+export type HourlyGroup<S> = { sum?: S; dimensions?: { datetimeHour?: string } };
+export type TrendsGraphQLResponse = {
+	data?: {
+		viewer?: {
+			accounts?: Array<{
+				d1AnalyticsAdaptiveGroups?: Array<HourlyGroup<{ rowsRead?: number; rowsWritten?: number }>>;
+				workersInvocationsAdaptive?: Array<HourlyGroup<{ requests?: number; errors?: number }>>;
 			}>;
 		};
 	};
