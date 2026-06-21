@@ -117,8 +117,20 @@ async function main() {
 		} catch (err) {
 			fail(err instanceof Error ? err.message : String(err));
 		}
-		if (bindings.vpc_networks) wrangler.vpc_networks = bindings.vpc_networks;
-		if (bindings.vpc_services) wrangler.vpc_services = bindings.vpc_services;
+		if (bindings.vpc_networks) {
+			wrangler.vpc_networks = bindings.vpc_networks;
+			// Emit tunnel IDs as vars so the runtime can query CF API for tunnel health status.
+			wrangler.vars.VPC_NETWORK_IDS = JSON.stringify(
+				bindings.vpc_networks.map((n) => ({ binding: n.binding, tunnel_id: n.tunnel_id })),
+			);
+		}
+		if (bindings.vpc_services) {
+			wrangler.vpc_services = bindings.vpc_services;
+			// Emit service IDs as vars so the runtime can query CF API for VPC service health status.
+			wrangler.vars.VPC_SERVICE_IDS = JSON.stringify(
+				bindings.vpc_services.map((s) => ({ binding: s.binding, service_id: s.service_id })),
+			);
+		}
 	}
 
 	writeFileSync('wrangler.jsonc', JSON.stringify(wrangler, null, '\t') + '\n');

@@ -405,7 +405,7 @@ export function buildStatusPage({
 	}
 
 	const usageHtml = d1Usage ? (() => {
-		const { d1, d1Percent, workers, queues, cron, email, plan } = d1Usage;
+		const { d1, d1Percent, workers, queues, cron, email, vpc, plan } = d1Usage;
 		const p = plan ?? { label: 'Free', rowsRead: 5_000_000, rowsWritten: 100_000, storageBytes: 5_000_000_000 };
 		const workersReqPct = workers ? (workers.requests / workersFreeLimit.requestsPerDay) * 100 : 0;
 		const d1ReadLimit = p.rowsRead >= 1_000_000_000 ? `${(p.rowsRead / 1_000_000_000).toFixed(0)}B` : `${(p.rowsRead / 1_000_000).toFixed(0)}M`;
@@ -452,6 +452,15 @@ export function buildStatusPage({
 	<div class="usage-grid">
 		${infoCard('Verified', String(email.verified.length), '#16a34a', email.verified.length > 0 ? email.verified.join(', ') : 'none')}
 		${infoCard('Pending', String(email.pending.length), email.pending.length > 0 ? '#d97706' : '#a1a1aa', email.pending.length > 0 ? email.pending.join(', ') : 'all verified')}
+	</div>` : ''}
+	${vpc && vpc.length > 0 ? `
+	<div class="usage-sublabel" style="margin-top:16px">Internal Services · Workers VPC</div>
+	<div class="usage-grid">
+		${vpc.map((s) => {
+			const color = s.status === 'healthy' ? '#16a34a' : s.status === 'degraded' ? '#f59e0b' : s.status === 'down' ? '#dc2626' : '#a1a1aa';
+			const sub = `${s.kind === 'network' ? 'tunnel' : 'service'} · ${s.binding}`;
+			return infoCard(s.name ?? s.binding, s.status ?? 'unknown', color, sub);
+		}).join('')}
 	</div>` : ''}
 	</section>`;
 	})() : '';

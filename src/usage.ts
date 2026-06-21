@@ -2,7 +2,7 @@
 // invocations for today, fetched from the Cloudflare GraphQL API and cached 60s per isolate.
 // Limits are plan-dependent; plan detection needs Billing:Read on the token and falls back to
 // Free Plan limits without it. Errors keep serving the last (or fallback) snapshot.
-import type { RuntimeEnv, D1Usage, D1UsagePercent, UsageSnapshot, UsageGraphQLResponse, PlanInfo, QueueUsage, CronUsage, EmailRoutingUsage } from './types';
+import type { RuntimeEnv, D1Usage, D1UsagePercent, UsageSnapshot, UsageGraphQLResponse, PlanInfo, QueueUsage, CronUsage, EmailRoutingUsage, VpcItemStatus } from './types';
 
 export const workersFreeLimit = {
 	requestsPerDay: 100_000,
@@ -59,6 +59,58 @@ function calculateUsagePercent(usage: D1Usage, limits: PlanInfo): D1UsagePercent
 	};
 }
 
+let cachedVpc: VpcItemStatus[] | null = null;
+let cachedVpcUntil = 0;
+
+async function fetchVpcStatus(accountId: string, apiToken: string, env: RuntimeEnv): Promise<VpcItemStatus[] | null> {
+	const nowMs = Date.now();
+	if (cachedVpc && nowMs < cachedVpcUntil) return cachedVpc;
+
+	type NetworkEntry = { binding: string; tunnel_id: string };
+	type ServiceEntry = { binding: string; service_id: string };
+
+	let networks: NetworkEntry[] = [];
+	let services: ServiceEntry[] = [];
+	try {
+		if (env.VPC_NETWORK_IDS) networks = JSON.parse(env.VPC_NETWORK_IDS) as NetworkEntry[];
+		if (env.VPC_SERVICE_IDS) services = JSON.parse(env.VPC_SERVICE_IDS) as ServiceEntry[];
+	} catch {
+		return null;
+	}
+	if (networks.length === 0 && services.length === 0) return null;
+
+	const results = await Promise.all([
+		...networks.map(async (n): Promise<VpcItemStatus> => {
+			try {
+				const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/cfd_tunnel/${n.tunnel_id}`, {
+					headers: { Authorization: `Bearer ${apiToken}` },
+				});
+				if (!res.ok) return { binding: n.binding, kind: 'network', id: n.tunnel_id, status: null };
+				const data = (await res.json()) as { result?: { status?: string; name?: string } };
+				return { binding: n.binding, kind: 'network', id: n.tunnel_id, status: data.result?.status ?? null, name: data.result?.name };
+			} catch {
+				return { binding: n.binding, kind: 'network', id: n.tunnel_id, status: null };
+			}
+		}),
+		...services.map(async (s): Promise<VpcItemStatus> => {
+			try {
+				const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/vpc/services/${s.service_id}`, {
+					headers: { Authorization: `Bearer ${apiToken}` },
+				});
+				if (!res.ok) return { binding: s.binding, kind: 'service', id: s.service_id, status: null };
+				const data = (await res.json()) as { result?: { status?: string; name?: string } };
+				return { binding: s.binding, kind: 'service', id: s.service_id, status: data.result?.status ?? null, name: data.result?.name };
+			} catch {
+				return { binding: s.binding, kind: 'service', id: s.service_id, status: null };
+			}
+		}),
+	]);
+
+	cachedVpc = results;
+	cachedVpcUntil = nowMs + 60_000;
+	return cachedVpc;
+}
+
 let cachedEmail: EmailRoutingUsage | null = null;
 let cachedEmailUntil = 0;
 
@@ -101,6 +153,7 @@ let cachedUsage: UsageSnapshot = {
 	queues: null,
 	cron: null,
 	email: null,
+	vpc: null,
 	fetchedAt: null,
 	plan: null,
 };
@@ -132,7 +185,7 @@ export async function fetchUsage(env: RuntimeEnv): Promise<UsageSnapshot> {
 	}
 
 	const today = utcDateString(new Date(nowMs));
-	const [plan, response, emailUsage] = await Promise.all([
+	const [plan, response, emailUsage, vpcStatus] = await Promise.all([
 		fetchPlanInfo(accountId, apiToken),
 		fetch('https://api.cloudflare.com/client/v4/graphql', {
 		method: 'POST',
@@ -153,6 +206,7 @@ export async function fetchUsage(env: RuntimeEnv): Promise<UsageSnapshot> {
 		}),
 	}),
 		fetchEmailRoutingUsage(accountId, apiToken),
+		fetchVpcStatus(accountId, apiToken, env),
 	]);
 
 	if (!response.ok) {
@@ -194,6 +248,7 @@ export async function fetchUsage(env: RuntimeEnv): Promise<UsageSnapshot> {
 			? { scheduledInvocations: cronSum.scheduledSuccesses ?? 0, scheduledErrors: cronSum.scheduledErrors ?? 0 }
 			: null,
 		email: emailUsage,
+		vpc: vpcStatus,
 		fetchedAt: new Date(nowMs).toISOString(),
 		plan,
 	};

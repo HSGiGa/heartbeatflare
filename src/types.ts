@@ -123,6 +123,10 @@ export type RuntimeEnv = Env & {
 	// Generated at deploy time from config.yaml: JSON map of monitor id → custom HTTP probe headers,
 	// with ${VAR} placeholders preserved (resolved against env at probe runtime). Non-secret.
 	PROBE_HEADERS?: string;
+	// Emitted by generate-wrangler.ts when deploy.vpc is configured. JSON-encoded arrays of
+	// {binding, tunnel_id} and {binding, service_id} so the runtime can query CF API for health.
+	VPC_NETWORK_IDS?: string;
+	VPC_SERVICE_IDS?: string;
 };
 
 // A Cloudflare Workers VPC binding (Issue #18): vpc_networks and vpc_services expose the same probe
@@ -168,6 +172,14 @@ export type EmailRoutingUsage = {
 	pending: string[];    // unverified — emails to these are silently dropped at runtime
 };
 
+export type VpcItemStatus = {
+	binding: string;              // wrangler binding name, e.g. "DEMO_NETWORK"
+	kind: 'network' | 'service';
+	id: string;                   // tunnel_id or service_id
+	status: string | null;        // 'healthy' | 'degraded' | 'down' | 'inactive' | null
+	name?: string;                // human name returned by the CF API
+};
+
 export type PlanInfo = {
 	label: string;
 	rowsRead: number;
@@ -182,6 +194,7 @@ export type UsageSnapshot = {
 	queues: QueueUsage | null;
 	cron: CronUsage | null;
 	email: EmailRoutingUsage | null;
+	vpc: VpcItemStatus[] | null;
 	fetchedAt: string | null;
 	plan: PlanInfo | null;
 };
