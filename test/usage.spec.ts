@@ -1,6 +1,6 @@
 // Pure-lib tests for the usage-block reducers (Issue #31). Mirrors test/vpc.spec.ts style.
 import { describe, it, expect } from 'vitest';
-import { reduceQueueOperations, reduceTunnels, hourKeys, hourlySeries } from '../src/usage';
+import { reduceQueueOperations, reduceTunnels, serviceTunnelId, hourKeys, hourlySeries } from '../src/usage';
 
 describe('reduceQueueOperations', () => {
 	it('maps WriteMessage to write operations and ReadMessage/DeleteMessage to consume operations', () => {
@@ -63,5 +63,16 @@ describe('reduceTunnels', () => {
 			{ id: 'a', name: 'alpha', status: 'healthy', connections: 2, lastConnectedAt: '2026-06-21T09:00:00Z', createdAt: '2026-06-01T00:00:00Z' },
 			{ id: 'b', name: 'zulu', status: 'inactive', connections: 0, lastConnectedAt: null, createdAt: null },
 		]);
+	});
+});
+
+describe('serviceTunnelId', () => {
+	it('reads a backing tunnel from a VPC service network or resolver network', () => {
+		expect(serviceTunnelId({ host: { network: { tunnel_id: 'network-tunnel' } } })).toBe('network-tunnel');
+		expect(serviceTunnelId({ host: { resolver_network: { tunnel_id: 'resolver-tunnel' } } })).toBe('resolver-tunnel');
+	});
+
+	it('returns null when a VPC service has no tunnel association', () => {
+		expect(serviceTunnelId({ host: { hostname: 'internal.example' } })).toBeNull();
 	});
 });

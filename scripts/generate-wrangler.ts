@@ -137,9 +137,14 @@ async function main() {
 				bindings.vpc_networks.map((n) => ({ binding: n.binding, tunnel_id: n.tunnel_id })),
 			);
 		}
-		// Note: no VPC_SERVICE_IDS var is emitted — the VPC service API exposes configuration only,
-		// not health, so service status isn't surfaced on the usage page (networks/tunnels are).
-		if (bindings.vpc_services) wrangler.vpc_services = bindings.vpc_services;
+		if (bindings.vpc_services) {
+			wrangler.vpc_services = bindings.vpc_services;
+			// The runtime resolves the backing tunnel through Connectivity Directory. This remains
+			// scoped to configured bindings and never enumerates account-wide tunnels.
+			wrangler.vars.VPC_SERVICE_IDS = JSON.stringify(
+				bindings.vpc_services.map((s) => ({ binding: s.binding, service_id: s.service_id })),
+			);
+		}
 	}
 
 	writeFileSync('wrangler.jsonc', JSON.stringify(wrangler, null, '\t') + '\n');

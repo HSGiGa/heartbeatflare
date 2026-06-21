@@ -213,6 +213,9 @@ Cloudflare One Networks read/write permissions can still fail Workers VPC bindin
 `code: 10196` (`not authorized for the requested VPC resource`). The token must be scoped to the
 account that owns the VPC Service / Tunnel.
 
+When `/usage` is enabled with `vpc_services`, its **runtime token** additionally needs
+**Connectivity Directory: Read** to resolve each configured VPC Service to its backing tunnel.
+
 `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are **deploy-time** credentials — they live in
 `.env` locally and in CI secrets, and never reach the Worker.
 

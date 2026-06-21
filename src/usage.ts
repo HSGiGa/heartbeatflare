@@ -142,45 +142,75 @@ function calculateUsagePercent(usage: D1Usage, limits: PlanInfo): D1UsagePercent
 let cachedVpc: VpcItemStatus[] | null = null;
 let cachedVpcUntil = 0;
 
+type NetworkEntry = { binding: string; tunnel_id: string };
+type ServiceEntry = { binding: string; service_id: string };
+
+type ConnectivityService = {
+	host?: {
+		network?: { tunnel_id?: string };
+		resolver_network?: { tunnel_id?: string };
+	};
+};
+
+export function serviceTunnelId(service: ConnectivityService): string | null {
+	return service.host?.network?.tunnel_id ?? service.host?.resolver_network?.tunnel_id ?? null;
+}
+
 async function fetchVpcStatus(accountId: string, apiToken: string, env: RuntimeEnv): Promise<VpcItemStatus[] | null> {
 	const nowMs = Date.now();
 	if (cachedVpc && nowMs < cachedVpcUntil) return cachedVpc;
 
-	// Networks only: their backing Cloudflare Tunnel (cfd_tunnel) exposes health and connection
-	// state. This deliberately scopes /usage to tunnels used by Workers VPC monitoring.
-	type NetworkEntry = { binding: string; tunnel_id: string };
-
 	let networks: NetworkEntry[] = [];
+	let services: ServiceEntry[] = [];
 	try {
 		if (env.VPC_NETWORK_IDS) networks = JSON.parse(env.VPC_NETWORK_IDS) as NetworkEntry[];
+		if (env.VPC_SERVICE_IDS) services = JSON.parse(env.VPC_SERVICE_IDS) as ServiceEntry[];
 	} catch {
 		return null;
 	}
-	if (networks.length === 0) return null;
+	if (networks.length === 0 && services.length === 0) return null;
+
+	const fetchTunnelStatus = async (binding: string, kind: VpcItemStatus['kind'], id: string): Promise<VpcItemStatus> => {
+		try {
+			const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/cfd_tunnel/${id}`, {
+				headers: { Authorization: `Bearer ${apiToken}` },
+			});
+			if (!res.ok) return { binding, kind, id, status: null };
+			const data = (await res.json()) as { result?: TunnelApiItem };
+			const tunnel = reduceTunnels([{ id, ...data.result }])[0];
+			return {
+				binding,
+				kind,
+				id,
+				status: tunnel?.status ?? null,
+				name: tunnel?.name,
+				connections: tunnel?.connections ?? 0,
+				lastConnectedAt: tunnel?.lastConnectedAt ?? null,
+				createdAt: tunnel?.createdAt ?? null,
+			};
+		} catch {
+			return { binding, kind, id, status: null };
+		}
+	};
 
 	const results = await Promise.all(
-		networks.map(async (n): Promise<VpcItemStatus> => {
-			try {
-				const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/cfd_tunnel/${n.tunnel_id}`, {
-					headers: { Authorization: `Bearer ${apiToken}` },
-				});
-				if (!res.ok) return { binding: n.binding, kind: 'network', id: n.tunnel_id, status: null };
-				const data = (await res.json()) as { result?: TunnelApiItem };
-				const tunnel = reduceTunnels([{ id: n.tunnel_id, ...data.result }])[0];
-				return {
-					binding: n.binding,
-					kind: 'network',
-					id: n.tunnel_id,
-					status: tunnel?.status ?? null,
-					name: tunnel?.name,
-					connections: tunnel?.connections ?? 0,
-					lastConnectedAt: tunnel?.lastConnectedAt ?? null,
-					createdAt: tunnel?.createdAt ?? null,
-				};
-			} catch {
-				return { binding: n.binding, kind: 'network', id: n.tunnel_id, status: null };
-			}
-		}),
+		[
+			...networks.map((n) => fetchTunnelStatus(n.binding, 'network', n.tunnel_id)),
+			...services.map(async (s): Promise<VpcItemStatus> => {
+				try {
+					const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/connectivity/directory/services/${s.service_id}`, {
+						headers: { Authorization: `Bearer ${apiToken}` },
+					});
+					if (!res.ok) return { binding: s.binding, kind: 'service', id: s.service_id, status: null };
+					const data = (await res.json()) as { result?: ConnectivityService };
+					const tunnelId = data.result && serviceTunnelId(data.result);
+					if (!tunnelId) return { binding: s.binding, kind: 'service', id: s.service_id, status: null };
+					return fetchTunnelStatus(s.binding, 'service', tunnelId);
+				} catch {
+					return { binding: s.binding, kind: 'service', id: s.service_id, status: null };
+				}
+			}),
+		],
 	);
 
 	cachedVpc = results;

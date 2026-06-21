@@ -128,6 +128,8 @@ export type RuntimeEnv = Env & {
 	// Emitted by generate-wrangler.ts when deploy.vpc networks are configured. JSON-encoded array of
 	// {binding, tunnel_id} so the runtime can query the CF API for backing-tunnel health.
 	VPC_NETWORK_IDS?: string;
+	// Emitted for configured VPC services. The runtime resolves each service's backing tunnel.
+	VPC_SERVICE_IDS?: string;
 };
 
 // A Cloudflare Workers VPC binding (Issue #18): vpc_networks and vpc_services expose the same probe
@@ -170,8 +172,8 @@ export type EmailRoutingUsage = {
 
 export type VpcItemStatus = {
 	binding: string;              // wrangler binding name, e.g. "DEMO_NETWORK"
-	kind: 'network';
-	id: string;                   // tunnel_id
+	kind: 'network' | 'service';
+	id: string;                   // tunnel_id, or service_id if association is unavailable
 	status: string | null;        // 'healthy' | 'degraded' | 'down' | 'inactive' | 'active' | null
 	name?: string;                // human name returned by the CF API
 	connections?: number;
@@ -179,7 +181,7 @@ export type VpcItemStatus = {
 	createdAt?: string | null;
 };
 
-// Tunnel state is derived exclusively from configured VPC networks, never from an account-wide list.
+// Tunnel state is derived exclusively from configured Workers VPC bindings, never from an account-wide list.
 export type TunnelStatus = {
 	id: string;
 	name: string;
