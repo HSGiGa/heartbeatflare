@@ -2,7 +2,32 @@
 // invocations for today, fetched from the Cloudflare GraphQL API and cached 60s per isolate.
 // Limits are plan-dependent; plan detection needs Billing:Read on the token and falls back to
 // Free Plan limits without it. Errors keep serving the last (or fallback) snapshot.
-import type { RuntimeEnv, D1Usage, D1UsagePercent, UsageSnapshot, UsageGraphQLResponse, PlanInfo, QueueUsage, CronUsage, EmailRoutingUsage, VpcItemStatus } from './types';
+import type { RuntimeEnv, D1Usage, D1UsagePercent, UsageSnapshot, UsageGraphQLResponse, QueueGraphQLResponse, PlanInfo, QueueUsage, EmailRoutingUsage, VpcItemStatus } from './types';
+
+// Core usage (D1 + Workers) and the optional datasets (queues) are fetched as separate GraphQL
+// requests on purpose: GraphQL collapses the whole document to data:null on any field/permission
+// error, so keeping them apart means a problem with an optional dataset can't take down the core.
+const CORE_USAGE_QUERY =
+	'query Usage($accountTag: string!, $date: Date, $databaseId: string, $scriptName: string) { viewer { accounts(filter: { accountTag: $accountTag }) { d1AnalyticsAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date, databaseId: $databaseId }) { sum { readQueries writeQueries rowsRead rowsWritten queryBatchResponseBytes } } d1StorageAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date, databaseId: $databaseId }) { max { databaseSizeBytes } } workersInvocationsAdaptive(limit: 10000, filter: { date_geq: $date, date_leq: $date, scriptName: $scriptName }) { sum { requests errors subrequests } } } } }';
+
+// Produced/consumed are not sum fields on this dataset (only billableOperations/bytes exist); the
+// direction is the actionType dimension, so we group by it and reduce client-side.
+const QUEUE_USAGE_QUERY =
+	'query QueueUsage($accountTag: string!, $date: Date, $queueName: string) { viewer { accounts(filter: { accountTag: $accountTag }) { queueMessageOperationsAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date, queueName: $queueName }) { sum { billableOperations } dimensions { actionType } } } } }';
+
+async function cfGraphQL<T>(apiToken: string, query: string, variables: Record<string, unknown>): Promise<T | null> {
+	try {
+		const res = await fetch('https://api.cloudflare.com/client/v4/graphql', {
+			method: 'POST',
+			headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ query, variables }),
+		});
+		if (!res.ok) return null;
+		return (await res.json()) as T;
+	} catch {
+		return null;
+	}
+}
 
 export const workersFreeLimit = {
 	requestsPerDay: 100_000,
@@ -66,21 +91,20 @@ async function fetchVpcStatus(accountId: string, apiToken: string, env: RuntimeE
 	const nowMs = Date.now();
 	if (cachedVpc && nowMs < cachedVpcUntil) return cachedVpc;
 
+	// Networks only: their backing Cloudflare Tunnel (cfd_tunnel) exposes a health status. VPC
+	// services are intentionally excluded — their API returns configuration only, no health field.
 	type NetworkEntry = { binding: string; tunnel_id: string };
-	type ServiceEntry = { binding: string; service_id: string };
 
 	let networks: NetworkEntry[] = [];
-	let services: ServiceEntry[] = [];
 	try {
 		if (env.VPC_NETWORK_IDS) networks = JSON.parse(env.VPC_NETWORK_IDS) as NetworkEntry[];
-		if (env.VPC_SERVICE_IDS) services = JSON.parse(env.VPC_SERVICE_IDS) as ServiceEntry[];
 	} catch {
 		return null;
 	}
-	if (networks.length === 0 && services.length === 0) return null;
+	if (networks.length === 0) return null;
 
-	const results = await Promise.all([
-		...networks.map(async (n): Promise<VpcItemStatus> => {
+	const results = await Promise.all(
+		networks.map(async (n): Promise<VpcItemStatus> => {
 			try {
 				const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/cfd_tunnel/${n.tunnel_id}`, {
 					headers: { Authorization: `Bearer ${apiToken}` },
@@ -92,23 +116,34 @@ async function fetchVpcStatus(accountId: string, apiToken: string, env: RuntimeE
 				return { binding: n.binding, kind: 'network', id: n.tunnel_id, status: null };
 			}
 		}),
-		...services.map(async (s): Promise<VpcItemStatus> => {
-			try {
-				const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/vpc/services/${s.service_id}`, {
-					headers: { Authorization: `Bearer ${apiToken}` },
-				});
-				if (!res.ok) return { binding: s.binding, kind: 'service', id: s.service_id, status: null };
-				const data = (await res.json()) as { result?: { status?: string; name?: string } };
-				return { binding: s.binding, kind: 'service', id: s.service_id, status: data.result?.status ?? null, name: data.result?.name };
-			} catch {
-				return { binding: s.binding, kind: 'service', id: s.service_id, status: null };
-			}
-		}),
-	]);
+	);
 
 	cachedVpc = results;
 	cachedVpcUntil = nowMs + 60_000;
 	return cachedVpc;
+}
+
+// Reduces the actionType-grouped queue operations into produced (writes) vs consumed (reads +
+// deletes). billableOperations is operations, used here as a message-count proxy.
+export function reduceQueueOperations(
+	groups: Array<{ sum?: { billableOperations?: number }; dimensions?: { actionType?: string } }>,
+): QueueUsage {
+	let messagesProduced = 0;
+	let messagesConsumed = 0;
+	for (const g of groups) {
+		const ops = g.sum?.billableOperations ?? 0;
+		const action = g.dimensions?.actionType;
+		if (action === 'WriteMessage') messagesProduced += ops;
+		else if (action === 'ReadMessage' || action === 'DeleteMessage') messagesConsumed += ops;
+	}
+	return { messagesProduced, messagesConsumed };
+}
+
+async function fetchQueueUsage(accountId: string, apiToken: string, queueName: string, date: string): Promise<QueueUsage | null> {
+	const body = await cfGraphQL<QueueGraphQLResponse>(apiToken, QUEUE_USAGE_QUERY, { accountTag: accountId, date, queueName });
+	const groups = body?.data?.viewer?.accounts?.[0]?.queueMessageOperationsAdaptiveGroups;
+	if (!body || body.errors?.length || !groups) return null;
+	return reduceQueueOperations(groups);
 }
 
 let cachedEmail: EmailRoutingUsage | null = null;
@@ -116,12 +151,13 @@ let cachedEmailUntil = 0;
 
 async function fetchEmailRoutingUsage(accountId: string, apiToken: string): Promise<EmailRoutingUsage | null> {
 	const nowMs = Date.now();
-	if (cachedEmail && nowMs < cachedEmailUntil) return cachedEmail;
+	// Cache by timestamp (not by truthiness) so an empty result is cached too, not re-fetched every tick.
+	if (nowMs < cachedEmailUntil) return cachedEmail;
 
 	const verified: string[] = [];
 	const pending: string[] = [];
 	try {
-		for (let page = 1; ; page++) {
+		for (let page = 1; page <= 20; page++) {
 			const res = await fetch(
 				`https://api.cloudflare.com/client/v4/accounts/${accountId}/email/routing/addresses?page=${page}&per_page=50`,
 				{ headers: { Authorization: `Bearer ${apiToken}` } },
@@ -140,8 +176,7 @@ async function fetchEmailRoutingUsage(accountId: string, apiToken: string): Prom
 		return cachedEmail;
 	}
 
-	if (verified.length === 0 && pending.length === 0) return null;
-	cachedEmail = { verified, pending };
+	cachedEmail = verified.length === 0 && pending.length === 0 ? null : { verified, pending };
 	cachedEmailUntil = nowMs + 60_000;
 	return cachedEmail;
 }
@@ -151,7 +186,6 @@ let cachedUsage: UsageSnapshot = {
 	d1Percent: calculateUsagePercent(fallbackUsage, PLAN_LIMITS.free),
 	workers: null,
 	queues: null,
-	cron: null,
 	email: null,
 	vpc: null,
 	fetchedAt: null,
@@ -185,38 +219,23 @@ export async function fetchUsage(env: RuntimeEnv): Promise<UsageSnapshot> {
 	}
 
 	const today = utcDateString(new Date(nowMs));
-	const [plan, response, emailUsage, vpcStatus] = await Promise.all([
+	const queueName = `${env.WORKER_NAME ?? ''}-notifications`;
+	// Core query gates the snapshot; the optional ones (queue/email/vpc) degrade to null on their own.
+	const [plan, coreBody, queues, emailUsage, vpcStatus] = await Promise.all([
 		fetchPlanInfo(accountId, apiToken),
-		fetch('https://api.cloudflare.com/client/v4/graphql', {
-		method: 'POST',
-		headers: {
-			Authorization: `Bearer ${apiToken}`,
-			'Content-Type': 'application/json',
-		},
-		body: JSON.stringify({
-			query:
-				'query Usage($accountTag: string!, $date: Date, $databaseId: string, $scriptName: string, $queueName: string) { viewer { accounts(filter: { accountTag: $accountTag }) { d1AnalyticsAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date, databaseId: $databaseId }) { sum { readQueries writeQueries rowsRead rowsWritten queryBatchResponseBytes } } d1StorageAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date, databaseId: $databaseId }) { max { databaseSizeBytes } } workersInvocationsAdaptive(limit: 10000, filter: { date_geq: $date, date_leq: $date, scriptName: $scriptName }) { sum { requests errors subrequests } } queueMessageOperationsAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date, queueName: $queueName }) { sum { messagesProduced messagesConsumed } } workersScheduledEventsAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date, scriptName: $scriptName }) { sum { scheduledSuccesses scheduledErrors } } } } }',
-			variables: {
-				accountTag: accountId,
-				date: today,
-				databaseId,
-				scriptName: env.WORKER_NAME ?? '',
-				queueName: `${env.WORKER_NAME ?? ''}-notifications`,
-			},
+		cfGraphQL<UsageGraphQLResponse>(apiToken, CORE_USAGE_QUERY, {
+			accountTag: accountId,
+			date: today,
+			databaseId,
+			scriptName: env.WORKER_NAME ?? '',
 		}),
-	}),
+		fetchQueueUsage(accountId, apiToken, queueName, today),
 		fetchEmailRoutingUsage(accountId, apiToken),
 		fetchVpcStatus(accountId, apiToken, env),
 	]);
 
-	if (!response.ok) {
-		cachedUsageUntil = nowMs + 30_000;
-		return cachedUsage;
-	}
-
-	const body = (await response.json()) as UsageGraphQLResponse;
-	const account = body.data?.viewer?.accounts?.[0];
-	if (!account) {
+	const account = coreBody?.data?.viewer?.accounts?.[0];
+	if (!coreBody || coreBody.errors?.length || !account) {
 		cachedUsageUntil = nowMs + 30_000;
 		return cachedUsage;
 	}
@@ -224,8 +243,6 @@ export async function fetchUsage(env: RuntimeEnv): Promise<UsageSnapshot> {
 	const analytics = account.d1AnalyticsAdaptiveGroups?.[0]?.sum ?? {};
 	const storage = account.d1StorageAdaptiveGroups?.[0]?.max ?? {};
 	const workersSum = account.workersInvocationsAdaptive?.[0]?.sum;
-	const queueSum = account.queueMessageOperationsAdaptiveGroups?.[0]?.sum;
-	const cronSum = account.workersScheduledEventsAdaptiveGroups?.[0]?.sum;
 
 	const d1: D1Usage = {
 		readQueries: analytics.readQueries ?? 0,
@@ -241,12 +258,7 @@ export async function fetchUsage(env: RuntimeEnv): Promise<UsageSnapshot> {
 		workers: workersSum
 			? { requests: workersSum.requests ?? 0, errors: workersSum.errors ?? 0, subrequests: workersSum.subrequests ?? 0 }
 			: null,
-		queues: queueSum
-			? { messagesProduced: queueSum.messagesProduced ?? 0, messagesConsumed: queueSum.messagesConsumed ?? 0 }
-			: null,
-		cron: cronSum
-			? { scheduledInvocations: cronSum.scheduledSuccesses ?? 0, scheduledErrors: cronSum.scheduledErrors ?? 0 }
-			: null,
+		queues,
 		email: emailUsage,
 		vpc: vpcStatus,
 		fetchedAt: new Date(nowMs).toISOString(),

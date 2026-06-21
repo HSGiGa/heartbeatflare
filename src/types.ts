@@ -123,10 +123,9 @@ export type RuntimeEnv = Env & {
 	// Generated at deploy time from config.yaml: JSON map of monitor id → custom HTTP probe headers,
 	// with ${VAR} placeholders preserved (resolved against env at probe runtime). Non-secret.
 	PROBE_HEADERS?: string;
-	// Emitted by generate-wrangler.ts when deploy.vpc is configured. JSON-encoded arrays of
-	// {binding, tunnel_id} and {binding, service_id} so the runtime can query CF API for health.
+	// Emitted by generate-wrangler.ts when deploy.vpc networks are configured. JSON-encoded array of
+	// {binding, tunnel_id} so the runtime can query the CF API for backing-tunnel health.
 	VPC_NETWORK_IDS?: string;
-	VPC_SERVICE_IDS?: string;
 };
 
 // A Cloudflare Workers VPC binding (Issue #18): vpc_networks and vpc_services expose the same probe
@@ -162,11 +161,6 @@ export type QueueUsage = {
 	messagesConsumed: number;
 };
 
-export type CronUsage = {
-	scheduledInvocations: number;
-	scheduledErrors: number;
-};
-
 export type EmailRoutingUsage = {
 	verified: string[];   // confirmed recipient addresses
 	pending: string[];    // unverified — emails to these are silently dropped at runtime
@@ -174,9 +168,9 @@ export type EmailRoutingUsage = {
 
 export type VpcItemStatus = {
 	binding: string;              // wrangler binding name, e.g. "DEMO_NETWORK"
-	kind: 'network' | 'service';
-	id: string;                   // tunnel_id or service_id
-	status: string | null;        // 'healthy' | 'degraded' | 'down' | 'inactive' | null
+	kind: 'network';
+	id: string;                   // tunnel_id
+	status: string | null;        // 'healthy' | 'degraded' | 'down' | 'inactive' | 'active' | null
 	name?: string;                // human name returned by the CF API
 };
 
@@ -192,7 +186,6 @@ export type UsageSnapshot = {
 	d1Percent: D1UsagePercent;
 	workers: WorkersUsage | null;
 	queues: QueueUsage | null;
-	cron: CronUsage | null;
 	email: EmailRoutingUsage | null;
 	vpc: VpcItemStatus[] | null;
 	fetchedAt: string | null;
@@ -231,11 +224,21 @@ export type UsageGraphQLResponse = {
 				workersInvocationsAdaptive?: Array<{
 					sum?: Partial<WorkersUsage>;
 				}>;
+			}>;
+		};
+	};
+	errors?: unknown[];
+};
+
+// Queue operations are fetched separately and grouped by the actionType dimension (WriteMessage =
+// produced, ReadMessage/DeleteMessage = consumed); the only sum field available is billableOperations.
+export type QueueGraphQLResponse = {
+	data?: {
+		viewer?: {
+			accounts?: Array<{
 				queueMessageOperationsAdaptiveGroups?: Array<{
-					sum?: { messagesProduced?: number; messagesConsumed?: number };
-				}>;
-				workersScheduledEventsAdaptiveGroups?: Array<{
-					sum?: { scheduledSuccesses?: number; scheduledErrors?: number };
+					sum?: { billableOperations?: number };
+					dimensions?: { actionType?: string };
 				}>;
 			}>;
 		};
