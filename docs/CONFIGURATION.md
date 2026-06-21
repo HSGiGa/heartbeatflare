@@ -587,7 +587,7 @@ deploy:
     networks:                      # tunnel-backed VPC Networks → generated as wrangler vpc_networks
       - binding: DEMO_NETWORK
         tunnel_id: ${DEMO_TUNNEL_ID}
-        # remote: true             # default true; harmless for production deploys
+        # remote: true             # opt in only when testing the real VPC resource locally; default false
     services:                      # scoped VPC Services → generated as wrangler vpc_services
       - binding: DEMO_SERVICE
         service_id: ${DEMO_VPC_SERVICE_ID}
@@ -620,11 +620,13 @@ Fields:
   Unique across networks and services.
 - `networks[].tunnel_id` (required): Cloudflare Tunnel UUID, or `${VAR}`. `network_id` / Mesh is
   unsupported in v1.
-- `networks[].remote`: use the remote resource during local dev. Default `true`.
+- `networks[].remote`: use the remote resource during local dev. Default `false`; set `true` only
+  when intentionally testing real VPC connectivity with Cloudflare credentials.
 - `services[].binding` (required): Worker binding name referenced by a monitor's `vpc_binding`.
   Unique across networks and services.
 - `services[].service_id` (required): VPC Service UUID, or `${VAR}`.
-- `services[].remote`: use the remote resource during local dev. Default `true`.
+- `services[].remote`: use the remote resource during local dev. Default `false`; set `true` only
+  when intentionally testing real VPC connectivity with Cloudflare credentials.
 
 ## Public endpoints
 

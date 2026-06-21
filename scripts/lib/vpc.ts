@@ -123,7 +123,9 @@ export function resolveVpcId(raw: string, env: Record<string, string | undefined
 
 // Builds the vpc_networks / vpc_services wrangler binding arrays from deploy.vpc, resolving ${VAR}
 // ids. In deploy mode an unset var fails generation; in local mode that binding is omitted (warnings
-// are the caller's concern). Sections with no resolvable entries are omitted entirely.
+// are the caller's concern). Bindings default to remote:false because this flag controls Wrangler's
+// local proxy, not the deployed Worker binding; opt in with remote:true when testing real VPC
+// connectivity locally. Sections with no resolvable entries are omitted entirely.
 export function buildVpcBindings(
 	vpc: VpcConfig,
 	env: Record<string, string | undefined>,
@@ -141,7 +143,7 @@ export function buildVpcBindings(
 			throw new Error(`deploy.vpc.networks "${n.binding}" tunnel_id ${err instanceof Error ? err.message : String(err)}`);
 		}
 		if (tunnel_id === null) continue; // lenient: skip unresolved binding locally
-		networks.push({ binding: n.binding, tunnel_id, remote: n.remote ?? true });
+		networks.push({ binding: n.binding, tunnel_id, remote: n.remote ?? false });
 	}
 
 	const services: VpcServiceBinding[] = [];
@@ -153,7 +155,7 @@ export function buildVpcBindings(
 			throw new Error(`deploy.vpc.services "${s.binding}" service_id ${err instanceof Error ? err.message : String(err)}`);
 		}
 		if (service_id === null) continue;
-		services.push({ binding: s.binding, service_id, remote: s.remote ?? true });
+		services.push({ binding: s.binding, service_id, remote: s.remote ?? false });
 	}
 
 	const out: { vpc_networks?: VpcNetworkBinding[]; vpc_services?: VpcServiceBinding[] } = {};

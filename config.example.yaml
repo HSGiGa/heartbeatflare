@@ -15,7 +15,7 @@ deploy:
   #   networks:               # broad access to targets reachable through a Cloudflare Tunnel
   #     - binding: DEMO_NETWORK
   #       tunnel_id: ${DEMO_TUNNEL_ID}
-  #       # remote: true       # default true; harmless for production deploys
+  #       # remote: true       # opt in only when testing the real VPC resource locally; default false
   #   services:                # scoped access to a single private service (host:port fixed by the service)
   #     - binding: DEMO_SERVICE
   #       service_id: ${DEMO_VPC_SERVICE_ID}

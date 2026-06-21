@@ -147,9 +147,9 @@ describe('buildVpcBindings', () => {
 		services: [{ binding: 'SVC', service_id: '${SID}', remote: false }],
 	};
 
-	it('produces vpc_networks / vpc_services with remote defaulting to true', () => {
+	it('defaults remote to false even for deploy generation', () => {
 		const out = buildVpcBindings(vpc, { TID: 'tunnel-1', SID: 'svc-1' }, { isDeployMode: true });
-		expect(out.vpc_networks).toEqual([{ binding: 'NET', tunnel_id: 'tunnel-1', remote: true }]);
+		expect(out.vpc_networks).toEqual([{ binding: 'NET', tunnel_id: 'tunnel-1', remote: false }]);
 		expect(out.vpc_services).toEqual([{ binding: 'SVC', service_id: 'svc-1', remote: false }]);
 	});
 
@@ -159,8 +159,17 @@ describe('buildVpcBindings', () => {
 
 	it('omits unresolved bindings in local mode instead of failing', () => {
 		const out = buildVpcBindings(vpc, { TID: 'tunnel-1' }, { isDeployMode: false });
-		expect(out.vpc_networks).toEqual([{ binding: 'NET', tunnel_id: 'tunnel-1', remote: true }]);
+		expect(out.vpc_networks).toEqual([{ binding: 'NET', tunnel_id: 'tunnel-1', remote: false }]);
 		expect(out.vpc_services).toBeUndefined();
+	});
+
+	it('allows local real-VPC testing only with an explicit remote:true', () => {
+		const out = buildVpcBindings(
+			{ networks: [{ binding: 'NET', tunnel_id: 'tunnel-1', remote: true }] },
+			{},
+			{ isDeployMode: false },
+		);
+		expect(out.vpc_networks).toEqual([{ binding: 'NET', tunnel_id: 'tunnel-1', remote: true }]);
 	});
 
 	it('omits empty sections entirely', () => {
