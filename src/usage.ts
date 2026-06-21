@@ -11,9 +11,11 @@ const CORE_USAGE_QUERY =
 	'query Usage($accountTag: string!, $date: Date, $databaseId: string, $scriptName: string) { viewer { accounts(filter: { accountTag: $accountTag }) { d1AnalyticsAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date, databaseId: $databaseId }) { sum { readQueries writeQueries rowsRead rowsWritten queryBatchResponseBytes } } d1StorageAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date, databaseId: $databaseId }) { max { databaseSizeBytes } } workersInvocationsAdaptive(limit: 10000, filter: { date_geq: $date, date_leq: $date, scriptName: $scriptName }) { sum { requests errors subrequests } } } } }';
 
 // Produced/consumed are not sum fields on this dataset (only billableOperations/bytes exist); the
-// direction is the actionType dimension, so we group by it and reduce client-side.
+// direction is the actionType dimension, so we group by it and reduce client-side. The dataset only
+// filters by queueId (not queueName, which the runtime doesn't have) — this worker uses a single
+// notifications queue, so we aggregate by actionType across the account instead.
 const QUEUE_USAGE_QUERY =
-	'query QueueUsage($accountTag: string!, $date: Date, $queueName: string) { viewer { accounts(filter: { accountTag: $accountTag }) { queueMessageOperationsAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date, queueName: $queueName }) { sum { billableOperations } dimensions { actionType } } } } }';
+	'query QueueUsage($accountTag: string!, $date: Date) { viewer { accounts(filter: { accountTag: $accountTag }) { queueMessageOperationsAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date }) { sum { billableOperations } dimensions { actionType } } } } }';
 
 async function cfGraphQL<T>(apiToken: string, query: string, variables: Record<string, unknown>): Promise<T | null> {
 	try {
@@ -139,8 +141,8 @@ export function reduceQueueOperations(
 	return { messagesProduced, messagesConsumed };
 }
 
-async function fetchQueueUsage(accountId: string, apiToken: string, queueName: string, date: string): Promise<QueueUsage | null> {
-	const body = await cfGraphQL<QueueGraphQLResponse>(apiToken, QUEUE_USAGE_QUERY, { accountTag: accountId, date, queueName });
+async function fetchQueueUsage(accountId: string, apiToken: string, date: string): Promise<QueueUsage | null> {
+	const body = await cfGraphQL<QueueGraphQLResponse>(apiToken, QUEUE_USAGE_QUERY, { accountTag: accountId, date });
 	const groups = body?.data?.viewer?.accounts?.[0]?.queueMessageOperationsAdaptiveGroups;
 	if (!body || body.errors?.length || !groups) return null;
 	return reduceQueueOperations(groups);
@@ -219,7 +221,6 @@ export async function fetchUsage(env: RuntimeEnv): Promise<UsageSnapshot> {
 	}
 
 	const today = utcDateString(new Date(nowMs));
-	const queueName = `${env.WORKER_NAME ?? ''}-notifications`;
 	// Core query gates the snapshot; the optional ones (queue/email/vpc) degrade to null on their own.
 	const [plan, coreBody, queues, emailUsage, vpcStatus] = await Promise.all([
 		fetchPlanInfo(accountId, apiToken),
@@ -229,7 +230,7 @@ export async function fetchUsage(env: RuntimeEnv): Promise<UsageSnapshot> {
 			databaseId,
 			scriptName: env.WORKER_NAME ?? '',
 		}),
-		fetchQueueUsage(accountId, apiToken, queueName, today),
+		fetchQueueUsage(accountId, apiToken, today),
 		fetchEmailRoutingUsage(accountId, apiToken),
 		fetchVpcStatus(accountId, apiToken, env),
 	]);
