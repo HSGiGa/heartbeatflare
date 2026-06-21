@@ -397,20 +397,24 @@ export function buildStatusPage({
 	}
 
 	function infoCard(label: string, value: string, valueColor: string, sub?: string): string {
+		// Escape all dynamic strings: some callers pass CF-supplied data (email addresses, VPC names).
 		return `<div class="usage-card">
-			<div class="usage-label">${label}</div>
-			<div style="font-size:20px;font-weight:700;color:${valueColor};line-height:1.2">${value}</div>
-			${sub ? `<div style="font-size:12px;color:#a1a1aa;margin-top:3px">${sub}</div>` : ''}
+			<div class="usage-label">${escHtml(label)}</div>
+			<div style="font-size:20px;font-weight:700;color:${valueColor};line-height:1.2">${escHtml(value)}</div>
+			${sub ? `<div style="font-size:12px;color:#a1a1aa;margin-top:3px">${escHtml(sub)}</div>` : ''}
 		</div>`;
 	}
 
 	const usageHtml = d1Usage ? (() => {
-		const { d1, d1Percent, workers, queues, cron, email, vpc, plan } = d1Usage;
+		const { d1, d1Percent, workers, queues, email, vpc, plan } = d1Usage;
 		const p = plan ?? { label: 'Free', rowsRead: 5_000_000, rowsWritten: 100_000, storageBytes: 5_000_000_000 };
 		const workersReqPct = workers ? (workers.requests / workersFreeLimit.requestsPerDay) * 100 : 0;
 		const d1ReadLimit = p.rowsRead >= 1_000_000_000 ? `${(p.rowsRead / 1_000_000_000).toFixed(0)}B` : `${(p.rowsRead / 1_000_000).toFixed(0)}M`;
 		const d1WriteLimit = p.rowsWritten >= 1_000_000 ? `${(p.rowsWritten / 1_000_000).toFixed(0)}M` : `${(p.rowsWritten / 1_000).toFixed(0)}K`;
-		const avgRowsPerCheck = cron && cron.scheduledInvocations > 0 ? d1.rowsWritten / cron.scheduledInvocations : null;
+		// Write-rate derived from elapsed time today, assuming the cron fires once per minute (so one
+		// tick ≈ one minute). Avoids depending on a per-tick count from GraphQL.
+		const minutesElapsedToday = Math.floor((nowMs - Date.UTC(new Date(nowMs).getUTCFullYear(), new Date(nowMs).getUTCMonth(), new Date(nowMs).getUTCDate())) / 60_000);
+		const avgRowsPerCheck = minutesElapsedToday > 0 ? d1.rowsWritten / minutesElapsedToday : null;
 		const estimatedRowsPerHour = avgRowsPerCheck !== null ? Math.round(avgRowsPerCheck * 60) : null;
 		return `
 	<section class="section">
@@ -424,8 +428,8 @@ export function buildStatusPage({
 			${progressBar('Rows Written', formatNumber(d1.rowsWritten), `${d1WriteLimit} / day`, d1Percent.rowsWritten)}
 			${progressBar('Storage', formatBytes(d1.databaseSizeBytes), formatBytes(p.storageBytes), d1Percent.storage)}
 			${avgRowsPerCheck !== null
-				? infoCard('Avg Rows/Check', avgRowsPerCheck.toFixed(1), '#18181b', 'written per cron tick')
-				: infoCard('Avg Rows/Check', '—', '#a1a1aa', 'awaiting cron data')}
+				? infoCard('Avg Rows/Min', avgRowsPerCheck.toFixed(1), '#18181b', 'written per minute')
+				: infoCard('Avg Rows/Min', '—', '#a1a1aa', 'awaiting data')}
 			${estimatedRowsPerHour !== null
 				? infoCard('Est Rows/Hour', formatNumber(estimatedRowsPerHour), '#18181b', 'at current rate')
 				: infoCard('Est Rows/Hour', '—', '#a1a1aa', '')}
@@ -443,9 +447,6 @@ export function buildStatusPage({
 			${queues
 				? infoCard('Messages Out', formatNumber(queues.messagesConsumed), '#18181b', 'consumed today')
 				: infoCard('Messages Out', '—', '#a1a1aa', 'no API data')}
-			${cron
-				? infoCard('Cron', formatNumber(cron.scheduledInvocations), cron.scheduledErrors > 0 ? '#f59e0b' : '#18181b', cron.scheduledErrors > 0 ? `${cron.scheduledErrors} errors` : 'runs today')
-				: infoCard('Cron', '—', '#a1a1aa', '* * * * *')}
 		</div>
 	${email ? `
 	<div class="usage-sublabel" style="margin-top:16px">Email Routing · destination addresses</div>
@@ -454,12 +455,14 @@ export function buildStatusPage({
 		${infoCard('Pending', String(email.pending.length), email.pending.length > 0 ? '#d97706' : '#a1a1aa', email.pending.length > 0 ? email.pending.join(', ') : 'all verified')}
 	</div>` : ''}
 	${vpc && vpc.length > 0 ? `
-	<div class="usage-sublabel" style="margin-top:16px">Internal Services · Workers VPC</div>
+	<div class="usage-sublabel" style="margin-top:16px">Internal Networks · Workers VPC</div>
 	<div class="usage-grid">
 		${vpc.map((s) => {
-			const color = s.status === 'healthy' ? '#16a34a' : s.status === 'degraded' ? '#f59e0b' : s.status === 'down' ? '#dc2626' : '#a1a1aa';
-			const sub = `${s.kind === 'network' ? 'tunnel' : 'service'} · ${s.binding}`;
-			return infoCard(s.name ?? s.binding, s.status ?? 'unknown', color, sub);
+			const color = s.status === 'healthy' || s.status === 'active' ? '#16a34a'
+				: s.status === 'degraded' ? '#f59e0b'
+				: s.status === 'down' ? '#dc2626'
+				: '#a1a1aa'; // inactive / null / unknown
+			return infoCard(s.name ?? s.binding, s.status ?? 'unknown', color, `tunnel · ${s.binding}`);
 		}).join('')}
 	</div>` : ''}
 	</section>`;
