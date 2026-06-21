@@ -5,6 +5,27 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-06-21
+
+### Added
+
+- **Dedicated `/usage` page** — Infrastructure Usage moved off the status page to an Access-gated
+  `/usage` page (D1, Workers, queues, email-routing, 24-hour trends, and Cloudflare Tunnel state for
+  configured Workers VPC networks). Returns `403` without a verified session.
+- **Scheduler staleness & capacity alarms** ([#45](https://github.com/HSGiGa/heartbeatflare/issues/45)):
+  a red status-page banner + `scheduler.stale` log when the cron is wedged, and an amber
+  "N monitors behind their interval" banner + `scheduler.behind` log when monitors lag the per-tick
+  probe cap. `npm run config:import` warns when configured intervals exceed scheduler capacity.
+
+### Changed
+
+- **Bounded in-cron checks (Free-plan fix, [#45](https://github.com/HSGiGa/heartbeatflare/issues/45)).**
+  The scheduler probes a small number of monitors per cron tick (`MAX_CHECKS_PER_RUN`, default 3, with
+  `MAX_CONCURRENT_CHECKS` 2) directly, instead of all monitors at once — bounding per-invocation CPU
+  under the Free 10 ms limit (measured p99 ≈ 3 ms vs the old ~17 ms). Checks no longer use Queues
+  (Free Queues cap at 10k ops/day); the queue now carries notifications only. Effective check cadence
+  under overload is ~⌈demand ÷ capacity⌉× the configured interval.
+
 ## [1.2.5] - 2026-06-21
 
 ### Added
