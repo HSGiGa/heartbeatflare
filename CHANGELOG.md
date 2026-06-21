@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.5] - 2026-06-21
+
+### Added
+
+- **Expanded Infrastructure Usage block** on the private status page ([#31](https://github.com/HSGiGa/heartbeatflare/issues/31)):
+  live Cloudflare metrics built on verified GraphQL datasets / REST endpoints —
+  - D1 (reads/writes/storage as % of plan) and Workers (requests/errors/subrequests).
+  - Queue operations (write/consume), scoped to the worker's notifications queue via a
+    deploy-time-resolved `QUEUE_ID` and grouped by the `actionType` dimension.
+  - Email Routing destination status (verified vs pending; pending recipients are silently
+    dropped at send time, now surfaced with a warning).
+  - Workers VPC network health from the backing Cloudflare Tunnel status.
+- **Usage visualization** — an at-a-glance summary strip, 24h sparklines on the budget cards,
+  explicit percentages, status pills, and email-address chips. All dynamic strings HTML-escaped.
+
+### Changed
+
+- Optional usage datasets are fetched as independent requests and degrade to `null` without
+  taking down the core D1/Workers block.
+
 ## [1.2.4] - 2026-06-20
 
 ### Added
