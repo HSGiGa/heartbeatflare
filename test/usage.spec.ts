@@ -3,13 +3,13 @@ import { describe, it, expect } from 'vitest';
 import { reduceQueueOperations, hourKeys, hourlySeries } from '../src/usage';
 
 describe('reduceQueueOperations', () => {
-	it('maps WriteMessage to produced and ReadMessage/DeleteMessage to consumed', () => {
+	it('maps WriteMessage to write operations and ReadMessage/DeleteMessage to consume operations', () => {
 		const out = reduceQueueOperations([
 			{ sum: { billableOperations: 4 }, dimensions: { actionType: 'WriteMessage' } },
 			{ sum: { billableOperations: 9 }, dimensions: { actionType: 'ReadMessage' } },
 			{ sum: { billableOperations: 3 }, dimensions: { actionType: 'DeleteMessage' } },
 		]);
-		expect(out).toEqual({ messagesProduced: 4, messagesConsumed: 12 });
+		expect(out).toEqual({ writeOperations: 4, consumeOperations: 12 });
 	});
 
 	it('ignores unknown action types and missing sums', () => {
@@ -18,11 +18,11 @@ describe('reduceQueueOperations', () => {
 			{ sum: { billableOperations: 5 }, dimensions: { actionType: 'PurgeQueue' } }, // unknown → ignored
 			{ sum: { billableOperations: 7 } }, // missing dimension → ignored
 		]);
-		expect(out).toEqual({ messagesProduced: 0, messagesConsumed: 0 });
+		expect(out).toEqual({ writeOperations: 0, consumeOperations: 0 });
 	});
 
 	it('returns zeros for an empty group list (queried OK, no traffic today)', () => {
-		expect(reduceQueueOperations([])).toEqual({ messagesProduced: 0, messagesConsumed: 0 });
+		expect(reduceQueueOperations([])).toEqual({ writeOperations: 0, consumeOperations: 0 });
 	});
 });
 

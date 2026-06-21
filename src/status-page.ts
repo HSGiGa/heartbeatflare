@@ -440,7 +440,7 @@ export function buildStatusPage({
 			${sumItem('D1 reads', fmtPct(d1Percent.rowsRead), budgetColor(d1Percent.rowsRead))}
 			${sumItem('Worker reqs', workers ? fmtPct(workersReqPct) : '—', workers ? budgetColor(workersReqPct) : undefined)}
 			${sumItem('Errors', workers ? String(workers.errors) : '—', workers ? (workers.errors > 0 ? 'var(--c-down)' : 'var(--c-up)') : undefined)}
-			${sumItem('Queue', queues ? `${formatNumber(queues.messagesProduced)} ↑ / ${formatNumber(queues.messagesConsumed)} ↓` : '—')}
+			${sumItem('Queue ops', queues ? `${formatNumber(queues.writeOperations)} write / ${formatNumber(queues.consumeOperations)} consume` : '—')}
 			${sumItem('Resets in', usageResetsIn(nowMs))}
 		</div>`;
 
@@ -471,11 +471,11 @@ export function buildStatusPage({
 			${infoCard('Errors', workers ? String(workers.errors) : '—', workers && workers.errors > 0 ? 'var(--c-down)' : 'var(--c-up)', workers ? (workers.errors > 0 ? 'today' : 'clean') : '')}
 			${infoCard('Subrequests', workers ? formatNumber(workers.subrequests) : '—', 'var(--c-text)', workers ? 'fetch calls today' : '')}
 			${queues
-				? infoCard('Messages In', formatNumber(queues.messagesProduced), 'var(--c-text)', 'produced today')
-				: infoCard('Messages In', '—', 'var(--c-text-faint)', 'no API data')}
+				? infoCard('Write Ops', formatNumber(queues.writeOperations), 'var(--c-text)', 'billable writes today')
+				: infoCard('Write Ops', '—', 'var(--c-text-faint)', 'no API data')}
 			${queues
-				? infoCard('Messages Out', formatNumber(queues.messagesConsumed), 'var(--c-text)', 'consumed today')
-				: infoCard('Messages Out', '—', 'var(--c-text-faint)', 'no API data')}
+				? infoCard('Consume Ops', formatNumber(queues.consumeOperations), 'var(--c-text)', 'read + delete today')
+				: infoCard('Consume Ops', '—', 'var(--c-text-faint)', 'no API data')}
 		</div>
 	${email ? `
 	<div class="usage-sublabel" style="margin-top:16px">Email Routing · destination addresses</div>

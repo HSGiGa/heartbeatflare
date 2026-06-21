@@ -22,6 +22,13 @@ function fail(msg: string): never {
 	process.exit(1);
 }
 
+async function findQueueId(client: Cloudflare, accountId: string, name: string): Promise<string | null> {
+	for await (const queue of client.queues.list({ account_id: accountId })) {
+		if (queue.queue_name === name) return queue.queue_id ?? null;
+	}
+	return null;
+}
+
 interface WranglerTemplate {
 	name: string;
 	main: string;
@@ -62,13 +69,18 @@ async function main() {
 	// Local mode leaves the D1 id empty (Wrangler uses local SQLite). Deploy mode resolves it by
 	// name via the API — the database must already exist (run "npm run provision" first).
 	let databaseId = '';
+	let queueId = '';
 	if (isDeployMode) {
 		if (!accountId) fail('CLOUDFLARE_ACCOUNT_ID env var is required in deploy mode.');
 		const token = process.env.CLOUDFLARE_API_TOKEN;
 		if (!token) fail('CLOUDFLARE_API_TOKEN env var is required in deploy mode.');
-		const found = await findDatabaseId(new Cloudflare({ apiToken: token }), accountId, databaseName);
+		const client = new Cloudflare({ apiToken: token });
+		const found = await findDatabaseId(client, accountId, databaseName);
 		if (!found) fail(`D1 database "${databaseName}" not found — run "npm run provision" first.`);
 		databaseId = found;
+		const foundQueueId = await findQueueId(client, accountId, queueName);
+		if (!foundQueueId) fail(`Queue "${queueName}" not found — run "npm run provision" first.`);
+		queueId = foundQueueId;
 	}
 
 	const wrangler = parseJsonc(readFileSync('wrangler.template.jsonc', 'utf-8')) as WranglerTemplate;
@@ -83,6 +95,7 @@ async function main() {
 		...wrangler.vars,
 		CLOUDFLARE_ACCOUNT_ID: accountId,
 		D1_DATABASE_ID: databaseId,
+		QUEUE_ID: queueId,
 		WORKER_NAME: name,
 		APP_VERSION: appVersion,
 		SITE_TITLE: config.site?.title ?? '',

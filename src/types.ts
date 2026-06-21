@@ -113,6 +113,8 @@ export type IncidentRow = {
 export type RuntimeEnv = Env & {
 	CLOUDFLARE_ACCOUNT_ID?: string;
 	D1_DATABASE_ID?: string;
+	// Generated at deploy time from the configured notifications queue; scopes Queue analytics to this worker.
+	QUEUE_ID?: string;
 	CLOUDFLARE_RUNTIME_API_TOKEN?: string;
 	WORKER_NAME?: string;
 	// Generated at deploy time from package.json: the deployed version, shown in the status page footer.
@@ -157,8 +159,8 @@ export type WorkersUsage = {
 };
 
 export type QueueUsage = {
-	messagesProduced: number;
-	messagesConsumed: number;
+	writeOperations: number;
+	consumeOperations: number;
 };
 
 export type EmailRoutingUsage = {

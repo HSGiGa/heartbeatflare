@@ -12,12 +12,10 @@ export const TREND_HOURS = 24;
 const CORE_USAGE_QUERY =
 	'query Usage($accountTag: string!, $date: Date, $databaseId: string, $scriptName: string) { viewer { accounts(filter: { accountTag: $accountTag }) { d1AnalyticsAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date, databaseId: $databaseId }) { sum { readQueries writeQueries rowsRead rowsWritten queryBatchResponseBytes } } d1StorageAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date, databaseId: $databaseId }) { max { databaseSizeBytes } } workersInvocationsAdaptive(limit: 10000, filter: { date_geq: $date, date_leq: $date, scriptName: $scriptName }) { sum { requests errors subrequests } } } } }';
 
-// Produced/consumed are not sum fields on this dataset (only billableOperations/bytes exist); the
-// direction is the actionType dimension, so we group by it and reduce client-side. The dataset only
-// filters by queueId (not queueName, which the runtime doesn't have) — this worker uses a single
-// notifications queue, so we aggregate by actionType across the account instead.
+// The dataset exposes billable operations rather than messages. Filter by the generated queue ID
+// and group by actionType, then display writes separately from read/delete consumption operations.
 const QUEUE_USAGE_QUERY =
-	'query QueueUsage($accountTag: string!, $date: Date) { viewer { accounts(filter: { accountTag: $accountTag }) { queueMessageOperationsAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date }) { sum { billableOperations } dimensions { actionType } } } } }';
+	'query QueueUsage($accountTag: string!, $date: Date, $queueId: string!) { viewer { accounts(filter: { accountTag: $accountTag }) { queueMessageOperationsAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date, queueId: $queueId }) { sum { billableOperations } dimensions { actionType } } } } }';
 
 // Hourly buckets for the last TREND_HOURS, for the sparklines. Same Account Analytics:Read scope as
 // the core query; fetched separately so a failure here can't take down the core block.
@@ -180,24 +178,25 @@ async function fetchVpcStatus(accountId: string, apiToken: string, env: RuntimeE
 	return cachedVpc;
 }
 
-// Reduces the actionType-grouped queue operations into produced (writes) vs consumed (reads +
-// deletes). billableOperations is operations, used here as a message-count proxy.
+// Reduces actionType-grouped billable queue operations into writes vs read/delete consumption
+// operations. These are deliberately not called message counts: a successful delivery can generate
+// both a read and a delete operation.
 export function reduceQueueOperations(
 	groups: Array<{ sum?: { billableOperations?: number }; dimensions?: { actionType?: string } }>,
 ): QueueUsage {
-	let messagesProduced = 0;
-	let messagesConsumed = 0;
+	let writeOperations = 0;
+	let consumeOperations = 0;
 	for (const g of groups) {
 		const ops = g.sum?.billableOperations ?? 0;
 		const action = g.dimensions?.actionType;
-		if (action === 'WriteMessage') messagesProduced += ops;
-		else if (action === 'ReadMessage' || action === 'DeleteMessage') messagesConsumed += ops;
+		if (action === 'WriteMessage') writeOperations += ops;
+		else if (action === 'ReadMessage' || action === 'DeleteMessage') consumeOperations += ops;
 	}
-	return { messagesProduced, messagesConsumed };
+	return { writeOperations, consumeOperations };
 }
 
-async function fetchQueueUsage(accountId: string, apiToken: string, date: string): Promise<QueueUsage | null> {
-	const body = await cfGraphQL<QueueGraphQLResponse>(apiToken, QUEUE_USAGE_QUERY, { accountTag: accountId, date });
+async function fetchQueueUsage(accountId: string, apiToken: string, date: string, queueId: string): Promise<QueueUsage | null> {
+	const body = await cfGraphQL<QueueGraphQLResponse>(apiToken, QUEUE_USAGE_QUERY, { accountTag: accountId, date, queueId });
 	const groups = body?.data?.viewer?.accounts?.[0]?.queueMessageOperationsAdaptiveGroups;
 	if (!body || body.errors?.length || !groups) return null;
 	return reduceQueueOperations(groups);
@@ -286,7 +285,7 @@ export async function fetchUsage(env: RuntimeEnv): Promise<UsageSnapshot> {
 			databaseId,
 			scriptName: env.WORKER_NAME ?? '',
 		}),
-		fetchQueueUsage(accountId, apiToken, today),
+		env.QUEUE_ID ? fetchQueueUsage(accountId, apiToken, today, env.QUEUE_ID) : Promise.resolve(null),
 		fetchEmailRoutingUsage(accountId, apiToken),
 		fetchVpcStatus(accountId, apiToken, env),
 		fetchUsageTrends(accountId, apiToken, databaseId, env.WORKER_NAME ?? '', nowMs),
