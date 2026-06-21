@@ -405,7 +405,7 @@ export function buildStatusPage({
 	}
 
 	const usageHtml = d1Usage ? (() => {
-		const { d1, d1Percent, workers, queues, cron, plan } = d1Usage;
+		const { d1, d1Percent, workers, queues, cron, email, plan } = d1Usage;
 		const p = plan ?? { label: 'Free', rowsRead: 5_000_000, rowsWritten: 100_000, storageBytes: 5_000_000_000 };
 		const workersReqPct = workers ? (workers.requests / workersFreeLimit.requestsPerDay) * 100 : 0;
 		const d1ReadLimit = p.rowsRead >= 1_000_000_000 ? `${(p.rowsRead / 1_000_000_000).toFixed(0)}B` : `${(p.rowsRead / 1_000_000).toFixed(0)}M`;
@@ -447,6 +447,12 @@ export function buildStatusPage({
 				? infoCard('Cron', formatNumber(cron.scheduledInvocations), cron.scheduledErrors > 0 ? '#f59e0b' : '#18181b', cron.scheduledErrors > 0 ? `${cron.scheduledErrors} errors` : 'runs today')
 				: infoCard('Cron', '—', '#a1a1aa', '* * * * *')}
 		</div>
+	${email ? `
+	<div class="usage-sublabel" style="margin-top:16px">Email Routing · destination addresses</div>
+	<div class="usage-grid">
+		${infoCard('Verified', String(email.verified.length), '#16a34a', email.verified.length > 0 ? email.verified.join(', ') : 'none')}
+		${infoCard('Pending', String(email.pending.length), email.pending.length > 0 ? '#d97706' : '#a1a1aa', email.pending.length > 0 ? email.pending.join(', ') : 'all verified')}
+	</div>` : ''}
 	</section>`;
 	})() : '';
 

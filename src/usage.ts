@@ -2,7 +2,7 @@
 // invocations for today, fetched from the Cloudflare GraphQL API and cached 60s per isolate.
 // Limits are plan-dependent; plan detection needs Billing:Read on the token and falls back to
 // Free Plan limits without it. Errors keep serving the last (or fallback) snapshot.
-import type { RuntimeEnv, D1Usage, D1UsagePercent, UsageSnapshot, UsageGraphQLResponse, PlanInfo, QueueUsage, CronUsage } from './types';
+import type { RuntimeEnv, D1Usage, D1UsagePercent, UsageSnapshot, UsageGraphQLResponse, PlanInfo, QueueUsage, CronUsage, EmailRoutingUsage } from './types';
 
 export const workersFreeLimit = {
 	requestsPerDay: 100_000,
@@ -59,12 +59,48 @@ function calculateUsagePercent(usage: D1Usage, limits: PlanInfo): D1UsagePercent
 	};
 }
 
+let cachedEmail: EmailRoutingUsage | null = null;
+let cachedEmailUntil = 0;
+
+async function fetchEmailRoutingUsage(accountId: string, apiToken: string): Promise<EmailRoutingUsage | null> {
+	const nowMs = Date.now();
+	if (cachedEmail && nowMs < cachedEmailUntil) return cachedEmail;
+
+	const verified: string[] = [];
+	const pending: string[] = [];
+	try {
+		for (let page = 1; ; page++) {
+			const res = await fetch(
+				`https://api.cloudflare.com/client/v4/accounts/${accountId}/email/routing/addresses?page=${page}&per_page=50`,
+				{ headers: { Authorization: `Bearer ${apiToken}` } },
+			);
+			if (!res.ok) break;
+			const data = (await res.json()) as { success?: boolean; result?: Array<{ email?: string; verified?: string | null; status?: string }> };
+			if (!data.success || !Array.isArray(data.result)) break;
+			for (const addr of data.result) {
+				if (!addr.email) continue;
+				if (addr.status === 'verified' && addr.verified) verified.push(addr.email);
+				else pending.push(addr.email);
+			}
+			if (data.result.length < 50) break;
+		}
+	} catch {
+		return cachedEmail;
+	}
+
+	if (verified.length === 0 && pending.length === 0) return null;
+	cachedEmail = { verified, pending };
+	cachedEmailUntil = nowMs + 60_000;
+	return cachedEmail;
+}
+
 let cachedUsage: UsageSnapshot = {
 	d1: fallbackUsage,
 	d1Percent: calculateUsagePercent(fallbackUsage, PLAN_LIMITS.free),
 	workers: null,
 	queues: null,
 	cron: null,
+	email: null,
 	fetchedAt: null,
 	plan: null,
 };
@@ -96,7 +132,7 @@ export async function fetchUsage(env: RuntimeEnv): Promise<UsageSnapshot> {
 	}
 
 	const today = utcDateString(new Date(nowMs));
-	const [plan, response] = await Promise.all([
+	const [plan, response, emailUsage] = await Promise.all([
 		fetchPlanInfo(accountId, apiToken),
 		fetch('https://api.cloudflare.com/client/v4/graphql', {
 		method: 'POST',
@@ -116,6 +152,7 @@ export async function fetchUsage(env: RuntimeEnv): Promise<UsageSnapshot> {
 			},
 		}),
 	}),
+		fetchEmailRoutingUsage(accountId, apiToken),
 	]);
 
 	if (!response.ok) {
@@ -156,6 +193,7 @@ export async function fetchUsage(env: RuntimeEnv): Promise<UsageSnapshot> {
 		cron: cronSum
 			? { scheduledInvocations: cronSum.scheduledSuccesses ?? 0, scheduledErrors: cronSum.scheduledErrors ?? 0 }
 			: null,
+		email: emailUsage,
 		fetchedAt: new Date(nowMs).toISOString(),
 		plan,
 	};

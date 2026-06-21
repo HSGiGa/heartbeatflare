@@ -163,6 +163,11 @@ export type CronUsage = {
 	scheduledErrors: number;
 };
 
+export type EmailRoutingUsage = {
+	verified: string[];   // confirmed recipient addresses
+	pending: string[];    // unverified — emails to these are silently dropped at runtime
+};
+
 export type PlanInfo = {
 	label: string;
 	rowsRead: number;
@@ -176,6 +181,7 @@ export type UsageSnapshot = {
 	workers: WorkersUsage | null;
 	queues: QueueUsage | null;
 	cron: CronUsage | null;
+	email: EmailRoutingUsage | null;
 	fetchedAt: string | null;
 	plan: PlanInfo | null;
 };
