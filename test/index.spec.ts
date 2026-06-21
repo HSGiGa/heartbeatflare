@@ -11,6 +11,8 @@ import type { AlertRuleDbRow, MonitorRow } from '../src/types';
 import m01 from '../migrations/0001_initial_schema.sql?raw';
 // @ts-expect-error vite ?raw import
 import m02 from '../migrations/0002_monitor_vpc_binding.sql?raw';
+// @ts-expect-error vite ?raw import
+import m03 from '../migrations/0003_check_lease.sql?raw';
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 
@@ -32,7 +34,7 @@ async function applyMigration(sql: string) {
 }
 
 beforeAll(async () => {
-	for (const sql of [m01, m02]) {
+	for (const sql of [m01, m02, m03]) {
 		await applyMigration(sql as string);
 	}
 	await env.DB.prepare(
@@ -359,6 +361,15 @@ describe('auth visibility filtering', () => {
 		await waitOnExecutionContext(ctx);
 		expect(res.status).toBe(200);
 		expect(res.headers.get('Content-Type')).toContain('text/html');
+		expect(res.headers.get('Cache-Control')).toBe('no-store');
+	});
+
+	it('rejects the infrastructure usage page without a valid session', async () => {
+		const req = new IncomingRequest('http://example.com/usage');
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(req, env, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(res.status).toBe(403);
 		expect(res.headers.get('Cache-Control')).toBe('no-store');
 	});
 

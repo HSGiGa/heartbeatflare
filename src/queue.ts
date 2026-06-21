@@ -1,5 +1,5 @@
-// Notification queue consumer. One message per incident open/resolve (produced by alerts.ts);
-// delivers to the monitor's channels and records each attempt in notification_deliveries.
+// Notification queue consumer. One message per incident open/resolve/escalation (produced by alerts.ts
+// and the scheduler); delivers to the monitor's channels and records each attempt in notification_deliveries.
 import { log } from './log';
 import { fetchNotificationChannels, sendToChannel } from './notify';
 import type { NotificationMessage } from './types';

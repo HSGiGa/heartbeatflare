@@ -175,7 +175,7 @@ This token is used only by deploy/provision scripts and CI. It never reaches the
 
 ### Runtime token: `CLOUDFLARE_RUNTIME_API_TOKEN`
 
-Optional runtime secret for the private Infrastructure Usage block. Base permissions:
+Optional runtime secret for the authenticated `/usage` Infrastructure Usage page. Base permissions:
 
 - Account Analytics: Read
 - D1: Read
@@ -184,6 +184,7 @@ Add these when needed:
 
 - Account Billing: Read, to detect Free vs Workers Paid.
 - Email Routing Addresses: Read, when using runtime email-recipient verification.
+- Cloudflare Tunnel: Read, to show account tunnels and their live connection state on `/usage`.
 
 ### Notification secrets
 
@@ -259,19 +260,20 @@ npm run secrets:sync -- --dry-run
 Heartbeat-token secrets (`HEARTBEAT_<ID>_TOKEN`) are generated automatically by this step — see
 [Heartbeat monitors](CONFIGURATION.md#heartbeat-push-monitors).
 
-## Cloudflare Access for `/private`
+## Cloudflare Access for `/private` and `/usage`
 
 The private status page is **optional** — `/public` deploys and works without any auth config. Set
-up Access when you want `/private`.
+up Access when you want `/private` or `/usage`.
 
 Create a Cloudflare Access **self-hosted application** manually in the dashboard.
 
-> **Scope the application to the `/private` path, not the bare host.** Access gates by URL
-> (hostname **+ path**). Set the application Destination to `<your-host>/private` (e.g.
-> `status.example.com/private` or `status.<subdomain>.workers.dev/private`). If you point it at the
+> **Scope the application to the `/private` and `/usage` paths, not the bare host.** Access gates by URL
+> (hostname **+ path**). Create Access applications for `<your-host>/private` and
+> `<your-host>/usage` (e.g. `status.example.com/private` and `status.example.com/usage`). If you point either at the
 > bare hostname, Access walls off the **entire** site — the public status page (`/`, `/public`,
 > `/feed.xml`, `/badge/*`) included. With the `/private` path scope, only `/private` is gated at the
-> edge; the Worker then verifies the injected Access JWT and everything else stays public.
+> edge; the Worker then verifies the injected Access JWT and everything else stays public. The Worker
+> independently returns `403` from `/usage` without a verified session.
 
 Add the `auth` block to `config.yaml` as runtime placeholders:
 

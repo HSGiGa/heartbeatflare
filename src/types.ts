@@ -174,6 +174,19 @@ export type VpcItemStatus = {
 	id: string;                   // tunnel_id
 	status: string | null;        // 'healthy' | 'degraded' | 'down' | 'inactive' | 'active' | null
 	name?: string;                // human name returned by the CF API
+	connections?: number;
+	lastConnectedAt?: string | null;
+	createdAt?: string | null;
+};
+
+// Tunnel state is derived exclusively from configured VPC networks, never from an account-wide list.
+export type TunnelStatus = {
+	id: string;
+	name: string;
+	status: string | null;
+	connections: number;
+	lastConnectedAt: string | null;
+	createdAt: string | null;
 };
 
 export type PlanInfo = {
@@ -199,6 +212,7 @@ export type UsageSnapshot = {
 	queues: QueueUsage | null;
 	email: EmailRoutingUsage | null;
 	vpc: VpcItemStatus[] | null;
+	tunnels: TunnelStatus[] | null;
 	trends: UsageTrends | null;
 	fetchedAt: string | null;
 	plan: PlanInfo | null;

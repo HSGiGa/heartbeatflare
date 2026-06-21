@@ -4,6 +4,7 @@ import { assertUserConfig, loadConfig, loadConfigRaw, resolveDeploy, requireEnv,
 import { findDatabaseId } from './lib/d1';
 import type { EmailChannelConfig } from './lib/email';
 import { heartbeatSecretName, slug } from './lib/naming';
+import { MAX_CHECKS_PER_RUN, probeDemandPerMinute } from '../src/limits';
 import { collectVpcBindingNames, validateMonitorVpc, validateVpcConfig } from './lib/vpc';
 
 const API_BASE = 'https://api.cloudflare.com/client/v4';
@@ -346,6 +347,21 @@ async function main() {
 				[`${id}-ssl-crit`, id],
 			);
 		}
+	}
+
+	// Capacity check: the cron scheduler probes at most MAX_CHECKS_PER_RUN monitors/min directly. If the
+	// configured intervals demand more, they can't all be honoured — warn (don't fail). Uses the same pure
+	// math as the runtime so the estimate matches behaviour.
+	const probeDemand = probeDemandPerMinute(
+		config.monitors.map((m) => ({ type: m.type, interval_seconds: parseInterval(m.interval ?? '5m'), mode: m.mode })),
+	);
+	if (probeDemand > MAX_CHECKS_PER_RUN) {
+		console.warn(
+			`Warning: monitors require ~${probeDemand.toFixed(1)} probes/min but the scheduler runs at most ` +
+				`${MAX_CHECKS_PER_RUN}/min on the Free plan. Checks will lag their configured intervals ` +
+				`(≈${(probeDemand / MAX_CHECKS_PER_RUN).toFixed(1)}× slower, an estimate). Increase intervals, ` +
+				`reduce monitors, or move to Workers Paid.`,
+		);
 	}
 
 	const removed = [...existingIds].filter((id) => !yamlIds.includes(id));

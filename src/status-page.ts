@@ -4,6 +4,7 @@
 // incidents, never raw metric_series.
 import type { MonitorDbRow, UptimeDayRow, LatencyRow, IncidentRow, MaintenanceWindowRow, Session, UsageSnapshot } from './types';
 import { usageResetsIn, workersFreeLimit } from './usage';
+import { schedulerStaleness } from './staleness';
 
 function escHtml(s: string): string {
 	return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -381,6 +382,24 @@ export function buildStatusPage({
 </div>` : '';
 
 
+	// Loud, public banner for scheduler trouble (Issue #45). Visible even when cron is fully wedged,
+	// because the fetch path still renders. Two signals: a full stall (red) vs. capacity overload where
+	// some monitors fall behind the per-tick probe cap (amber). Uses only aggregate check ages.
+	const staleness = schedulerStaleness(monitors, nowMs);
+	const stalenessBannerHtml = staleness.stalled
+		? `
+<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:12px 16px;margin-top:16px;display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+	<span style="font-size:14px;font-weight:600;color:#991b1b">⚠️ Monitoring may be delayed — no checks recorded in ${escHtml(timeAgo(staleness.freshest))}.</span>
+	<span class="meta-text">Displayed statuses below may be out of date.</span>
+</div>`
+		: staleness.behindCount > 0
+			? `
+<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:12px 16px;margin-top:16px;display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+	<span style="font-size:14px;font-weight:600;color:#92400e">⚠️ ${staleness.behindCount} monitor${staleness.behindCount === 1 ? ' is' : 's are'} behind their configured interval.</span>
+	<span class="meta-text">Check capacity may be exceeded — increase intervals or reduce monitors.</span>
+</div>`
+			: '';
+
 	function infoCard(label: string, value: string, valueColor: string, sub?: string): string {
 		// Escape all dynamic strings: some callers pass CF-supplied data (email addresses, VPC names).
 		return `<div class="usage-card">
@@ -635,10 +654,11 @@ footer{border-top:1px solid var(--c-border);padding:20px 0;margin-top:8px}
 <div class="logo"><span class="brand-icon">${brandIconSvg}</span>${escHtml(pageTitle)}</div>
 <div class="overall-badge"><span class="overall-dot"></span>${overallText}</div>
 ${session
-	? `<div style="display:flex;align-items:center;gap:10px"><span class="meta-text" title="${escHtml(session.email)}">${escHtml(session.name)}</span><a href="/auth/logout" style="font-size:12px;font-weight:600;padding:5px 12px;border-radius:5px;border:1px solid #e4e4e7;background:#fff;color:#18181b;text-decoration:none">Sign out</a></div>`
+	? `<div style="display:flex;align-items:center;gap:10px"><span class="meta-text" title="${escHtml(session.email)}">${escHtml(session.name)}</span><a href="/usage" style="font-size:12px;font-weight:600;color:#2563eb;text-decoration:none">Usage</a><a href="/auth/logout" style="font-size:12px;font-weight:600;padding:5px 12px;border-radius:5px;border:1px solid #e4e4e7;background:#fff;color:#18181b;text-decoration:none">Sign out</a></div>`
 	: `<a href="/auth/login" style="font-size:12px;font-weight:600;padding:5px 12px;border-radius:5px;border:1px solid #18181b;background:#18181b;color:#fff;text-decoration:none">Sign in</a>`}
 </div>
 ${maintenanceInHeaderHtml}
+${stalenessBannerHtml}
 </div>
 </header>
 <main class="container">

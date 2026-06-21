@@ -1,17 +1,16 @@
-// Cron tick (every minute): select due monitors, probe them with bounded concurrency,
-// store results and evaluate alerts. Also hosts the hourly uptime rollup and daily cleanup,
-// since the Free Plan allows few cron triggers per account.
+// Cron tick (every minute): probe a bounded slice of due monitors directly (oldest-checked-first),
+// store results and evaluate alerts; also hosts heartbeat evaluation, rollups and cleanup. Checks run
+// in cron (not via Queues) because the Free Queues tier caps at 10k ops/day — fewer than a handful of
+// 1-min monitors would need. Per-tick CPU is bounded by MAX_CHECKS_PER_RUN, not by monitor count.
 import { CONNECTIVITY_CLASS, evaluateAlerts, storeHeartbeatMiss, storeResult } from './alerts';
+import { MAX_CHECKS_PER_RUN, MAX_CONCURRENT_CHECKS } from './limits';
 import { log } from './log';
 import { dnsCheck, httpCheck, sslProbe, tcpCheck } from './probes';
+import { schedulerStaleness } from './staleness';
 import type { ActiveIncident, ActiveIncidentRow, AlertRuleDbRow, MonitorRow, NotificationMessage, ProbeResult, RuntimeEnv, VpcBinding } from './types';
 
 // Per-check hard timeout (probe timeouts are 10s; this is the outer safety net).
 const PER_UNIT_MS = 20_000;
-const MAX_CONCURRENT_CHECKS = 5;
-// Free Plan allows 50 subrequests per invocation; each check costs 1–2 (probe + optional SSL API).
-// Monitors beyond the cap roll over to the next tick via oldest-checked-first ordering.
-const MAX_CHECKS_PER_RUN = 15;
 
 function wait(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
@@ -233,6 +232,8 @@ export async function handleScheduled(env: Env): Promise<void> {
 	// last_check_at is ISO 8601 (lexicographically ordered); never-checked (null → '') sort first.
 	dueChecks.sort((a, b) => (a.last_check_at ?? '').localeCompare(b.last_check_at ?? ''));
 
+	// Probe a bounded slice directly this tick (network wait costs ~no Worker CPU; the cap bounds the
+	// JS work — JSON/D1/alerts — that does). The rest roll over to later ticks via oldest-first order.
 	await runWithLimit(
 		dueChecks.slice(0, MAX_CHECKS_PER_RUN).map((monitor) => () =>
 			Promise.race([
@@ -276,6 +277,15 @@ export async function handleScheduled(env: Env): Promise<void> {
 		} catch (err) {
 			log('error', 'check.error', { monitorId: m.id, error: err instanceof Error ? err.message : String(err) });
 		}
+	}
+
+	// Self-check: surface a wedged scheduler (stalled) or capacity overload (monitors falling behind the
+	// per-tick cap) loudly in logs/observability rather than degrading silently. The status page also banners it.
+	const staleness = schedulerStaleness(allMonitors, Date.now());
+	if (staleness.stalled) {
+		log('error', 'scheduler.stale', { ageMs: staleness.ageMs, thresholdMs: staleness.thresholdMs, freshest: staleness.freshest });
+	} else if (staleness.behindCount > 0) {
+		log('warn', 'scheduler.behind', { behindCount: staleness.behindCount });
 	}
 
 	log('info', 'scheduler.tick', {

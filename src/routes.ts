@@ -9,7 +9,8 @@ import { buildBadgeSvg } from './badge';
 import { buildAtomFeed } from './feed';
 import { buildStatusPage } from './status-page';
 import type { AlertRuleDbRow, IncidentRow, LatencyRow, MaintenanceWindowRow, MonitorDbRow, RuntimeEnv, Session, UptimeDayRow } from './types';
-import { fetchUsage, usageResetsIn } from './usage';
+import { fetchUsage } from './usage';
+import { buildUsagePage } from './usage-page';
 
 // Edge-cache TTL for unauthenticated responses (status page + public API).
 const PUBLIC_MAXAGE = 60;
@@ -99,8 +100,8 @@ async function fetchMaintenanceWindows(env: Env, showAll: boolean, endedAfterIso
 	return rows.map((r) => ({ ...r, monitor_ids: byWindow.get(r.id) ?? [] }));
 }
 
-async function handleStatusApi(env: Env, runtimeEnv: RuntimeEnv, showAll: boolean): Promise<Response> {
-	const [monitors, { results: rules }, snapshot] = await Promise.all([
+async function handleStatusApi(env: Env, showAll: boolean): Promise<Response> {
+	const [monitors, { results: rules }] = await Promise.all([
 		fetchMonitorRows(env, showAll),
 		env.DB.prepare(
 			`SELECT id, monitor_id, metric_name, condition, threshold, severity,
@@ -108,7 +109,6 @@ async function handleStatusApi(env: Env, runtimeEnv: RuntimeEnv, showAll: boolea
 			 FROM alert_rules
 			 ORDER BY monitor_id`,
 		).all<AlertRuleDbRow>(),
-		showAll ? fetchUsage(runtimeEnv) : Promise.resolve(null),
 	]);
 
 	const rulesByMonitor = new Map<string, AlertRuleDbRow[]>();
@@ -119,9 +119,6 @@ async function handleStatusApi(env: Env, runtimeEnv: RuntimeEnv, showAll: boolea
 	}
 
 	return Response.json({
-		...(showAll && snapshot
-			? { d1: snapshot.d1, d1Percent: snapshot.d1Percent, workers: snapshot.workers, queues: snapshot.queues, email: snapshot.email, vpc: snapshot.vpc, trends: snapshot.trends, usageResetsIn: usageResetsIn(Date.now()) }
-			: {}),
 		monitors: monitors.map((m) => ({
 			id: m.id,
 			name: m.name,
@@ -231,7 +228,6 @@ async function handleStatusPage(
 		{ results: activeIncidents },
 		{ results: allIncidents },
 		maintenanceWindows,
-		d1Usage,
 	] = await Promise.all([
 		fetchMonitorRows(env, showAll),
 		env.DB.prepare(
@@ -261,14 +257,20 @@ async function handleStatusPage(
 			 LIMIT 2000`,
 		).bind(new Date(nowMs).toISOString().slice(0, 10)).all<IncidentRow>(),
 		fetchMaintenanceWindows(env, showAll, new Date(nowMs).toISOString()),
-		showAll ? fetchUsage(runtimeEnv) : Promise.resolve(null),
 	]);
 
-	const html = buildStatusPage({ nowMs, monitors, uptimeDays, latencyPoints, activeIncidents, allIncidents, maintenanceWindows, d1Usage, session, authEnabled, scope: showAll ? 'all' : 'public', workerName: runtimeEnv.WORKER_NAME ?? '', version: runtimeEnv.APP_VERSION ?? '', siteTitle: runtimeEnv.SITE_TITLE ?? '', host });
+	const html = buildStatusPage({ nowMs, monitors, uptimeDays, latencyPoints, activeIncidents, allIncidents, maintenanceWindows, d1Usage: null, session, authEnabled, scope: showAll ? 'all' : 'public', workerName: runtimeEnv.WORKER_NAME ?? '', version: runtimeEnv.APP_VERSION ?? '', siteTitle: runtimeEnv.SITE_TITLE ?? '', host });
 
 	// Unauthenticated (public) renders are cacheable at the edge; authenticated views are always fresh.
 	const resolvedCacheControl = cacheControl ?? (session ? NO_STORE : `public, max-age=${PUBLIC_MAXAGE}`);
 	return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': resolvedCacheControl } });
+}
+
+async function handleUsagePage(runtimeEnv: RuntimeEnv, session: Session): Promise<Response> {
+	const snapshot = await fetchUsage(runtimeEnv);
+	return new Response(buildUsagePage({ nowMs: Date.now(), snapshot, session, siteTitle: runtimeEnv.SITE_TITLE ?? '' }), {
+		headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': NO_STORE },
+	});
 }
 
 async function handleBadgesPage(env: Env, origin: string, siteTitle: string): Promise<Response> {
@@ -507,8 +509,8 @@ export async function handleFetch(request: Request, env: Env, ctx: ExecutionCont
 
 	if (request.method === 'GET' && pathname === '/api/status') {
 		return showAll
-			? handleStatusApi(env, runtimeEnv, true)
-			: withPublicEdgeCache(request, ctx, () => handleStatusApi(env, runtimeEnv, false));
+			? handleStatusApi(env, true)
+			: withPublicEdgeCache(request, ctx, () => handleStatusApi(env, false));
 	}
 
 	if (request.method === 'GET' && pathname === '/api/history') {
@@ -526,6 +528,11 @@ export async function handleFetch(request: Request, env: Env, ctx: ExecutionCont
 
 	if (request.method === 'GET' && pathname === '/private') {
 		return handleStatusPage(env, runtimeEnv, showAll, session, authEnabled, new URL(request.url).host, NO_STORE);
+	}
+
+	// Account-level usage is never exposed without a locally verified Access session.
+	if (request.method === 'GET' && pathname === '/usage') {
+		return session ? handleUsagePage(runtimeEnv, session) : new Response('Authentication required', { status: 403, headers: { 'Cache-Control': NO_STORE } });
 	}
 
 	return new Response(null, { status: 404 });

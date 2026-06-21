@@ -2,7 +2,7 @@
 // invocations for today, fetched from the Cloudflare GraphQL API and cached 60s per isolate.
 // Limits are plan-dependent; plan detection needs Billing:Read on the token and falls back to
 // Free Plan limits without it. Errors keep serving the last (or fallback) snapshot.
-import type { RuntimeEnv, D1Usage, D1UsagePercent, UsageSnapshot, UsageGraphQLResponse, QueueGraphQLResponse, TrendsGraphQLResponse, HourlyGroup, PlanInfo, QueueUsage, EmailRoutingUsage, VpcItemStatus, UsageTrends } from './types';
+import type { RuntimeEnv, D1Usage, D1UsagePercent, UsageSnapshot, UsageGraphQLResponse, QueueGraphQLResponse, TrendsGraphQLResponse, HourlyGroup, PlanInfo, QueueUsage, EmailRoutingUsage, VpcItemStatus, TunnelStatus, UsageTrends } from './types';
 
 export const TREND_HOURS = 24;
 
@@ -146,8 +146,8 @@ async function fetchVpcStatus(accountId: string, apiToken: string, env: RuntimeE
 	const nowMs = Date.now();
 	if (cachedVpc && nowMs < cachedVpcUntil) return cachedVpc;
 
-	// Networks only: their backing Cloudflare Tunnel (cfd_tunnel) exposes a health status. VPC
-	// services are intentionally excluded — their API returns configuration only, no health field.
+	// Networks only: their backing Cloudflare Tunnel (cfd_tunnel) exposes health and connection
+	// state. This deliberately scopes /usage to tunnels used by Workers VPC monitoring.
 	type NetworkEntry = { binding: string; tunnel_id: string };
 
 	let networks: NetworkEntry[] = [];
@@ -165,8 +165,18 @@ async function fetchVpcStatus(accountId: string, apiToken: string, env: RuntimeE
 					headers: { Authorization: `Bearer ${apiToken}` },
 				});
 				if (!res.ok) return { binding: n.binding, kind: 'network', id: n.tunnel_id, status: null };
-				const data = (await res.json()) as { result?: { status?: string; name?: string } };
-				return { binding: n.binding, kind: 'network', id: n.tunnel_id, status: data.result?.status ?? null, name: data.result?.name };
+				const data = (await res.json()) as { result?: TunnelApiItem };
+				const tunnel = reduceTunnels([{ id: n.tunnel_id, ...data.result }])[0];
+				return {
+					binding: n.binding,
+					kind: 'network',
+					id: n.tunnel_id,
+					status: tunnel?.status ?? null,
+					name: tunnel?.name,
+					connections: tunnel?.connections ?? 0,
+					lastConnectedAt: tunnel?.lastConnectedAt ?? null,
+					createdAt: tunnel?.createdAt ?? null,
+				};
 			} catch {
 				return { binding: n.binding, kind: 'network', id: n.tunnel_id, status: null };
 			}
@@ -176,6 +186,33 @@ async function fetchVpcStatus(accountId: string, apiToken: string, env: RuntimeE
 	cachedVpc = results;
 	cachedVpcUntil = nowMs + 60_000;
 	return cachedVpc;
+}
+
+type TunnelApiItem = {
+	id?: string;
+	name?: string;
+	status?: string;
+	created_at?: string;
+	connections?: Array<{ opened_at?: string }>;
+};
+
+// Keep the API response transformation pure: it makes the status semantics testable and avoids
+// exposing connection metadata (such as origin IPs) on the authenticated page.
+export function reduceTunnels(items: TunnelApiItem[]): TunnelStatus[] {
+	return items
+		.filter((item): item is TunnelApiItem & { id: string; name: string } => Boolean(item.id && item.name))
+		.map((item) => {
+			const opened = (item.connections ?? []).map((connection) => connection.opened_at).filter((value): value is string => Boolean(value));
+			return {
+				id: item.id,
+				name: item.name,
+				status: item.status ?? null,
+				connections: item.connections?.length ?? 0,
+				lastConnectedAt: opened.sort()[opened.length - 1] ?? null,
+				createdAt: item.created_at ?? null,
+			};
+		})
+		.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 // Reduces actionType-grouped billable queue operations into writes vs read/delete consumption
@@ -244,6 +281,7 @@ let cachedUsage: UsageSnapshot = {
 	queues: null,
 	email: null,
 	vpc: null,
+	tunnels: null,
 	trends: null,
 	fetchedAt: null,
 	plan: null,
@@ -318,6 +356,14 @@ export async function fetchUsage(env: RuntimeEnv): Promise<UsageSnapshot> {
 		queues,
 		email: emailUsage,
 		vpc: vpcStatus,
+		tunnels: vpcStatus?.map((network): TunnelStatus => ({
+			id: network.id,
+			name: network.name ?? network.binding,
+			status: network.status,
+			connections: network.connections ?? 0,
+			lastConnectedAt: network.lastConnectedAt ?? null,
+			createdAt: network.createdAt ?? null,
+		})) ?? null,
 		trends,
 		fetchedAt: new Date(nowMs).toISOString(),
 		plan,

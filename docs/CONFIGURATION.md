@@ -166,6 +166,15 @@ Monitor-level fields:
   for `type: heartbeat`.
 - `interval`: check interval or expected heartbeat period. Minimum `60s`; examples: `60s`, `5m`,
   `6h`, `1d`. Default `5m`.
+
+  > **Scheduler capacity (Free plan).** The cron tick probes a bounded number of monitors per minute
+  > (default 3) so per-invocation CPU stays within the Free 10 ms limit. If your monitors collectively
+  > demand more than that — `Σ (60 / interval_seconds)` over enabled pull monitors of type http/tcp/dns,
+  > **including `mode: internal`** — checks run slower than configured: the effective cadence stretches by
+  > roughly `demand ÷ capacity` (an estimate; actual order is oldest-checked-first and varies with
+  > timeouts/errors). `npm run config:import` prints a warning when you exceed it, and the status page
+  > shows an amber "N monitors behind their interval" banner. Raise intervals, reduce monitors, or move
+  > to Workers Paid for more headroom. Heartbeat monitors are push-driven and don't count.
 - `alerts`: alert rules for this monitor. If omitted, no connectivity incident is opened. HTTP/TCP
   SSL expiry defaults may still be added when SSL checks are enabled.
 - `enabled`: set `false` to pause the monitor while keeping it visible and preserving history.
@@ -650,8 +659,8 @@ on your deployed Worker to copy ready-to-use embed snippets. A direct Markdown b
 ![status](https://status.example.com/badge/example-api.svg)
 ```
 
-The `/private` status page additionally shows private monitors and the optional Infrastructure
-Usage block; it is gated by Cloudflare Access (see [`auth`](#auth-optional)).
+The `/private` status page shows private monitors. The optional Infrastructure Usage page is at
+`/usage`; it requires a verified Cloudflare Access session (see [`auth`](#auth-optional)).
 
 ## Secrets and `${VAR}` placeholders
 
