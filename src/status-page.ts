@@ -382,14 +382,23 @@ export function buildStatusPage({
 </div>` : '';
 
 
-	// Loud, public banner when the scheduler has stopped advancing checks (Issue #45). Visible even
-	// when cron is fully wedged, because the fetch path still renders. Uses only aggregate check ages.
+	// Loud, public banner for scheduler trouble (Issue #45). Visible even when cron is fully wedged,
+	// because the fetch path still renders. Two signals: a full stall (red) vs. capacity overload where
+	// some monitors fall behind the per-tick probe cap (amber). Uses only aggregate check ages.
 	const staleness = schedulerStaleness(monitors, nowMs);
-	const stalenessBannerHtml = staleness.stale ? `
+	const stalenessBannerHtml = staleness.stalled
+		? `
 <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:12px 16px;margin-top:16px;display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
 	<span style="font-size:14px;font-weight:600;color:#991b1b">⚠️ Monitoring may be delayed — no checks recorded in ${escHtml(timeAgo(staleness.freshest))}.</span>
 	<span class="meta-text">Displayed statuses below may be out of date.</span>
-</div>` : '';
+</div>`
+		: staleness.behindCount > 0
+			? `
+<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:12px 16px;margin-top:16px;display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+	<span style="font-size:14px;font-weight:600;color:#92400e">⚠️ ${staleness.behindCount} monitor${staleness.behindCount === 1 ? ' is' : 's are'} behind their configured interval.</span>
+	<span class="meta-text">Check capacity may be exceeded — increase intervals or reduce monitors.</span>
+</div>`
+			: '';
 
 	function infoCard(label: string, value: string, valueColor: string, sub?: string): string {
 		// Escape all dynamic strings: some callers pass CF-supplied data (email addresses, VPC names).
