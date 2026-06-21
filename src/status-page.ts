@@ -4,6 +4,7 @@
 // incidents, never raw metric_series.
 import type { MonitorDbRow, UptimeDayRow, LatencyRow, IncidentRow, MaintenanceWindowRow, Session, UsageSnapshot } from './types';
 import { usageResetsIn, workersFreeLimit } from './usage';
+import { schedulerStaleness } from './staleness';
 
 function escHtml(s: string): string {
 	return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -381,6 +382,15 @@ export function buildStatusPage({
 </div>` : '';
 
 
+	// Loud, public banner when the scheduler has stopped advancing checks (Issue #45). Visible even
+	// when cron is fully wedged, because the fetch path still renders. Uses only aggregate check ages.
+	const staleness = schedulerStaleness(monitors, nowMs);
+	const stalenessBannerHtml = staleness.stale ? `
+<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:12px 16px;margin-top:16px;display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+	<span style="font-size:14px;font-weight:600;color:#991b1b">⚠️ Monitoring may be delayed — no checks recorded in ${escHtml(timeAgo(staleness.freshest))}.</span>
+	<span class="meta-text">Displayed statuses below may be out of date.</span>
+</div>` : '';
+
 	function infoCard(label: string, value: string, valueColor: string, sub?: string): string {
 		// Escape all dynamic strings: some callers pass CF-supplied data (email addresses, VPC names).
 		return `<div class="usage-card">
@@ -639,6 +649,7 @@ ${session
 	: `<a href="/auth/login" style="font-size:12px;font-weight:600;padding:5px 12px;border-radius:5px;border:1px solid #18181b;background:#18181b;color:#fff;text-decoration:none">Sign in</a>`}
 </div>
 ${maintenanceInHeaderHtml}
+${stalenessBannerHtml}
 </div>
 </header>
 <main class="container">
