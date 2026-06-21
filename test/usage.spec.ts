@@ -1,6 +1,6 @@
 // Pure-lib tests for the usage-block reducers (Issue #31). Mirrors test/vpc.spec.ts style.
 import { describe, it, expect } from 'vitest';
-import { reduceQueueOperations, hourKeys, hourlySeries } from '../src/usage';
+import { reduceQueueOperations, reduceTunnels, hourKeys, hourlySeries } from '../src/usage';
 
 describe('reduceQueueOperations', () => {
 	it('maps WriteMessage to write operations and ReadMessage/DeleteMessage to consume operations', () => {
@@ -49,5 +49,19 @@ describe('hourlySeries', () => {
 	it('treats a missing sum field as 0', () => {
 		const groups = [{ dimensions: { datetimeHour: '2026-06-21T08:00:00Z' } }];
 		expect(hourlySeries(groups, 'rowsWritten', keys)).toEqual([0, 0, 0]);
+	});
+});
+
+describe('reduceTunnels', () => {
+	it('keeps only displayable tunnels and derives connection details without exposing connection metadata', () => {
+		const tunnels = reduceTunnels([
+			{ id: 'b', name: 'zulu', status: 'inactive', connections: [] },
+			{ id: 'a', name: 'alpha', status: 'healthy', created_at: '2026-06-01T00:00:00Z', connections: [{ opened_at: '2026-06-21T08:00:00Z' }, { opened_at: '2026-06-21T09:00:00Z' }] },
+			{ id: 'missing-name' },
+		]);
+		expect(tunnels).toEqual([
+			{ id: 'a', name: 'alpha', status: 'healthy', connections: 2, lastConnectedAt: '2026-06-21T09:00:00Z', createdAt: '2026-06-01T00:00:00Z' },
+			{ id: 'b', name: 'zulu', status: 'inactive', connections: 0, lastConnectedAt: null, createdAt: null },
+		]);
 	});
 });

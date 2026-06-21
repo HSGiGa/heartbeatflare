@@ -3,7 +3,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import worker from '../src/index';
 import { _invalidateAuthCache, resolveAuthConfig } from '../src/auth';
 import { CONNECTIVITY_CLASS, evaluateAlerts } from '../src/alerts';
-import { handleScheduled } from '../src/scheduler';
+import { handleQueuedCheck, handleScheduled } from '../src/scheduler';
 import type { AlertRuleDbRow, MonitorRow } from '../src/types';
 // Apply the single consolidated baseline so the test schema matches production. If the schema is
 // ever split into further migrations, import and apply each one here in order.
@@ -11,6 +11,8 @@ import type { AlertRuleDbRow, MonitorRow } from '../src/types';
 import m01 from '../migrations/0001_initial_schema.sql?raw';
 // @ts-expect-error vite ?raw import
 import m02 from '../migrations/0002_monitor_vpc_binding.sql?raw';
+// @ts-expect-error vite ?raw import
+import m03 from '../migrations/0003_check_lease.sql?raw';
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 
@@ -32,7 +34,7 @@ async function applyMigration(sql: string) {
 }
 
 beforeAll(async () => {
-	for (const sql of [m01, m02]) {
+	for (const sql of [m01, m02, m03]) {
 		await applyMigration(sql as string);
 	}
 	await env.DB.prepare(
@@ -359,6 +361,15 @@ describe('auth visibility filtering', () => {
 		await waitOnExecutionContext(ctx);
 		expect(res.status).toBe(200);
 		expect(res.headers.get('Content-Type')).toContain('text/html');
+		expect(res.headers.get('Cache-Control')).toBe('no-store');
+	});
+
+	it('rejects the infrastructure usage page without a valid session', async () => {
+		const req = new IncomingRequest('http://example.com/usage');
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(req, env, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(res.status).toBe(403);
 		expect(res.headers.get('Cache-Control')).toBe('no-store');
 	});
 
@@ -727,6 +738,7 @@ describe('scheduler internal (Workers VPC) monitors', () => {
 		await seedInternal('int-http', 'http', 'http://demo.internal/health', 'TEST_VPC');
 
 		await handleScheduled(env);
+		await handleQueuedCheck(env, 'int-http');
 
 		expect(vpcFetch).toHaveBeenCalledTimes(1);
 		expect(String(vpcFetch.mock.calls[0][0])).toBe('http://demo.internal/health');
@@ -739,6 +751,7 @@ describe('scheduler internal (Workers VPC) monitors', () => {
 		await seedInternal('int-tcp', 'tcp', '10.0.1.50:6379', 'TEST_VPC');
 
 		await handleScheduled(env);
+		await handleQueuedCheck(env, 'int-tcp');
 
 		expect(vpcConnect).toHaveBeenCalledTimes(1);
 		expect(vpcConnect.mock.calls[0][0]).toBe('10.0.1.50:6379');
@@ -750,6 +763,7 @@ describe('scheduler internal (Workers VPC) monitors', () => {
 		await seedInternal('int-missing', 'http', 'http://demo.internal/', 'NOPE_BINDING');
 
 		await handleScheduled(env);
+		await handleQueuedCheck(env, 'int-missing');
 
 		const st = await env.DB
 			.prepare(`SELECT status FROM monitor_state WHERE monitor_id = 'int-missing'`)

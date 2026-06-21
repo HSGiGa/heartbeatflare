@@ -1,10 +1,10 @@
-// Cron tick (every minute): select due monitors, probe them with bounded concurrency,
-// store results and evaluate alerts. Also hosts the hourly uptime rollup and daily cleanup,
+// Cron tick (every minute): reserve and enqueue due monitors. Probing, result storage and alerts
+// run one-at-a-time in the Queue consumer. Cron also hosts heartbeat evaluation, rollups and cleanup,
 // since the Free Plan allows few cron triggers per account.
 import { CONNECTIVITY_CLASS, evaluateAlerts, storeHeartbeatMiss, storeResult } from './alerts';
 import { log } from './log';
 import { dnsCheck, httpCheck, sslProbe, tcpCheck } from './probes';
-import type { ActiveIncident, ActiveIncidentRow, AlertRuleDbRow, MonitorRow, NotificationMessage, ProbeResult, RuntimeEnv, VpcBinding } from './types';
+import type { ActiveIncident, ActiveIncidentRow, AlertRuleDbRow, CheckMessage, MonitorRow, NotificationMessage, ProbeResult, RuntimeEnv, VpcBinding } from './types';
 
 // Per-check hard timeout (probe timeouts are 10s; this is the outer safety net).
 const PER_UNIT_MS = 20_000;
@@ -12,6 +12,7 @@ const MAX_CONCURRENT_CHECKS = 5;
 // Free Plan allows 50 subrequests per invocation; each check costs 1–2 (probe + optional SSL API).
 // Monitors beyond the cap roll over to the next tick via oldest-checked-first ordering.
 const MAX_CHECKS_PER_RUN = 15;
+const CHECK_LEASE_MS = 5 * 60_000;
 
 function wait(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
@@ -150,10 +151,39 @@ async function runExternalCheck(
 	}
 }
 
+// Queue consumer entry point. One invocation handles exactly one probe, bounding the CPU of the
+// checking path independently from the scheduler's fan-out size.
+export async function handleQueuedCheck(env: Env, monitorId: string): Promise<void> {
+	const now = new Date().toISOString();
+	const runtimeEnv = env as RuntimeEnv;
+	const [monitor, { results: rules }, { results: incidents }] = await Promise.all([
+		env.DB.prepare(
+			`SELECT m.id, m.name, m.type, m.mode, m.scrape_url, m.interval_seconds,
+			        COALESCE(m.ssl_check, 1) AS ssl_check, m.vpc_binding,
+			        ms.status AS current_status, ms.last_check_at, ms.last_success_at,
+			        COALESCE(ms.consecutive_failures, 0) AS consecutive_failures,
+			        COALESCE(ms.consecutive_successes, 0) AS consecutive_successes,
+			        ms.active_incident_id, ms.ssl_not_after, ms.ssl_issuer
+			 FROM monitors m LEFT JOIN monitor_state ms ON ms.monitor_id = m.id
+			 WHERE m.id = ? AND m.enabled = 1 AND m.paused = 0`,
+		).bind(monitorId).first<MonitorRow & { mode: string; last_success_at: string | null }>(),
+		env.DB.prepare(`SELECT id, monitor_id, metric_name, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled FROM alert_rules WHERE monitor_id = ? AND enabled = 1 ORDER BY failure_count ASC`).bind(monitorId).all<AlertRuleDbRow>(),
+		env.DB.prepare(
+			`SELECT i.monitor_id, COALESCE(ar.metric_name, '${CONNECTIVITY_CLASS}') AS class, i.id AS incident_id, i.severity
+			 FROM incidents i LEFT JOIN alert_rules ar ON ar.id = i.alert_rule_id
+			 WHERE i.monitor_id = ? AND i.status = 'open'`,
+		).bind(monitorId).all<ActiveIncidentRow>(),
+	]);
+	if (!monitor || !['http', 'tcp', 'dns'].includes(monitor.type)) return;
+	const activeByClass = new Map<string, ActiveIncident>();
+	for (const incident of incidents) activeByClass.set(incident.class, { id: incident.incident_id, severity: incident.severity });
+	const headers = parseProbeHeaders(runtimeEnv.PROBE_HEADERS).get(monitor.id);
+	await runExternalCheck(monitor, env, now, rules, activeByClass, headers);
+}
+
 export async function handleScheduled(env: Env): Promise<void> {
 	const now = new Date().toISOString();
 	const t0 = Date.now();
-	const probeHeadersById = parseProbeHeaders((env as RuntimeEnv).PROBE_HEADERS);
 
 	// Single query for all monitors + preload all alert rules + open incidents + active maintenance
 	// windows — avoids N+2 DB round-trips per cron run
@@ -164,12 +194,12 @@ export async function handleScheduled(env: Env): Promise<void> {
 			        ms.status AS current_status, ms.last_check_at, ms.last_success_at,
 			        COALESCE(ms.consecutive_failures, 0) AS consecutive_failures,
 			        COALESCE(ms.consecutive_successes, 0) AS consecutive_successes,
-			        ms.active_incident_id,
+		        ms.active_incident_id, ms.check_lease_until,
 			        ms.ssl_not_after, ms.ssl_issuer
 			 FROM monitors m
 			 LEFT JOIN monitor_state ms ON ms.monitor_id = m.id
 			 WHERE m.enabled = 1 AND m.paused = 0`,
-		).all<MonitorRow & { mode: string; last_success_at: string | null; created_at: string }>(),
+		).all<MonitorRow & { mode: string; last_success_at: string | null; created_at: string; check_lease_until: string | null }>(),
 		env.DB.prepare(
 			`SELECT id, monitor_id, metric_name, condition, threshold, severity,
 			        failure_count, recovery_count, cooldown_seconds, enabled
@@ -225,6 +255,7 @@ export async function handleScheduled(env: Env): Promise<void> {
 			['http', 'tcp', 'dns'].includes(m.type) &&
 			// Skip monitors under an active maintenance window: no probe → no incident, uptime unaffected.
 			!underMaintenance(m.id) &&
+			(!m.check_lease_until || new Date(m.check_lease_until).getTime() <= Date.now()) &&
 			(!m.last_check_at ||
 				new Date(m.last_check_at).getTime() + m.interval_seconds * 1000 <= Date.now()),
 	);
@@ -233,17 +264,19 @@ export async function handleScheduled(env: Env): Promise<void> {
 	// last_check_at is ISO 8601 (lexicographically ordered); never-checked (null → '') sort first.
 	dueChecks.sort((a, b) => (a.last_check_at ?? '').localeCompare(b.last_check_at ?? ''));
 
-	await runWithLimit(
-		dueChecks.slice(0, MAX_CHECKS_PER_RUN).map((monitor) => () =>
-			Promise.race([
-				runExternalCheck(monitor, env, now, rulesByMonitor.get(monitor.id) ?? [], activeByMonitor.get(monitor.id) ?? new Map(), probeHeadersById.get(monitor.id)),
-				wait(PER_UNIT_MS).then(() => Promise.reject(new Error(`timed out after ${PER_UNIT_MS / 1000}s`))),
-			]).catch((err: unknown) =>
-				log('error', 'check.error', { monitorId: monitor.id, error: err instanceof Error ? err.message : String(err) }),
-			),
-		),
-		MAX_CONCURRENT_CHECKS,
-	);
+	const checksToDispatch = dueChecks.slice(0, MAX_CHECKS_PER_RUN);
+	if (checksToDispatch.length > 0) {
+		const leaseUntil = new Date(Date.now() + CHECK_LEASE_MS).toISOString();
+		await env.DB.batch(checksToDispatch.map((monitor) =>
+			env.DB.prepare(
+				`INSERT INTO monitor_state (monitor_id, check_lease_until) VALUES (?, ?)
+				 ON CONFLICT(monitor_id) DO UPDATE SET check_lease_until = excluded.check_lease_until`,
+			).bind(monitor.id, leaseUntil),
+		));
+		await (env.NOTIFICATION_QUEUE as Queue<NotificationMessage | CheckMessage>).sendBatch(
+			checksToDispatch.map((monitor) => ({ body: { kind: 'check', monitorId: monitor.id } })),
+		);
+	}
 
 	// Heartbeat (push) monitors: not probed. A beat updates last_check_at via the /beat endpoint; here
 	// we detect missed beats. The deadline is measured from the last beat, or from created_at when a

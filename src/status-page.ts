@@ -635,7 +635,7 @@ footer{border-top:1px solid var(--c-border);padding:20px 0;margin-top:8px}
 <div class="logo"><span class="brand-icon">${brandIconSvg}</span>${escHtml(pageTitle)}</div>
 <div class="overall-badge"><span class="overall-dot"></span>${overallText}</div>
 ${session
-	? `<div style="display:flex;align-items:center;gap:10px"><span class="meta-text" title="${escHtml(session.email)}">${escHtml(session.name)}</span><a href="/auth/logout" style="font-size:12px;font-weight:600;padding:5px 12px;border-radius:5px;border:1px solid #e4e4e7;background:#fff;color:#18181b;text-decoration:none">Sign out</a></div>`
+	? `<div style="display:flex;align-items:center;gap:10px"><span class="meta-text" title="${escHtml(session.email)}">${escHtml(session.name)}</span><a href="/usage" style="font-size:12px;font-weight:600;color:#2563eb;text-decoration:none">Usage</a><a href="/auth/logout" style="font-size:12px;font-weight:600;padding:5px 12px;border-radius:5px;border:1px solid #e4e4e7;background:#fff;color:#18181b;text-decoration:none">Sign out</a></div>`
 	: `<a href="/auth/login" style="font-size:12px;font-weight:600;padding:5px 12px;border-radius:5px;border:1px solid #18181b;background:#18181b;color:#fff;text-decoration:none">Sign in</a>`}
 </div>
 ${maintenanceInHeaderHtml}

@@ -63,6 +63,7 @@ export async function storeResult(
 			   last_success_at = CASE WHEN excluded.status = 'up' THEN excluded.last_check_at ELSE last_success_at END,
 			   consecutive_failures = excluded.consecutive_failures,
 			   consecutive_successes = excluded.consecutive_successes,
+			   check_lease_until = NULL,
 			   ssl_not_after = COALESCE(excluded.ssl_not_after, ssl_not_after),
 			   ssl_issuer    = COALESCE(excluded.ssl_issuer, ssl_issuer)`,
 		).bind(monitor.id, result.status, now, result.status === 'up' ? now : null, failures, successes, bindSslNotAfter, bindSslIssuer),

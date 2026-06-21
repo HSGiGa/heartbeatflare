@@ -650,8 +650,8 @@ on your deployed Worker to copy ready-to-use embed snippets. A direct Markdown b
 ![status](https://status.example.com/badge/example-api.svg)
 ```
 
-The `/private` status page additionally shows private monitors and the optional Infrastructure
-Usage block; it is gated by Cloudflare Access (see [`auth`](#auth-optional)).
+The `/private` status page shows private monitors. The optional Infrastructure Usage page is at
+`/usage`; it requires a verified Cloudflare Access session (see [`auth`](#auth-optional)).
 
 ## Secrets and `${VAR}` placeholders
 
