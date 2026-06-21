@@ -4,6 +4,7 @@
 import { CONNECTIVITY_CLASS, evaluateAlerts, storeHeartbeatMiss, storeResult } from './alerts';
 import { log } from './log';
 import { dnsCheck, httpCheck, sslProbe, tcpCheck } from './probes';
+import { schedulerStaleness } from './staleness';
 import type { ActiveIncident, ActiveIncidentRow, AlertRuleDbRow, CheckMessage, MonitorRow, NotificationMessage, ProbeResult, RuntimeEnv, VpcBinding } from './types';
 
 // Per-check hard timeout (probe timeouts are 10s; this is the outer safety net).
@@ -12,7 +13,9 @@ const MAX_CONCURRENT_CHECKS = 5;
 // Free Plan allows 50 subrequests per invocation; each check costs 1–2 (probe + optional SSL API).
 // Monitors beyond the cap roll over to the next tick via oldest-checked-first ordering.
 const MAX_CHECKS_PER_RUN = 15;
-const CHECK_LEASE_MS = 5 * 60_000;
+// Must exceed the consumer's retry budget (max_retries: 8 × backoff ≈ 14 min) so the scheduler never
+// re-enqueues a monitor whose job is still being retried — which would cause duplicate probes.
+const CHECK_LEASE_MS = 15 * 60_000;
 
 function wait(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
@@ -266,16 +269,23 @@ export async function handleScheduled(env: Env): Promise<void> {
 
 	const checksToDispatch = dueChecks.slice(0, MAX_CHECKS_PER_RUN);
 	if (checksToDispatch.length > 0) {
-		const leaseUntil = new Date(Date.now() + CHECK_LEASE_MS).toISOString();
-		await env.DB.batch(checksToDispatch.map((monitor) =>
-			env.DB.prepare(
-				`INSERT INTO monitor_state (monitor_id, check_lease_until) VALUES (?, ?)
-				 ON CONFLICT(monitor_id) DO UPDATE SET check_lease_until = excluded.check_lease_until`,
-			).bind(monitor.id, leaseUntil),
-		));
-		await (env.NOTIFICATION_QUEUE as Queue<NotificationMessage | CheckMessage>).sendBatch(
-			checksToDispatch.map((monitor) => ({ body: { kind: 'check', monitorId: monitor.id } })),
-		);
+		try {
+			// Enqueue first, then lease: only the monitors we actually dispatched get a lease, so a
+			// failed send (transient, or the Free queue-ops/day cap) doesn't leave phantom leases that
+			// would freeze those checks for the whole lease window. A failed send just retries next tick.
+			await (env.NOTIFICATION_QUEUE as Queue<NotificationMessage | CheckMessage>).sendBatch(
+				checksToDispatch.map((monitor) => ({ body: { kind: 'check', monitorId: monitor.id } })),
+			);
+			const leaseUntil = new Date(Date.now() + CHECK_LEASE_MS).toISOString();
+			await env.DB.batch(checksToDispatch.map((monitor) =>
+				env.DB.prepare(
+					`INSERT INTO monitor_state (monitor_id, check_lease_until) VALUES (?, ?)
+					 ON CONFLICT(monitor_id) DO UPDATE SET check_lease_until = excluded.check_lease_until`,
+				).bind(monitor.id, leaseUntil),
+			));
+		} catch (err) {
+			log('error', 'scheduler.dispatch_failed', { count: checksToDispatch.length, error: err instanceof Error ? err.message : String(err) });
+		}
 	}
 
 	// Heartbeat (push) monitors: not probed. A beat updates last_check_at via the /beat endpoint; here
@@ -309,6 +319,13 @@ export async function handleScheduled(env: Env): Promise<void> {
 		} catch (err) {
 			log('error', 'check.error', { monitorId: m.id, error: err instanceof Error ? err.message : String(err) });
 		}
+	}
+
+	// Self-check: if checks have stopped advancing (e.g. dispatch wedged or the Free queue-ops cap hit),
+	// surface it loudly in logs/observability rather than freezing silently. The status page also banners it.
+	const staleness = schedulerStaleness(allMonitors, Date.now());
+	if (staleness.stale) {
+		log('error', 'scheduler.stale', { ageMs: staleness.ageMs, thresholdMs: staleness.thresholdMs, freshest: staleness.freshest });
 	}
 
 	log('info', 'scheduler.tick', {
