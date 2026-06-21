@@ -438,6 +438,9 @@ export function buildStatusPage({
 		const queueFacts = queues
 			? `queue ops ${formatNumber(queues.writeOperations)} write · ${formatNumber(queues.consumeOperations)} read/delete`
 			: 'queue ops unavailable';
+		const workerFacts = workers
+			? `errors ${workers.errors} · ${formatNumber(workers.subrequests)} subrequests · ${queueFacts}`
+			: queueFacts;
 
 		return `
 	<section class="section usage-section">
@@ -459,10 +462,8 @@ export function buildStatusPage({
 			${workers
 				? budgetCard('Requests', formatNumber(workers.requests), '100K / day', workersReqPct, trends?.workerRequests)
 				: infoCard('Requests', '—', 'var(--c-text-faint)', 'no API data')}
-			${infoCard('Errors', workers ? String(workers.errors) : '—', workers && workers.errors > 0 ? 'var(--c-down)' : 'var(--c-up)', workers ? (workers.errors > 0 ? 'today' : 'clean') : '')}
-			${infoCard('Subrequests', workers ? formatNumber(workers.subrequests) : '—', 'var(--c-text)', workers ? 'fetch calls today' : '')}
 		</div>
-		<div class="usage-facts">${escHtml(queueFacts)}</div>
+		<div class="usage-facts">${escHtml(workerFacts)}</div>
 	${email ? `
 	<div class="usage-sublabel" style="margin-top:16px">Email Routing · destination addresses</div>
 	<div class="usage-row">
