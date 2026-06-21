@@ -2,7 +2,7 @@
 // invocations for today, fetched from the Cloudflare GraphQL API and cached 60s per isolate.
 // Limits are plan-dependent; plan detection needs Billing:Read on the token and falls back to
 // Free Plan limits without it. Errors keep serving the last (or fallback) snapshot.
-import type { RuntimeEnv, D1Usage, D1UsagePercent, UsageSnapshot, UsageGraphQLResponse, PlanInfo } from './types';
+import type { RuntimeEnv, D1Usage, D1UsagePercent, UsageSnapshot, UsageGraphQLResponse, PlanInfo, QueueUsage, CronUsage } from './types';
 
 export const workersFreeLimit = {
 	requestsPerDay: 100_000,
@@ -63,6 +63,8 @@ let cachedUsage: UsageSnapshot = {
 	d1: fallbackUsage,
 	d1Percent: calculateUsagePercent(fallbackUsage, PLAN_LIMITS.free),
 	workers: null,
+	queues: null,
+	cron: null,
 	fetchedAt: null,
 	plan: null,
 };
@@ -104,12 +106,13 @@ export async function fetchUsage(env: RuntimeEnv): Promise<UsageSnapshot> {
 		},
 		body: JSON.stringify({
 			query:
-				'query Usage($accountTag: string!, $date: Date, $databaseId: string, $scriptName: string) { viewer { accounts(filter: { accountTag: $accountTag }) { d1AnalyticsAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date, databaseId: $databaseId }) { sum { readQueries writeQueries rowsRead rowsWritten queryBatchResponseBytes } } d1StorageAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date, databaseId: $databaseId }) { max { databaseSizeBytes } } workersInvocationsAdaptive(limit: 10000, filter: { date_geq: $date, date_leq: $date, scriptName: $scriptName }) { sum { requests errors subrequests } } } } }',
+				'query Usage($accountTag: string!, $date: Date, $databaseId: string, $scriptName: string, $queueName: string) { viewer { accounts(filter: { accountTag: $accountTag }) { d1AnalyticsAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date, databaseId: $databaseId }) { sum { readQueries writeQueries rowsRead rowsWritten queryBatchResponseBytes } } d1StorageAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date, databaseId: $databaseId }) { max { databaseSizeBytes } } workersInvocationsAdaptive(limit: 10000, filter: { date_geq: $date, date_leq: $date, scriptName: $scriptName }) { sum { requests errors subrequests } } queueMessageOperationsAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date, queueName: $queueName }) { sum { messagesProduced messagesConsumed } } workersScheduledEventsAdaptiveGroups(limit: 10000, filter: { date_geq: $date, date_leq: $date, scriptName: $scriptName }) { sum { scheduledSuccesses scheduledErrors } } } } }',
 			variables: {
 				accountTag: accountId,
 				date: today,
 				databaseId,
 				scriptName: env.WORKER_NAME ?? '',
+				queueName: `${env.WORKER_NAME ?? ''}-notifications`,
 			},
 		}),
 	}),
@@ -121,15 +124,17 @@ export async function fetchUsage(env: RuntimeEnv): Promise<UsageSnapshot> {
 	}
 
 	const body = (await response.json()) as UsageGraphQLResponse;
-	if (body.errors?.length) {
+	const account = body.data?.viewer?.accounts?.[0];
+	if (!account) {
 		cachedUsageUntil = nowMs + 30_000;
 		return cachedUsage;
 	}
 
-	const account = body.data?.viewer?.accounts?.[0];
-	const analytics = account?.d1AnalyticsAdaptiveGroups?.[0]?.sum ?? {};
-	const storage = account?.d1StorageAdaptiveGroups?.[0]?.max ?? {};
-	const workersSum = account?.workersInvocationsAdaptive?.[0]?.sum;
+	const analytics = account.d1AnalyticsAdaptiveGroups?.[0]?.sum ?? {};
+	const storage = account.d1StorageAdaptiveGroups?.[0]?.max ?? {};
+	const workersSum = account.workersInvocationsAdaptive?.[0]?.sum;
+	const queueSum = account.queueMessageOperationsAdaptiveGroups?.[0]?.sum;
+	const cronSum = account.workersScheduledEventsAdaptiveGroups?.[0]?.sum;
 
 	const d1: D1Usage = {
 		readQueries: analytics.readQueries ?? 0,
@@ -144,6 +149,12 @@ export async function fetchUsage(env: RuntimeEnv): Promise<UsageSnapshot> {
 		d1Percent: calculateUsagePercent(d1, plan),
 		workers: workersSum
 			? { requests: workersSum.requests ?? 0, errors: workersSum.errors ?? 0, subrequests: workersSum.subrequests ?? 0 }
+			: null,
+		queues: queueSum
+			? { messagesProduced: queueSum.messagesProduced ?? 0, messagesConsumed: queueSum.messagesConsumed ?? 0 }
+			: null,
+		cron: cronSum
+			? { scheduledInvocations: cronSum.scheduledSuccesses ?? 0, scheduledErrors: cronSum.scheduledErrors ?? 0 }
 			: null,
 		fetchedAt: new Date(nowMs).toISOString(),
 		plan,

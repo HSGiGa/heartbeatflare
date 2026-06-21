@@ -405,11 +405,13 @@ export function buildStatusPage({
 	}
 
 	const usageHtml = d1Usage ? (() => {
-		const { d1, d1Percent, workers, plan } = d1Usage;
+		const { d1, d1Percent, workers, queues, cron, plan } = d1Usage;
 		const p = plan ?? { label: 'Free', rowsRead: 5_000_000, rowsWritten: 100_000, storageBytes: 5_000_000_000 };
 		const workersReqPct = workers ? (workers.requests / workersFreeLimit.requestsPerDay) * 100 : 0;
 		const d1ReadLimit = p.rowsRead >= 1_000_000_000 ? `${(p.rowsRead / 1_000_000_000).toFixed(0)}B` : `${(p.rowsRead / 1_000_000).toFixed(0)}M`;
 		const d1WriteLimit = p.rowsWritten >= 1_000_000 ? `${(p.rowsWritten / 1_000_000).toFixed(0)}M` : `${(p.rowsWritten / 1_000).toFixed(0)}K`;
+		const avgRowsPerCheck = cron && cron.scheduledInvocations > 0 ? d1.rowsWritten / cron.scheduledInvocations : null;
+		const estimatedRowsPerHour = avgRowsPerCheck !== null ? Math.round(avgRowsPerCheck * 60) : null;
 		return `
 	<section class="section">
 		<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
@@ -421,6 +423,12 @@ export function buildStatusPage({
 			${progressBar('Rows Read', formatNumber(d1.rowsRead), `${d1ReadLimit} / day`, d1Percent.rowsRead)}
 			${progressBar('Rows Written', formatNumber(d1.rowsWritten), `${d1WriteLimit} / day`, d1Percent.rowsWritten)}
 			${progressBar('Storage', formatBytes(d1.databaseSizeBytes), formatBytes(p.storageBytes), d1Percent.storage)}
+			${avgRowsPerCheck !== null
+				? infoCard('Avg Rows/Check', avgRowsPerCheck.toFixed(1), '#18181b', 'written per cron tick')
+				: infoCard('Avg Rows/Check', '—', '#a1a1aa', 'awaiting cron data')}
+			${estimatedRowsPerHour !== null
+				? infoCard('Est Rows/Hour', formatNumber(estimatedRowsPerHour), '#18181b', 'at current rate')
+				: infoCard('Est Rows/Hour', '—', '#a1a1aa', '')}
 		</div>
 		<div class="usage-sublabel" style="margin-top:16px">Workers · ${p.label} · 100K requests / day</div>
 		<div class="usage-grid">
@@ -429,8 +437,15 @@ export function buildStatusPage({
 				: infoCard('Requests', '—', '#a1a1aa', 'no API data')}
 			${infoCard('Errors', workers ? String(workers.errors) : '—', workers && workers.errors > 0 ? '#dc2626' : '#16a34a', workers ? (workers.errors > 0 ? 'today' : 'clean') : '')}
 			${infoCard('Subrequests', workers ? formatNumber(workers.subrequests) : '—', '#18181b', workers ? 'fetch calls today' : '')}
-			${infoCard('Queue', `${workerName}-notifications`, '#18181b', '1M ops / month free')}
-			${infoCard('Cron', '* * * * *', '#18181b', '~1,440 calls / day')}
+			${queues
+				? infoCard('Messages In', formatNumber(queues.messagesProduced), '#18181b', 'produced today')
+				: infoCard('Messages In', '—', '#a1a1aa', 'no API data')}
+			${queues
+				? infoCard('Messages Out', formatNumber(queues.messagesConsumed), '#18181b', 'consumed today')
+				: infoCard('Messages Out', '—', '#a1a1aa', 'no API data')}
+			${cron
+				? infoCard('Cron', formatNumber(cron.scheduledInvocations), cron.scheduledErrors > 0 ? '#f59e0b' : '#18181b', cron.scheduledErrors > 0 ? `${cron.scheduledErrors} errors` : 'runs today')
+				: infoCard('Cron', '—', '#a1a1aa', '* * * * *')}
 		</div>
 	</section>`;
 	})() : '';

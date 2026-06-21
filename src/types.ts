@@ -153,6 +153,16 @@ export type WorkersUsage = {
 	subrequests: number;
 };
 
+export type QueueUsage = {
+	messagesProduced: number;
+	messagesConsumed: number;
+};
+
+export type CronUsage = {
+	scheduledInvocations: number;
+	scheduledErrors: number;
+};
+
 export type PlanInfo = {
 	label: string;
 	rowsRead: number;
@@ -164,6 +174,8 @@ export type UsageSnapshot = {
 	d1: D1Usage;
 	d1Percent: D1UsagePercent;
 	workers: WorkersUsage | null;
+	queues: QueueUsage | null;
+	cron: CronUsage | null;
 	fetchedAt: string | null;
 	plan: PlanInfo | null;
 };
@@ -199,6 +211,12 @@ export type UsageGraphQLResponse = {
 				}>;
 				workersInvocationsAdaptive?: Array<{
 					sum?: Partial<WorkersUsage>;
+				}>;
+				queueMessageOperationsAdaptiveGroups?: Array<{
+					sum?: { messagesProduced?: number; messagesConsumed?: number };
+				}>;
+				workersScheduledEventsAdaptiveGroups?: Array<{
+					sum?: { scheduledSuccesses?: number; scheduledErrors?: number };
 				}>;
 			}>;
 		};
