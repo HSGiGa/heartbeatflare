@@ -113,6 +113,8 @@ export type IncidentRow = {
 export type RuntimeEnv = Env & {
 	CLOUDFLARE_ACCOUNT_ID?: string;
 	D1_DATABASE_ID?: string;
+	// Generated at deploy time from the configured notifications queue; scopes Queue analytics to this worker.
+	QUEUE_ID?: string;
 	CLOUDFLARE_RUNTIME_API_TOKEN?: string;
 	WORKER_NAME?: string;
 	// Generated at deploy time from package.json: the deployed version, shown in the status page footer.
@@ -123,6 +125,9 @@ export type RuntimeEnv = Env & {
 	// Generated at deploy time from config.yaml: JSON map of monitor id → custom HTTP probe headers,
 	// with ${VAR} placeholders preserved (resolved against env at probe runtime). Non-secret.
 	PROBE_HEADERS?: string;
+	// Emitted by generate-wrangler.ts when deploy.vpc networks are configured. JSON-encoded array of
+	// {binding, tunnel_id} so the runtime can query the CF API for backing-tunnel health.
+	VPC_NETWORK_IDS?: string;
 };
 
 // A Cloudflare Workers VPC binding (Issue #18): vpc_networks and vpc_services expose the same probe
@@ -153,6 +158,24 @@ export type WorkersUsage = {
 	subrequests: number;
 };
 
+export type QueueUsage = {
+	writeOperations: number;
+	consumeOperations: number;
+};
+
+export type EmailRoutingUsage = {
+	verified: string[];   // confirmed recipient addresses
+	pending: string[];    // unverified — emails to these are silently dropped at runtime
+};
+
+export type VpcItemStatus = {
+	binding: string;              // wrangler binding name, e.g. "DEMO_NETWORK"
+	kind: 'network';
+	id: string;                   // tunnel_id
+	status: string | null;        // 'healthy' | 'degraded' | 'down' | 'inactive' | 'active' | null
+	name?: string;                // human name returned by the CF API
+};
+
 export type PlanInfo = {
 	label: string;
 	rowsRead: number;
@@ -160,10 +183,23 @@ export type PlanInfo = {
 	storageBytes: number;
 };
 
+// Hourly time series for the last ~24h, oldest→newest, gap-filled to a fixed length. Drives the
+// sparklines on the usage page. Optional — degrades to null without breaking the rest of the block.
+export type UsageTrends = {
+	d1RowsRead: number[];
+	d1RowsWritten: number[];
+	workerRequests: number[];
+	workerErrors: number[];
+};
+
 export type UsageSnapshot = {
 	d1: D1Usage;
 	d1Percent: D1UsagePercent;
 	workers: WorkersUsage | null;
+	queues: QueueUsage | null;
+	email: EmailRoutingUsage | null;
+	vpc: VpcItemStatus[] | null;
+	trends: UsageTrends | null;
 	fetchedAt: string | null;
 	plan: PlanInfo | null;
 };
@@ -200,6 +236,36 @@ export type UsageGraphQLResponse = {
 				workersInvocationsAdaptive?: Array<{
 					sum?: Partial<WorkersUsage>;
 				}>;
+			}>;
+		};
+	};
+	errors?: unknown[];
+};
+
+// Queue operations are fetched separately and grouped by the actionType dimension (WriteMessage =
+// produced, ReadMessage/DeleteMessage = consumed); the only sum field available is billableOperations.
+export type QueueGraphQLResponse = {
+	data?: {
+		viewer?: {
+			accounts?: Array<{
+				queueMessageOperationsAdaptiveGroups?: Array<{
+					sum?: { billableOperations?: number };
+					dimensions?: { actionType?: string };
+				}>;
+			}>;
+		};
+	};
+	errors?: unknown[];
+};
+
+// Hourly buckets for the sparklines, grouped by the datetimeHour dimension.
+export type HourlyGroup<S> = { sum?: S; dimensions?: { datetimeHour?: string } };
+export type TrendsGraphQLResponse = {
+	data?: {
+		viewer?: {
+			accounts?: Array<{
+				d1AnalyticsAdaptiveGroups?: Array<HourlyGroup<{ rowsRead?: number; rowsWritten?: number }>>;
+				workersInvocationsAdaptive?: Array<HourlyGroup<{ requests?: number; errors?: number }>>;
 			}>;
 		};
 	};

@@ -381,57 +381,128 @@ export function buildStatusPage({
 </div>` : '';
 
 
-	function progressBar(label: string, value: string, limit: string, pct: number): string {
-		const fill = Math.min(pct, 100);
-		const color = pct > 80 ? '#ef4444' : pct > 50 ? '#f59e0b' : '#4ade80';
+	function infoCard(label: string, value: string, valueColor: string, sub?: string): string {
+		// Escape all dynamic strings: some callers pass CF-supplied data (email addresses, VPC names).
 		return `<div class="usage-card">
-			<div class="usage-label">${label}</div>
-			<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px">
-				<span style="font-weight:600">${value}</span>
-				<span class="meta-text">/ ${limit}</span>
-			</div>
-			<div style="height:5px;background:#f4f4f5;border-radius:3px;overflow:hidden">
-				<div style="height:100%;width:${fill.toFixed(1)}%;background:${color};border-radius:3px"></div>
-			</div>
+			<div class="usage-label">${escHtml(label)}</div>
+			<div style="font-size:20px;font-weight:700;color:${valueColor};line-height:1.2">${escHtml(value)}</div>
+			${sub ? `<div style="font-size:12px;color:var(--c-text-faint);margin-top:3px">${escHtml(sub)}</div>` : ''}
 		</div>`;
 	}
 
-	function infoCard(label: string, value: string, valueColor: string, sub?: string): string {
+	const fmtPct = (n: number): string => (n >= 10 ? n.toFixed(0) : n >= 1 ? n.toFixed(1) : n.toFixed(2)) + '%';
+	const budgetColor = (pct: number): string => (pct > 80 ? 'var(--c-down)' : pct > 50 ? 'var(--c-degraded)' : 'var(--c-up)');
+
+	// Inline area+line sparkline from a numeric series (values are trusted numbers from the CF API).
+	function sparkline(values: number[], stroke: string): string {
+		if (values.length < 2) return '';
+		const w = 100, h = 22, max = Math.max(1, ...values);
+		const step = w / (values.length - 1);
+		const line = values.map((v, i) => `${(i * step).toFixed(1)},${(h - 1 - (v / max) * (h - 2)).toFixed(1)}`).join(' ');
+		return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">`
+			+ `<polygon points="0,${h} ${line} ${w},${h}" fill="${stroke}" opacity="0.10"/>`
+			+ `<polyline points="${line}" fill="none" stroke="${stroke}" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>`;
+	}
+
+	// A budget metric: label + %, current value / limit, fill bar, and an optional 24h sparkline.
+	function budgetCard(label: string, value: string, limit: string, pct: number, spark?: number[]): string {
+		const color = budgetColor(pct);
 		return `<div class="usage-card">
-			<div class="usage-label">${label}</div>
-			<div style="font-size:20px;font-weight:700;color:${valueColor};line-height:1.2">${value}</div>
-			${sub ? `<div style="font-size:12px;color:#a1a1aa;margin-top:3px">${sub}</div>` : ''}
+			<div class="usage-cardhead"><span class="usage-label">${escHtml(label)}</span><span class="usage-pct" style="color:${color}">${fmtPct(pct)}</span></div>
+			<div class="usage-figure"><span class="usage-value">${escHtml(value)}</span><span class="meta-text">/ ${escHtml(limit)}</span></div>
+			<div class="usage-track"><div class="usage-fill" style="width:${Math.min(pct, 100).toFixed(1)}%;background:${color}"></div></div>
+			${spark && spark.length > 1 ? `<div class="usage-spark">${sparkline(spark, color)}</div>` : ''}
 		</div>`;
 	}
+
+	const dot = (color: string): string => `<span class="dot" style="background:${color}"></span>`;
+	const chip = (text: string, color: string): string => `<span class="chip">${dot(color)}${escHtml(text)}</span>`;
 
 	const usageHtml = d1Usage ? (() => {
-		const { d1, d1Percent, workers, plan } = d1Usage;
+		const { d1, d1Percent, workers, queues, email, vpc, trends, fetchedAt, plan } = d1Usage;
 		const p = plan ?? { label: 'Free', rowsRead: 5_000_000, rowsWritten: 100_000, storageBytes: 5_000_000_000 };
 		const workersReqPct = workers ? (workers.requests / workersFreeLimit.requestsPerDay) * 100 : 0;
 		const d1ReadLimit = p.rowsRead >= 1_000_000_000 ? `${(p.rowsRead / 1_000_000_000).toFixed(0)}B` : `${(p.rowsRead / 1_000_000).toFixed(0)}M`;
 		const d1WriteLimit = p.rowsWritten >= 1_000_000 ? `${(p.rowsWritten / 1_000_000).toFixed(0)}M` : `${(p.rowsWritten / 1_000).toFixed(0)}K`;
+		// Write-rate derived from elapsed time today, assuming the cron fires once per minute (so one
+		// tick ≈ one minute). Avoids depending on a per-tick count from GraphQL.
+		const minutesElapsedToday = Math.floor((nowMs - Date.UTC(new Date(nowMs).getUTCFullYear(), new Date(nowMs).getUTCMonth(), new Date(nowMs).getUTCDate())) / 60_000);
+		const avgRowsPerMin = minutesElapsedToday > 0 ? d1.rowsWritten / minutesElapsedToday : null;
+		const estimatedRowsPerHour = avgRowsPerMin !== null ? Math.round(avgRowsPerMin * 60) : null;
+
+		const ageMs = fetchedAt ? nowMs - Date.parse(fetchedAt) : null;
+		const updatedAgo = ageMs == null ? '' : ageMs < 60_000 ? `updated ${Math.max(0, Math.floor(ageMs / 1000))}s ago · ` : `updated ${Math.floor(ageMs / 60_000)}m ago · `;
+
+		const sumItem = (k: string, v: string, color?: string): string =>
+			`<div class="sum-item"><span class="sum-k">${escHtml(k)}</span><span class="sum-v"${color ? ` style="color:${color}"` : ''}>${escHtml(v)}</span></div>`;
+		const summary = `<div class="usage-summary">
+			${sumItem('D1 writes', fmtPct(d1Percent.rowsWritten), budgetColor(d1Percent.rowsWritten))}
+			${sumItem('D1 reads', fmtPct(d1Percent.rowsRead), budgetColor(d1Percent.rowsRead))}
+			${sumItem('Worker reqs', workers ? fmtPct(workersReqPct) : '—', workers ? budgetColor(workersReqPct) : undefined)}
+			${sumItem('Errors', workers ? String(workers.errors) : '—', workers ? (workers.errors > 0 ? 'var(--c-down)' : 'var(--c-up)') : undefined)}
+			${sumItem('Queue ops', queues ? `${formatNumber(queues.writeOperations)} write / ${formatNumber(queues.consumeOperations)} consume` : '—')}
+			${sumItem('Resets in', usageResetsIn(nowMs))}
+		</div>`;
+
 		return `
 	<section class="section">
 		<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
 			<h2 class="section-title" style="margin:0">Infrastructure Usage</h2>
-			<span class="meta-text">resets in ${usageResetsIn(nowMs)}</span>
+			<span class="meta-text">${updatedAgo}${p.label} plan</span>
 		</div>
-		<div class="usage-sublabel">D1 Database · ${p.label} · ${d1ReadLimit} reads / ${d1WriteLimit} writes / ${formatBytes(p.storageBytes)} / day</div>
+		${summary}
+		<div class="usage-sublabel">D1 Database · ${d1ReadLimit} reads / ${d1WriteLimit} writes / ${formatBytes(p.storageBytes)} / day</div>
 		<div class="usage-grid">
-			${progressBar('Rows Read', formatNumber(d1.rowsRead), `${d1ReadLimit} / day`, d1Percent.rowsRead)}
-			${progressBar('Rows Written', formatNumber(d1.rowsWritten), `${d1WriteLimit} / day`, d1Percent.rowsWritten)}
-			${progressBar('Storage', formatBytes(d1.databaseSizeBytes), formatBytes(p.storageBytes), d1Percent.storage)}
+			${budgetCard('Rows Read', formatNumber(d1.rowsRead), `${d1ReadLimit} / day`, d1Percent.rowsRead, trends?.d1RowsRead)}
+			${budgetCard('Rows Written', formatNumber(d1.rowsWritten), `${d1WriteLimit} / day`, d1Percent.rowsWritten, trends?.d1RowsWritten)}
+			${budgetCard('Storage', formatBytes(d1.databaseSizeBytes), formatBytes(p.storageBytes), d1Percent.storage)}
+			${avgRowsPerMin !== null
+				? infoCard('Avg Rows/Min', avgRowsPerMin.toFixed(1), 'var(--c-text)', 'written per minute')
+				: infoCard('Avg Rows/Min', '—', 'var(--c-text-faint)', 'awaiting data')}
+			${estimatedRowsPerHour !== null
+				? infoCard('Est Rows/Hour', formatNumber(estimatedRowsPerHour), 'var(--c-text)', 'at current rate')
+				: infoCard('Est Rows/Hour', '—', 'var(--c-text-faint)', '')}
 		</div>
-		<div class="usage-sublabel" style="margin-top:16px">Workers · ${p.label} · 100K requests / day</div>
+		<div class="usage-sublabel" style="margin-top:16px">Workers · 100K requests / day</div>
 		<div class="usage-grid">
 			${workers
-				? progressBar('Requests', formatNumber(workers.requests), '100K / day', workersReqPct)
-				: infoCard('Requests', '—', '#a1a1aa', 'no API data')}
-			${infoCard('Errors', workers ? String(workers.errors) : '—', workers && workers.errors > 0 ? '#dc2626' : '#16a34a', workers ? (workers.errors > 0 ? 'today' : 'clean') : '')}
-			${infoCard('Subrequests', workers ? formatNumber(workers.subrequests) : '—', '#18181b', workers ? 'fetch calls today' : '')}
-			${infoCard('Queue', `${workerName}-notifications`, '#18181b', '1M ops / month free')}
-			${infoCard('Cron', '* * * * *', '#18181b', '~1,440 calls / day')}
+				? budgetCard('Requests', formatNumber(workers.requests), '100K / day', workersReqPct, trends?.workerRequests)
+				: infoCard('Requests', '—', 'var(--c-text-faint)', 'no API data')}
+			${infoCard('Errors', workers ? String(workers.errors) : '—', workers && workers.errors > 0 ? 'var(--c-down)' : 'var(--c-up)', workers ? (workers.errors > 0 ? 'today' : 'clean') : '')}
+			${infoCard('Subrequests', workers ? formatNumber(workers.subrequests) : '—', 'var(--c-text)', workers ? 'fetch calls today' : '')}
+			${queues
+				? infoCard('Write Ops', formatNumber(queues.writeOperations), 'var(--c-text)', 'billable writes today')
+				: infoCard('Write Ops', '—', 'var(--c-text-faint)', 'no API data')}
+			${queues
+				? infoCard('Consume Ops', formatNumber(queues.consumeOperations), 'var(--c-text)', 'read + delete today')
+				: infoCard('Consume Ops', '—', 'var(--c-text-faint)', 'no API data')}
 		</div>
+	${email ? `
+	<div class="usage-sublabel" style="margin-top:16px">Email Routing · destination addresses</div>
+	<div class="usage-row">
+		<span class="usage-rowlabel">${dot('var(--c-up)')}${email.verified.length} verified</span>
+		<div class="usage-chips">${email.verified.length > 0 ? email.verified.map((a) => chip(a, 'var(--c-up)')).join('') : '<span class="meta-text">none</span>'}</div>
+	</div>
+	${email.pending.length > 0 ? `<div class="usage-row">
+		<span class="usage-rowlabel">${dot('var(--sev-warning)')}${email.pending.length} pending</span>
+		<div class="usage-chips">${email.pending.map((a) => chip(a, 'var(--sev-warning)')).join('')}</div>
+	</div>
+	<div class="usage-note">Unverified addresses are silently dropped at send time.</div>` : ''}` : ''}
+	${vpc && vpc.length > 0 ? `
+	<div class="usage-sublabel" style="margin-top:16px">Internal Networks · Workers VPC</div>
+	<div class="usage-grid">
+		${vpc.map((s) => {
+			const color = s.status === 'healthy' || s.status === 'active' ? 'var(--c-up)'
+				: s.status === 'degraded' ? 'var(--c-degraded)'
+				: s.status === 'down' ? 'var(--c-down)'
+				: 'var(--c-unknown)'; // inactive / null / unknown
+			return `<div class="usage-card">
+				<div class="usage-label">${escHtml(s.name ?? s.binding)}</div>
+				<div class="pill" style="font-size:15px;font-weight:700;color:var(--c-text);margin-top:2px">${dot(color)}${escHtml(s.status ?? 'unknown')}</div>
+				<div style="font-size:12px;color:var(--c-text-faint);margin-top:4px">tunnel · ${escHtml(s.binding)}</div>
+			</div>`;
+		}).join('')}
+	</div>` : ''}
 	</section>`;
 	})() : '';
 
@@ -510,6 +581,26 @@ header{background:${bannerBg};border-bottom:1px solid ${bannerBorder};padding:28
 .usage-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px}
 .usage-card{background:var(--c-card);border:1px solid var(--c-border);border-radius:8px;padding:14px 16px}
 .usage-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--c-text-faint);margin-bottom:8px}
+.usage-summary{display:flex;flex-wrap:wrap;gap:10px 22px;padding:12px 16px;background:var(--c-card);border:1px solid var(--c-border);border-radius:8px;margin-bottom:14px}
+.sum-item{display:flex;flex-direction:column;gap:2px}
+.sum-k{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:var(--c-text-faint)}
+.sum-v{font-size:15px;font-weight:700;color:var(--c-text)}
+.usage-cardhead{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}
+.usage-cardhead .usage-label{margin-bottom:0}
+.usage-pct{font-size:12px;font-weight:700}
+.usage-figure{display:flex;justify-content:space-between;align-items:baseline;font-size:13px;margin-bottom:6px}
+.usage-value{font-weight:700;color:var(--c-text)}
+.usage-track{height:5px;background:var(--c-border-soft);border-radius:3px;overflow:hidden}
+.usage-fill{height:100%;border-radius:3px}
+.usage-spark{margin-top:8px;line-height:0}
+.spark{width:100%;height:22px;display:block}
+.usage-row{display:flex;align-items:flex-start;gap:12px;margin-bottom:8px;flex-wrap:wrap}
+.usage-rowlabel{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--c-text-muted);white-space:nowrap;padding-top:3px}
+.usage-chips{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--c-text-muted);background:var(--c-border-soft);border-radius:999px;padding:3px 10px}
+.pill{display:inline-flex;align-items:center;gap:6px}
+.dot{width:7px;height:7px;border-radius:50%;flex:none;display:inline-block}
+.usage-note{font-size:11px;color:var(--sev-warning);margin-top:2px;margin-bottom:4px}
 footer{border-top:1px solid var(--c-border);padding:20px 0;margin-top:8px}
 .footer-inner{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}

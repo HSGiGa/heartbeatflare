@@ -24,6 +24,7 @@
 	"vars": {
 		"CLOUDFLARE_ACCOUNT_ID": "", // generated: $CLOUDFLARE_ACCOUNT_ID env var
 		"D1_DATABASE_ID": "", // generated: deploy.database_id
+		"QUEUE_ID": "", // generated: notifications queue id (used for Account Analytics filtering)
 		"WORKER_NAME": "", // generated: deploy.name (used for usage GraphQL scriptName + UI display)
 		"APP_VERSION": "", // generated: package.json version (shown in status page footer)
 		"SITE_TITLE": "", // generated: site.title from config.yaml (status page header + tab; empty = "HeartbeatFlare")
