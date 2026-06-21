@@ -432,37 +432,28 @@ export function buildStatusPage({
 
 		const ageMs = fetchedAt ? nowMs - Date.parse(fetchedAt) : null;
 		const updatedAgo = ageMs == null ? '' : ageMs < 60_000 ? `updated ${Math.max(0, Math.floor(ageMs / 1000))}s ago · ` : `updated ${Math.floor(ageMs / 60_000)}m ago · `;
-
-		const sumItem = (k: string, v: string, color?: string): string =>
-			`<div class="sum-item"><span class="sum-k">${escHtml(k)}</span><span class="sum-v"${color ? ` style="color:${color}"` : ''}>${escHtml(v)}</span></div>`;
-		const summary = `<div class="usage-summary">
-			${sumItem('D1 writes', fmtPct(d1Percent.rowsWritten), budgetColor(d1Percent.rowsWritten))}
-			${sumItem('D1 reads', fmtPct(d1Percent.rowsRead), budgetColor(d1Percent.rowsRead))}
-			${sumItem('Worker reqs', workers ? fmtPct(workersReqPct) : '—', workers ? budgetColor(workersReqPct) : undefined)}
-			${sumItem('Errors', workers ? String(workers.errors) : '—', workers ? (workers.errors > 0 ? 'var(--c-down)' : 'var(--c-up)') : undefined)}
-			${sumItem('Queue ops', queues ? `${formatNumber(queues.writeOperations)} write / ${formatNumber(queues.consumeOperations)} consume` : '—')}
-			${sumItem('Resets in', usageResetsIn(nowMs))}
-		</div>`;
+		const d1Facts = avgRowsPerMin !== null
+			? `write rate ${avgRowsPerMin.toFixed(1)}/min · est. ${formatNumber(estimatedRowsPerHour!)} rows/hour`
+			: 'write rate awaiting data';
+		const queueFacts = queues
+			? `queue ops ${formatNumber(queues.writeOperations)} write · ${formatNumber(queues.consumeOperations)} read/delete`
+			: 'queue ops unavailable';
 
 		return `
-	<section class="section">
-		<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
-			<h2 class="section-title" style="margin:0">Infrastructure Usage</h2>
-			<span class="meta-text">${updatedAgo}${p.label} plan</span>
-		</div>
-		${summary}
+	<section class="section usage-section">
+		<details class="usage-details">
+			<summary>
+				<span class="section-title" style="margin:0">Infrastructure Usage</span>
+				<span class="meta-text">${updatedAgo}${p.label} plan · resets in ${usageResetsIn(nowMs)}</span>
+			</summary>
+			<div class="usage-content">
 		<div class="usage-sublabel">D1 Database · ${d1ReadLimit} reads / ${d1WriteLimit} writes / ${formatBytes(p.storageBytes)} / day</div>
 		<div class="usage-grid">
 			${budgetCard('Rows Read', formatNumber(d1.rowsRead), `${d1ReadLimit} / day`, d1Percent.rowsRead, trends?.d1RowsRead)}
 			${budgetCard('Rows Written', formatNumber(d1.rowsWritten), `${d1WriteLimit} / day`, d1Percent.rowsWritten, trends?.d1RowsWritten)}
 			${budgetCard('Storage', formatBytes(d1.databaseSizeBytes), formatBytes(p.storageBytes), d1Percent.storage)}
-			${avgRowsPerMin !== null
-				? infoCard('Avg Rows/Min', avgRowsPerMin.toFixed(1), 'var(--c-text)', 'written per minute')
-				: infoCard('Avg Rows/Min', '—', 'var(--c-text-faint)', 'awaiting data')}
-			${estimatedRowsPerHour !== null
-				? infoCard('Est Rows/Hour', formatNumber(estimatedRowsPerHour), 'var(--c-text)', 'at current rate')
-				: infoCard('Est Rows/Hour', '—', 'var(--c-text-faint)', '')}
 		</div>
+		<div class="usage-facts">${escHtml(d1Facts)}</div>
 		<div class="usage-sublabel" style="margin-top:16px">Workers · 100K requests / day</div>
 		<div class="usage-grid">
 			${workers
@@ -470,13 +461,8 @@ export function buildStatusPage({
 				: infoCard('Requests', '—', 'var(--c-text-faint)', 'no API data')}
 			${infoCard('Errors', workers ? String(workers.errors) : '—', workers && workers.errors > 0 ? 'var(--c-down)' : 'var(--c-up)', workers ? (workers.errors > 0 ? 'today' : 'clean') : '')}
 			${infoCard('Subrequests', workers ? formatNumber(workers.subrequests) : '—', 'var(--c-text)', workers ? 'fetch calls today' : '')}
-			${queues
-				? infoCard('Write Ops', formatNumber(queues.writeOperations), 'var(--c-text)', 'billable writes today')
-				: infoCard('Write Ops', '—', 'var(--c-text-faint)', 'no API data')}
-			${queues
-				? infoCard('Consume Ops', formatNumber(queues.consumeOperations), 'var(--c-text)', 'read + delete today')
-				: infoCard('Consume Ops', '—', 'var(--c-text-faint)', 'no API data')}
 		</div>
+		<div class="usage-facts">${escHtml(queueFacts)}</div>
 	${email ? `
 	<div class="usage-sublabel" style="margin-top:16px">Email Routing · destination addresses</div>
 	<div class="usage-row">
@@ -502,7 +488,9 @@ export function buildStatusPage({
 				<div style="font-size:12px;color:var(--c-text-faint);margin-top:4px">tunnel · ${escHtml(s.binding)}</div>
 			</div>`;
 		}).join('')}
-	</div>` : ''}
+		</div>` : ''}
+			</div>
+		</details>
 	</section>`;
 	})() : '';
 
@@ -577,14 +565,18 @@ header{background:${bannerBg};border-bottom:1px solid ${bannerBorder};padding:28
 .stats-row{display:flex;align-items:center;gap:14px;font-size:12px;color:var(--c-text-muted);flex-wrap:wrap}
 .stats-row b{color:var(--c-text);font-weight:600}
 .sparkline-wrap{display:flex;align-items:center}
-.usage-sublabel{font-size:11px;color:var(--c-text-faint);margin-bottom:8px}
+.usage-sublabel{font-size:11px;color:var(--c-text-muted);margin-bottom:8px}
+.usage-details{border-top:1px solid var(--c-border);border-bottom:1px solid var(--c-border)}
+.usage-details summary{display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:12px 0;cursor:pointer;list-style:none}
+.usage-details summary::-webkit-details-marker{display:none}
+.usage-details summary::after{content:"Show";font-size:11px;font-weight:600;color:var(--c-text-muted);margin-left:auto}
+.usage-details[open] summary{margin-bottom:14px}
+.usage-details[open] summary::after{content:"Hide"}
+.usage-content{padding-bottom:16px}
 .usage-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px}
 .usage-card{background:var(--c-card);border:1px solid var(--c-border);border-radius:8px;padding:14px 16px}
-.usage-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--c-text-faint);margin-bottom:8px}
-.usage-summary{display:flex;flex-wrap:wrap;gap:10px 22px;padding:12px 16px;background:var(--c-card);border:1px solid var(--c-border);border-radius:8px;margin-bottom:14px}
-.sum-item{display:flex;flex-direction:column;gap:2px}
-.sum-k{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:var(--c-text-faint)}
-.sum-v{font-size:15px;font-weight:700;color:var(--c-text)}
+.usage-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--c-text-muted);margin-bottom:8px}
+.usage-facts{font-size:12px;color:var(--c-text-muted);margin-top:7px}
 .usage-cardhead{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}
 .usage-cardhead .usage-label{margin-bottom:0}
 .usage-pct{font-size:12px;font-weight:700}
