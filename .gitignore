@@ -18,6 +18,12 @@ worker-configuration.d.ts
 # Claude Code local config (memory, plans, project-specific settings)
 .claude/
 
+# Codx local config (memory, plans, project-specific settings)
+.codex/
+
+# Agents skills and tools
+skills/
+
 # Internal maintainer notes — not part of the OSS docs
 docs/internal/
 
@@ -35,3 +41,8 @@ statuspage-events.webp
 
 # Temporary planning documents
 tmp/
+
+# Development IDE configs
+.vscode/
+.idea/
+.zed/

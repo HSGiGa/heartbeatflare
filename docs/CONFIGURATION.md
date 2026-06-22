@@ -101,6 +101,8 @@ Fields:
 - `queue_name`: override the derived queue name.
 - `vpc`: Cloudflare Workers VPC bindings for `mode: internal` monitors. See
   [`deploy.vpc`](#deployvpc-internal-monitors).
+- `placement`: Cloudflare Workers placement hints (Smart Placement / region / hostname). See
+  [`deploy.placement`](#deployplacement-workers-placement).
 
 ## `site` (optional)
 
@@ -636,6 +638,51 @@ Fields:
 - `services[].service_id` (required): VPC Service UUID, or `${VAR}`.
 - `services[].remote`: use the remote resource during local dev. Default `false`; set `true` only
   when intentionally testing real VPC connectivity with Cloudflare credentials.
+
+## `deploy.placement` (Workers placement)
+
+[Cloudflare Workers placement](https://developers.cloudflare.com/workers/configuration/placement/)
+controls *where* your Worker runs. By default a Worker runs in the Cloudflare data center closest to
+the request; placement hints can instead run it closer to your back-end so multi-round-trip requests
+are faster. `deploy.placement` is emitted verbatim as the generated `wrangler.jsonc` `placement`
+object — no transformation.
+
+There are two forms, matching Wrangler's own `placement` schema. **Smart Placement** lets Cloudflare
+pick the location from observed latency:
+
+```yaml
+deploy:
+  name: status
+  placement:
+    mode: smart   # or "off" to disable placement
+```
+
+An **explicit hint** pins placement to a specific location — set *exactly one* of `region` or
+`hostname`. `mode` is optional here (Wrangler accepts the hint on its own); if you do set it, it must
+be `targeted`:
+
+```yaml
+deploy:
+  name: status
+  placement:
+    region: aws:eu-central-1   # OR hostname: api.example.com
+```
+
+Fields:
+
+- `mode`: `smart` enables
+  [Smart Placement](https://developers.cloudflare.com/workers/configuration/placement/#smart-placement)
+  (Cloudflare moves the Worker toward the back-end APIs it observes the highest latency to); `off`
+  disables placement; `targeted` is the explicit-hint mode. Required for the Smart Placement form;
+  optional when a `region`/`hostname` hint is given.
+- `region`: a cloud-region placement hint, e.g. `aws:eu-central-1`. AWS, GCP, and Azure region
+  identifiers are supported; the Worker runs in the Cloudflare data center with the lowest latency to
+  that region. Mutually exclusive with `hostname`.
+- `hostname`: a layer-7 (HTTP) backend hostname used as a placement hint for single-homed
+  infrastructure (not suitable for anycast/multicast resources). Mutually exclusive with `region`.
+
+`region` and `hostname` cannot be combined, and cannot be set under `mode: smart`/`off`. These values
+are not secret and stay as literals in config — they are not `${VAR}`-substituted.
 
 ## Public endpoints
 

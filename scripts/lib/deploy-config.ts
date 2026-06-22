@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { parse as parseYaml } from 'yaml';
 import type { VpcConfig } from './vpc';
+import type { PlacementConfig } from './placement';
 
 const CONFIG_FILE = 'config.yaml';
 const CONFIG_EXAMPLE = 'config.example.yaml';
@@ -12,6 +13,7 @@ export interface DeployConfig {
 	database_name?: string;
 	queue_name?: string;
 	vpc?: VpcConfig;
+	placement?: PlacementConfig;
 }
 
 export interface ResolvedDeploy {

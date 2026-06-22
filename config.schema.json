@@ -137,8 +137,59 @@
 				},
 				"vpc": {
 					"$ref": "#/$defs/vpc_config"
+				},
+				"placement": {
+					"$ref": "#/$defs/placement_config"
 				}
 			}
+		},
+		"placement_config": {
+			"description": "Cloudflare Workers placement, emitted verbatim as the generated wrangler.jsonc `placement` object. Mirrors Wrangler's placement schema: either Smart Placement (mode: smart, or off to disable), or an explicit hint with exactly one of region/hostname (mode is optional; if set it must be targeted). See https://developers.cloudflare.com/workers/configuration/placement/ .",
+			"oneOf": [
+				{
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["mode"],
+					"properties": {
+						"mode": {
+							"enum": ["smart", "off"],
+							"description": "Smart Placement. \"smart\" runs the Worker closer to its back-end APIs based on observed latency; \"off\" disables placement. region/hostname are not allowed in this mode."
+						}
+					}
+				},
+				{
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["region"],
+					"properties": {
+						"mode": {
+							"const": "targeted",
+							"description": "Optional. If set with region it must be \"targeted\"; the hint also works with no mode at all."
+						},
+						"region": {
+							"type": "string",
+							"minLength": 1,
+							"description": "Cloud-region placement hint, e.g. \"aws:eu-central-1\". Supports AWS, GCP, and Azure region identifiers. Mutually exclusive with hostname."
+						}
+					}
+				},
+				{
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["hostname"],
+					"properties": {
+						"mode": {
+							"const": "targeted",
+							"description": "Optional. If set with hostname it must be \"targeted\"; the hint also works with no mode at all."
+						},
+						"hostname": {
+							"type": "string",
+							"minLength": 1,
+							"description": "Layer-7 backend hostname placement hint for single-homed infrastructure, e.g. \"api.example.com\". Mutually exclusive with region."
+						}
+					}
+				}
+			]
 		},
 		"vpc_config": {
 			"type": "object",

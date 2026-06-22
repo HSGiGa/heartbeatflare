@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=./config.schema.json
 
 deploy:
-  name: status # worker name; D1/queue names derive from it unless overridden
+  # name: status # worker name; D1/queue names derive from it unless overridden
   # domain:   # custom domain route; omit to serve on workers.dev only (worker URL: <name>.<subdomain>.workers.dev)
   # database_name: heartbeatflare-prod-db   # default: ${name}-prod-db
   # queue_name: heartbeatflare-notifications # default: ${name}-notifications
@@ -19,6 +19,16 @@ deploy:
   #   services:                # scoped access to a single private service (host:port fixed by the service)
   #     - binding: DEMO_SERVICE
   #       service_id: ${DEMO_VPC_SERVICE_ID}
+  name: status
+  # Cloudflare Workers placement → generated wrangler.jsonc `placement`. Two forms (pick one):
+  #   - Smart Placement:  mode: smart  (run near observed backend latency; "off" disables it)
+  #   - Explicit hint:    exactly one of region / hostname (mutually exclusive). mode is optional;
+  #                       if set with a hint it must be mode: targeted.
+  # See https://developers.cloudflare.com/workers/configuration/placement/
+  placement:
+    mode: smart
+  #   region: aws:eu-central-1     # cloud-region hint (AWS/GCP/Azure region ids); OR:
+  #   hostname: api.example.com    # layer-7 backend hostname hint for single-homed infrastructure
 
 # site:
 #   title: Acme Status   # heading in the page header + browser tab; defaults to "HeartbeatFlare"

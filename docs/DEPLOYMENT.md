@@ -34,6 +34,8 @@ without hiding sensitive Cloudflare control-plane choices in application code.
 - **Heartbeat tokens:** `npm run secrets:sync`, auto-generated when missing and printed once.
 - **Email send binding:** `npm run deploy`, generated in `wrangler.jsonc` when `type: email`
   channels exist.
+- **Workers placement hints:** `npm run deploy`, generated in `wrangler.jsonc` from
+  `deploy.placement` (Smart Placement / region / hostname) when configured.
 
 ### Must be prepared manually in Cloudflare
 

@@ -6,6 +6,7 @@ import type { EmailChannelConfig } from './lib/email';
 import { heartbeatSecretName, slug } from './lib/naming';
 import { MAX_CHECKS_PER_RUN, probeDemandPerMinute } from '../src/limits';
 import { collectVpcBindingNames, validateMonitorVpc, validateVpcConfig } from './lib/vpc';
+import { validatePlacementConfig } from './lib/placement';
 
 const API_BASE = 'https://api.cloudflare.com/client/v4';
 
@@ -179,6 +180,7 @@ async function main() {
 	const deploy = loadConfig<{ deploy?: DeployConfig }>().deploy;
 	const { databaseName } = resolveDeploy({ deploy });
 	if (deploy?.vpc) validateVpcConfig(deploy.vpc);
+	if (deploy?.placement) validatePlacementConfig(deploy.placement);
 	const vpcBindings = collectVpcBindingNames(deploy?.vpc);
 
 	const found = await findDatabaseId(new Cloudflare({ apiToken: token }), accountId, databaseName);
