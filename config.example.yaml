@@ -22,11 +22,11 @@ deploy:
   name: status
   # Cloudflare Workers placement → generated wrangler.jsonc `placement`. Two forms (pick one):
   #   - Smart Placement:  mode: smart  (run near observed backend latency; "off" disables it)
-  #   - Targeted hint:    mode: targeted  + exactly one of region / hostname (mutually exclusive)
+  #   - Explicit hint:    exactly one of region / hostname (mutually exclusive). mode is optional;
+  #                       if set with a hint it must be mode: targeted.
   # See https://developers.cloudflare.com/workers/configuration/placement/
   placement:
     mode: smart
-  #   mode: targeted
   #   region: aws:eu-central-1     # cloud-region hint (AWS/GCP/Azure region ids); OR:
   #   hostname: api.example.com    # layer-7 backend hostname hint for single-homed infrastructure
 

@@ -144,7 +144,7 @@
 			}
 		},
 		"placement_config": {
-			"description": "Cloudflare Workers placement, emitted verbatim as the generated wrangler.jsonc `placement` object. Two mutually exclusive forms: Smart Placement (mode: smart, or off to disable), or an explicit targeted hint (mode: targeted with exactly one of region/hostname). See https://developers.cloudflare.com/workers/configuration/placement/ .",
+			"description": "Cloudflare Workers placement, emitted verbatim as the generated wrangler.jsonc `placement` object. Mirrors Wrangler's placement schema: either Smart Placement (mode: smart, or off to disable), or an explicit hint with exactly one of region/hostname (mode is optional; if set it must be targeted). See https://developers.cloudflare.com/workers/configuration/placement/ .",
 			"oneOf": [
 				{
 					"type": "object",
@@ -160,11 +160,11 @@
 				{
 					"type": "object",
 					"additionalProperties": false,
-					"required": ["mode", "region"],
+					"required": ["region"],
 					"properties": {
 						"mode": {
 							"const": "targeted",
-							"description": "Explicit (targeted) placement hint. Required when setting region."
+							"description": "Optional. If set with region it must be \"targeted\"; the hint also works with no mode at all."
 						},
 						"region": {
 							"type": "string",
@@ -176,11 +176,11 @@
 				{
 					"type": "object",
 					"additionalProperties": false,
-					"required": ["mode", "hostname"],
+					"required": ["hostname"],
 					"properties": {
 						"mode": {
 							"const": "targeted",
-							"description": "Explicit (targeted) placement hint. Required when setting hostname."
+							"description": "Optional. If set with hostname it must be \"targeted\"; the hint also works with no mode at all."
 						},
 						"hostname": {
 							"type": "string",
