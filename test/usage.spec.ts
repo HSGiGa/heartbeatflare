@@ -1,6 +1,7 @@
 // Pure-lib tests for the usage-block reducers (Issue #31). Mirrors test/vpc.spec.ts style.
 import { describe, it, expect } from 'vitest';
-import { reduceQueueOperations, reduceTunnels, serviceTunnelId, hourKeys, hourlySeries } from '../src/usage';
+import { reduceQueueOperations, reduceTunnels, groupTunnels, serviceTunnelId, hourKeys, hourlySeries } from '../src/usage';
+import type { VpcItemStatus } from '../src/types';
 
 describe('reduceQueueOperations', () => {
 	it('maps WriteMessage to write operations and ReadMessage/DeleteMessage to consume operations', () => {
@@ -63,6 +64,83 @@ describe('reduceTunnels', () => {
 			{ id: 'a', name: 'alpha', status: 'healthy', connections: 2, lastConnectedAt: '2026-06-21T09:00:00Z', createdAt: '2026-06-01T00:00:00Z' },
 			{ id: 'b', name: 'zulu', status: 'inactive', connections: 0, lastConnectedAt: null, createdAt: null },
 		]);
+	});
+});
+
+describe('groupTunnels', () => {
+	it('shows a tunnel once with every binding that uses it', () => {
+		const items: VpcItemStatus[] = [
+			{ binding: 'NET_B', kind: 'network', id: 't1', status: 'healthy', name: 'api.tunnel', connections: 4, lastConnectedAt: '2026-06-21T09:00:00Z', createdAt: '2026-06-01T00:00:00Z' },
+			{ binding: 'NET_A', kind: 'network', id: 't1', status: 'healthy', name: 'api.tunnel', connections: 4, lastConnectedAt: '2026-06-21T09:00:00Z', createdAt: '2026-06-01T00:00:00Z' },
+		];
+		expect(groupTunnels(items)).toEqual([
+			{
+				id: 't1',
+				tunnelResolved: true,
+				name: 'api.tunnel',
+				status: 'healthy',
+				connections: 4,
+				lastConnectedAt: '2026-06-21T09:00:00Z',
+				createdAt: '2026-06-01T00:00:00Z',
+				bindings: [
+					{ binding: 'NET_A', kind: 'network' }, // sorted by binding name
+					{ binding: 'NET_B', kind: 'network' },
+				],
+			},
+		]);
+	});
+
+	it('joins a network and a service that resolve to the same tunnel', () => {
+		const items: VpcItemStatus[] = [
+			{ binding: 'NET', kind: 'network', id: 't1', status: 'healthy', name: 'shared', connections: 2 },
+			{ binding: 'SVC', kind: 'service', id: 't1', status: 'healthy', name: 'shared', connections: 2 },
+		];
+		const groups = groupTunnels(items);
+		expect(groups).toHaveLength(1);
+		expect(groups[0].bindings).toEqual([
+			{ binding: 'NET', kind: 'network' },
+			{ binding: 'SVC', kind: 'service' },
+		]);
+	});
+
+	it('keeps an unresolved service as its own group flagged tunnelResolved: false', () => {
+		const items: VpcItemStatus[] = [
+			{ binding: 'SVC', kind: 'service', id: 'service-123', status: null, tunnelResolved: false },
+		];
+		expect(groupTunnels(items)).toEqual([
+			{
+				id: 'service-123',
+				tunnelResolved: false,
+				name: 'SVC', // falls back to binding when the CF API gave no tunnel name
+				status: null,
+				connections: 0,
+				lastConnectedAt: null,
+				createdAt: null,
+				bindings: [{ binding: 'SVC', kind: 'service' }],
+			},
+		]);
+	});
+
+	it('sources all status/metadata atomically from one canonical (non-null status) record', () => {
+		// Same tunnel id, but the null-status entry carries stale/empty metadata that must be ignored.
+		const items: VpcItemStatus[] = [
+			{ binding: 'A', kind: 'network', id: 't1', status: null, connections: 0, lastConnectedAt: null, createdAt: null },
+			{ binding: 'B', kind: 'network', id: 't1', status: 'healthy', name: 'real', connections: 7, lastConnectedAt: '2026-06-21T09:00:00Z', createdAt: '2026-06-01T00:00:00Z' },
+		];
+		const [group] = groupTunnels(items);
+		expect(group.status).toBe('healthy');
+		expect(group.name).toBe('real');
+		expect(group.connections).toBe(7);
+		expect(group.lastConnectedAt).toBe('2026-06-21T09:00:00Z');
+		expect(group.createdAt).toBe('2026-06-01T00:00:00Z');
+	});
+
+	it('sorts groups by tunnel name', () => {
+		const items: VpcItemStatus[] = [
+			{ binding: 'Z', kind: 'network', id: 'tz', status: 'healthy', name: 'zulu', connections: 1 },
+			{ binding: 'A', kind: 'network', id: 'ta', status: 'healthy', name: 'alpha', connections: 1 },
+		];
+		expect(groupTunnels(items).map((g) => g.name)).toEqual(['alpha', 'zulu']);
 	});
 });
 
