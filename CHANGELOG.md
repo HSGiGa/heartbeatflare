@@ -5,6 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-06-22
+
+### Added
+
+- **Workers placement configuration** ([#48](https://github.com/HSGiGa/heartbeatflare/issues/48)):
+  `deploy.placement` is emitted as the generated Wrangler `placement` object — Smart Placement
+  (`mode: smart`/`off`) or an explicit `region`/`hostname` hint (mutually exclusive; `mode` optional).
+  Validated at config import and wrangler generation. Bundled Wrangler bumped to 4.103.0.
+- **Tunnel status for Workers VPC Services** ([#47](https://github.com/HSGiGa/heartbeatflare/pull/47)):
+  the Infrastructure Usage page resolves each VPC Service's backing Cloudflare Tunnel and shows its
+  health.
+
+### Changed
+
+- **Consolidated tunnel status on the Usage page** ([#50](https://github.com/HSGiGa/heartbeatflare/issues/50)):
+  a tunnel's health is shown once in a single table alongside the Workers VPC binding(s) that use it,
+  replacing the duplicated "Cloudflare Tunnels" and "Workers VPC Networks" tables. A VPC service with
+  no resolvable backing tunnel is clearly marked rather than shown with a misleading status/ID.
+
 ## [1.3.0] - 2026-06-21
 
 ### Added
