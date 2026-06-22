@@ -26,8 +26,6 @@ deploy:
   #   region: aws:eu-central-1 # cloud-region hint (AWS/GCP/Azure region ids)
   #   hostname: api.example.com # layer-7 backend hostname hint for single-homed infrastructure
   name: status
-  placement:
-    mode: smart
 
 # site:
 #   title: Acme Status   # heading in the page header + browser tab; defaults to "HeartbeatFlare"

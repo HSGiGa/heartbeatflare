@@ -22,16 +22,24 @@ export interface PlacementBinding {
 }
 
 // Validates the shape of deploy.placement, throwing a clear message on the first problem: at least
-// one hint must be set (an empty placement: {} is a config mistake), and mode — if present — must be
-// "smart".
+// one hint must be set (an empty placement: {} is a config mistake); mode — if present — must be
+// "smart"; region/hostname — if present — must be non-empty strings. Run at config:import time (not
+// just wrangler generation) so bad values never reach D1.
 export function validatePlacementConfig(placement: PlacementConfig): void {
 	const { hostname, mode, region } = placement;
-	if (!hostname && !mode && !region) {
+	if (hostname === undefined && mode === undefined && region === undefined) {
 		throw new Error('deploy.placement is empty — set at least one of "mode", "region", or "hostname".');
 	}
 	if (mode !== undefined && mode !== 'smart') {
 		throw new Error(`deploy.placement.mode "${mode}" is unsupported — the only accepted value is "smart".`);
 	}
+	const requireNonEmptyString = (value: unknown, field: string): void => {
+		if (typeof value !== 'string' || value.trim() === '') {
+			throw new Error(`deploy.placement.${field} must be a non-empty string.`);
+		}
+	};
+	if (region !== undefined) requireNonEmptyString(region, 'region');
+	if (hostname !== undefined) requireNonEmptyString(hostname, 'hostname');
 }
 
 // Builds the wrangler `placement` object from deploy.placement, omitting unset fields. Returns null

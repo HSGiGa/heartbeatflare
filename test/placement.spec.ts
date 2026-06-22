@@ -23,6 +23,17 @@ describe('validatePlacementConfig', () => {
 	it('rejects a mode other than "smart"', () => {
 		expect(() => validatePlacementConfig({ mode: 'off' })).toThrowError(/unsupported/i);
 	});
+
+	it('rejects an empty or whitespace region/hostname', () => {
+		expect(() => validatePlacementConfig({ region: '' })).toThrowError(/region must be a non-empty string/i);
+		expect(() => validatePlacementConfig({ hostname: '   ' })).toThrowError(/hostname must be a non-empty string/i);
+	});
+
+	it('rejects a non-string region/hostname', () => {
+		// YAML can parse unquoted scalars as numbers; the validator must reject them.
+		expect(() => validatePlacementConfig({ region: 123 as unknown as string })).toThrowError(/region must be a non-empty string/i);
+		expect(() => validatePlacementConfig({ hostname: 123 as unknown as string })).toThrowError(/hostname must be a non-empty string/i);
+	});
 });
 
 describe('buildPlacement', () => {
