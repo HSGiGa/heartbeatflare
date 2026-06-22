@@ -179,6 +179,7 @@ export type VpcItemStatus = {
 	connections?: number;
 	lastConnectedAt?: string | null;
 	createdAt?: string | null;
+	tunnelResolved?: boolean;     // false only for a VPC service with no resolvable backing tunnel (id is then a service_id)
 };
 
 // Tunnel state is derived exclusively from configured Workers VPC bindings, never from an account-wide list.
@@ -189,6 +190,18 @@ export type TunnelStatus = {
 	connections: number;
 	lastConnectedAt: string | null;
 	createdAt: string | null;
+};
+
+// A tunnel's runtime status shown once, joined with the Workers VPC binding(s) that use it (Issue #50).
+export type TunnelGroup = {
+	id: string;               // tunnel id when resolved; the service id otherwise (see tunnelResolved)
+	tunnelResolved: boolean;  // false when a VPC service has no resolvable backing tunnel
+	name: string;
+	status: string | null;
+	connections: number;
+	lastConnectedAt: string | null;
+	createdAt: string | null;
+	bindings: Array<{ binding: string; kind: 'network' | 'service' }>;
 };
 
 export type PlanInfo = {
@@ -214,7 +227,7 @@ export type UsageSnapshot = {
 	queues: QueueUsage | null;
 	email: EmailRoutingUsage | null;
 	vpc: VpcItemStatus[] | null;
-	tunnels: TunnelStatus[] | null;
+	tunnels: TunnelGroup[] | null;
 	trends: UsageTrends | null;
 	fetchedAt: string | null;
 	plan: PlanInfo | null;

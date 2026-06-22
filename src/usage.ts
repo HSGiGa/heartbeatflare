@@ -2,7 +2,7 @@
 // invocations for today, fetched from the Cloudflare GraphQL API and cached 60s per isolate.
 // Limits are plan-dependent; plan detection needs Billing:Read on the token and falls back to
 // Free Plan limits without it. Errors keep serving the last (or fallback) snapshot.
-import type { RuntimeEnv, D1Usage, D1UsagePercent, UsageSnapshot, UsageGraphQLResponse, QueueGraphQLResponse, TrendsGraphQLResponse, HourlyGroup, PlanInfo, QueueUsage, EmailRoutingUsage, VpcItemStatus, TunnelStatus, UsageTrends } from './types';
+import type { RuntimeEnv, D1Usage, D1UsagePercent, UsageSnapshot, UsageGraphQLResponse, QueueGraphQLResponse, TrendsGraphQLResponse, HourlyGroup, PlanInfo, QueueUsage, EmailRoutingUsage, VpcItemStatus, TunnelStatus, TunnelGroup, UsageTrends } from './types';
 
 export const TREND_HOURS = 24;
 
@@ -201,13 +201,13 @@ async function fetchVpcStatus(accountId: string, apiToken: string, env: RuntimeE
 					const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/connectivity/directory/services/${s.service_id}`, {
 						headers: { Authorization: `Bearer ${apiToken}` },
 					});
-					if (!res.ok) return { binding: s.binding, kind: 'service', id: s.service_id, status: null };
+					if (!res.ok) return { binding: s.binding, kind: 'service', id: s.service_id, status: null, tunnelResolved: false };
 					const data = (await res.json()) as { result?: ConnectivityService };
 					const tunnelId = data.result && serviceTunnelId(data.result);
-					if (!tunnelId) return { binding: s.binding, kind: 'service', id: s.service_id, status: null };
+					if (!tunnelId) return { binding: s.binding, kind: 'service', id: s.service_id, status: null, tunnelResolved: false };
 					return fetchTunnelStatus(s.binding, 'service', tunnelId);
 				} catch {
-					return { binding: s.binding, kind: 'service', id: s.service_id, status: null };
+					return { binding: s.binding, kind: 'service', id: s.service_id, status: null, tunnelResolved: false };
 				}
 			}),
 		],
@@ -240,6 +240,37 @@ export function reduceTunnels(items: TunnelApiItem[]): TunnelStatus[] {
 				connections: item.connections?.length ?? 0,
 				lastConnectedAt: opened.sort()[opened.length - 1] ?? null,
 				createdAt: item.created_at ?? null,
+			};
+		})
+		.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Consolidates the per-binding VPC items into one entry per tunnel (Issue #50): the same tunnel can
+// back multiple bindings, so its runtime status is shown once with all its bindings listed. Items are
+// grouped by id (a resolved tunnel_id; an unresolved service keeps its service_id, forming its own
+// group). One canonical record per group — the first with a non-null status, else the first — is the
+// sole source of every status/metadata field, so status is never mixed with metadata from a sibling.
+export function groupTunnels(items: VpcItemStatus[]): TunnelGroup[] {
+	const groups = new Map<string, VpcItemStatus[]>();
+	for (const item of items) {
+		const list = groups.get(item.id);
+		if (list) list.push(item);
+		else groups.set(item.id, [item]);
+	}
+	return [...groups.values()]
+		.map((list): TunnelGroup => {
+			const canonical = list.find((item) => item.status !== null) ?? list[0];
+			return {
+				id: canonical.id,
+				tunnelResolved: canonical.tunnelResolved !== false,
+				name: canonical.name ?? canonical.binding ?? canonical.id,
+				status: canonical.status,
+				connections: canonical.connections ?? 0,
+				lastConnectedAt: canonical.lastConnectedAt ?? null,
+				createdAt: canonical.createdAt ?? null,
+				bindings: list
+					.map((item) => ({ binding: item.binding, kind: item.kind }))
+					.sort((a, b) => a.binding.localeCompare(b.binding)),
 			};
 		})
 		.sort((a, b) => a.name.localeCompare(b.name));
@@ -386,14 +417,7 @@ export async function fetchUsage(env: RuntimeEnv): Promise<UsageSnapshot> {
 		queues,
 		email: emailUsage,
 		vpc: vpcStatus,
-		tunnels: vpcStatus?.map((network): TunnelStatus => ({
-			id: network.id,
-			name: network.name ?? network.binding,
-			status: network.status,
-			connections: network.connections ?? 0,
-			lastConnectedAt: network.lastConnectedAt ?? null,
-			createdAt: network.createdAt ?? null,
-		})) ?? null,
+		tunnels: vpcStatus ? groupTunnels(vpcStatus) : null,
 		trends,
 		fetchedAt: new Date(nowMs).toISOString(),
 		plan,
