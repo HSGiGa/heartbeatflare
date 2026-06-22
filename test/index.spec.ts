@@ -15,6 +15,15 @@ import m02 from '../migrations/0002_monitor_vpc_binding.sql?raw';
 import m03 from '../migrations/0003_check_lease.sql?raw';
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
+const expectedSiteTitle = env.SITE_TITLE?.trim() || 'HeartbeatFlare';
+
+function escapeHtml(value: string): string {
+	return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 async function applyMigration(sql: string) {
 	const stripped = sql
@@ -58,7 +67,7 @@ describe('GET /', () => {
 		expect(response.headers.get('Content-Type')).toContain('text/html');
 		const html = await response.text();
 		expect(html).toContain('<!DOCTYPE html>');
-		expect(html).toContain('HeartbeatFlare');
+		expect(html).toContain(`<title>${escapeHtml(expectedSiteTitle)} Status</title>`);
 	});
 });
 
@@ -453,11 +462,11 @@ describe('maintenance windows, feed and badges', () => {
 		expect(res.headers.get('Content-Type')).toContain('image/svg+xml');
 		const svg = await res.text();
 		expect(svg).toContain('<svg');
-		// SITE_TITLE is unset in the test config, so the label falls back to the default name.
-		expect(svg).toContain('HeartbeatFlare');
+		const escapedTitle = escapeHtml(expectedSiteTitle);
+		expect(svg).toContain(escapedTitle);
 		// The badge aggregates every public monitor in the DB, so assert a valid status token rather
 		// than a specific one (other suites seed monitors of varying status into the shared store).
-		expect(svg).toMatch(/aria-label="HeartbeatFlare: (operational|degraded|outage|maintenance|paused|unknown)"/);
+		expect(svg).toMatch(new RegExp(`aria-label="${escapeRegExp(escapedTitle)}: (operational|degraded|outage|maintenance|paused|unknown)"`));
 	});
 
 	it('honours a custom ?label= on the overall badge', async () => {
