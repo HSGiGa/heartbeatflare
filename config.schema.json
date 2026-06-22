@@ -144,24 +144,52 @@
 			}
 		},
 		"placement_config": {
-			"type": "object",
-			"additionalProperties": false,
-			"minProperties": 1,
-			"description": "Cloudflare Workers placement hints, passed straight into the generated wrangler.jsonc `placement` object. See https://developers.cloudflare.com/workers/configuration/placement/ . Set at least one field.",
-			"properties": {
-				"mode": {
-					"enum": ["smart"],
-					"description": "Enables Smart Placement, running the Worker closer to back-end APIs based on observed latency. Only \"smart\" is supported."
+			"description": "Cloudflare Workers placement, emitted verbatim as the generated wrangler.jsonc `placement` object. Two mutually exclusive forms: Smart Placement (mode: smart, or off to disable), or an explicit targeted hint (mode: targeted with exactly one of region/hostname). See https://developers.cloudflare.com/workers/configuration/placement/ .",
+			"oneOf": [
+				{
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["mode"],
+					"properties": {
+						"mode": {
+							"enum": ["smart", "off"],
+							"description": "Smart Placement. \"smart\" runs the Worker closer to its back-end APIs based on observed latency; \"off\" disables placement. region/hostname are not allowed in this mode."
+						}
+					}
 				},
-				"region": {
-					"type": "string",
-					"description": "Cloud-region placement hint, e.g. \"aws:eu-central-1\". Supports AWS, GCP, and Azure region identifiers."
+				{
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["mode", "region"],
+					"properties": {
+						"mode": {
+							"const": "targeted",
+							"description": "Explicit (targeted) placement hint. Required when setting region."
+						},
+						"region": {
+							"type": "string",
+							"minLength": 1,
+							"description": "Cloud-region placement hint, e.g. \"aws:eu-central-1\". Supports AWS, GCP, and Azure region identifiers. Mutually exclusive with hostname."
+						}
+					}
 				},
-				"hostname": {
-					"type": "string",
-					"description": "Layer-7 backend hostname used as a placement hint for single-homed infrastructure, e.g. \"api.example.com\"."
+				{
+					"type": "object",
+					"additionalProperties": false,
+					"required": ["mode", "hostname"],
+					"properties": {
+						"mode": {
+							"const": "targeted",
+							"description": "Explicit (targeted) placement hint. Required when setting hostname."
+						},
+						"hostname": {
+							"type": "string",
+							"minLength": 1,
+							"description": "Layer-7 backend hostname placement hint for single-homed infrastructure, e.g. \"api.example.com\". Mutually exclusive with region."
+						}
+					}
 				}
-			}
+			]
 		},
 		"vpc_config": {
 			"type": "object",

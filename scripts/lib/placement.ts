@@ -21,25 +21,42 @@ export interface PlacementBinding {
 	hostname?: string;
 }
 
-// Validates the shape of deploy.placement, throwing a clear message on the first problem: at least
-// one hint must be set (an empty placement: {} is a config mistake); mode — if present — must be
-// "smart"; region/hostname — if present — must be non-empty strings. Run at config:import time (not
-// just wrangler generation) so bad values never reach D1.
+// Validates the shape of deploy.placement against what Wrangler actually accepts, throwing a clear
+// message on the first problem. Run at config:import time (not just wrangler generation) so bad
+// values never reach D1. Two valid forms mirror Wrangler's placement schema:
+//   - Smart Placement: mode "smart" (or "off"), with no region/hostname.
+//   - Targeted hint:   mode "targeted" with exactly one of region/hostname (non-empty strings).
 export function validatePlacementConfig(placement: PlacementConfig): void {
 	const { hostname, mode, region } = placement;
-	if (hostname === undefined && mode === undefined && region === undefined) {
-		throw new Error('deploy.placement is empty — set at least one of "mode", "region", or "hostname".');
-	}
-	if (mode !== undefined && mode !== 'smart') {
-		throw new Error(`deploy.placement.mode "${mode}" is unsupported — the only accepted value is "smart".`);
+	if (mode === undefined) {
+		throw new Error('deploy.placement.mode is required — use "smart" (or "off"), or "targeted" with a region/hostname.');
 	}
 	const requireNonEmptyString = (value: unknown, field: string): void => {
 		if (typeof value !== 'string' || value.trim() === '') {
 			throw new Error(`deploy.placement.${field} must be a non-empty string.`);
 		}
 	};
-	if (region !== undefined) requireNonEmptyString(region, 'region');
-	if (hostname !== undefined) requireNonEmptyString(hostname, 'hostname');
+
+	if (mode === 'smart' || mode === 'off') {
+		if (region !== undefined || hostname !== undefined) {
+			throw new Error(`deploy.placement.mode "${mode}" does not take region/hostname — those require mode: targeted.`);
+		}
+		return;
+	}
+
+	if (mode === 'targeted') {
+		if (region !== undefined && hostname !== undefined) {
+			throw new Error('deploy.placement sets both region and hostname — they are mutually exclusive; set exactly one.');
+		}
+		if (region === undefined && hostname === undefined) {
+			throw new Error('deploy.placement.mode "targeted" requires exactly one of region or hostname.');
+		}
+		if (region !== undefined) requireNonEmptyString(region, 'region');
+		if (hostname !== undefined) requireNonEmptyString(hostname, 'hostname');
+		return;
+	}
+
+	throw new Error(`deploy.placement.mode "${mode}" is unsupported — use "smart", "off", or "targeted".`);
 }
 
 // Builds the wrangler `placement` object from deploy.placement, omitting unset fields. Returns null

@@ -19,13 +19,16 @@ deploy:
   #   services:                # scoped access to a single private service (host:port fixed by the service)
   #     - binding: DEMO_SERVICE
   #       service_id: ${DEMO_VPC_SERVICE_ID}
-  # Cloudflare Workers placement hints — passed straight into the generated wrangler.jsonc. See
-  # https://developers.cloudflare.com/workers/configuration/placement/ . Set any subset.
-  # placement:
-  #   mode: smart            # Smart Placement: run the Worker near observed backend latency (only "smart")
-  #   region: aws:eu-central-1 # cloud-region hint (AWS/GCP/Azure region ids)
-  #   hostname: api.example.com # layer-7 backend hostname hint for single-homed infrastructure
   name: status
+  # Cloudflare Workers placement → generated wrangler.jsonc `placement`. Two forms (pick one):
+  #   - Smart Placement:  mode: smart  (run near observed backend latency; "off" disables it)
+  #   - Targeted hint:    mode: targeted  + exactly one of region / hostname (mutually exclusive)
+  # See https://developers.cloudflare.com/workers/configuration/placement/
+  placement:
+    mode: smart
+  #   mode: targeted
+  #   region: aws:eu-central-1     # cloud-region hint (AWS/GCP/Azure region ids); OR:
+  #   hostname: api.example.com    # layer-7 backend hostname hint for single-homed infrastructure
 
 # site:
 #   title: Acme Status   # heading in the page header + browser tab; defaults to "HeartbeatFlare"
