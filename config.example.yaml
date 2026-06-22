@@ -29,9 +29,8 @@ deploy:
   placement:
     mode: smart
 
-site:
-  title: HeartbeatFlare Demo   # heading in the page header + browser tab; defaults to "HeartbeatFlare"
-  # title: Acme Status   # heading in the page header + browser tab; defaults to "HeartbeatFlare"
+# site:
+#   title: Acme Status   # heading in the page header + browser tab; defaults to "HeartbeatFlare"
 
 auth:
   provider: cloudflare_access
