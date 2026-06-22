@@ -14,6 +14,7 @@ import { findDatabaseId } from './lib/d1';
 import { buildEmailBinding, collectEmailChannels, type EmailBindingConfig, type EmailChannelConfig } from './lib/email';
 import { buildProbeHeadersMap, type MonitorHeaders } from './lib/probe-headers';
 import { buildVpcBindings, type VpcNetworkBinding, type VpcServiceBinding } from './lib/vpc';
+import { buildPlacement, type PlacementBinding } from './lib/placement';
 
 const isDeployMode = process.argv.includes('--mode=deploy');
 
@@ -47,6 +48,7 @@ interface WranglerTemplate {
 	send_email?: EmailBindingConfig[];
 	vpc_networks?: VpcNetworkBinding[];
 	vpc_services?: VpcServiceBinding[];
+	placement?: PlacementBinding;
 	// Preserved as-is from the template (heartbeat endpoint rate limiters); not generated.
 	ratelimits?: { name: string; namespace_id: string; simple: { limit: number; period: number } }[];
 }
@@ -145,6 +147,19 @@ async function main() {
 				bindings.vpc_services.map((s) => ({ binding: s.binding, service_id: s.service_id })),
 			);
 		}
+	}
+
+	// Workers placement (Issue #48): deploy.placement maps 1:1 onto wrangler's `placement` object
+	// (Smart Placement + region/hostname hints). Omitted entirely when unset.
+	delete wrangler.placement;
+	if (config.deploy?.placement) {
+		let placement: PlacementBinding | null;
+		try {
+			placement = buildPlacement(config.deploy.placement);
+		} catch (err) {
+			fail(err instanceof Error ? err.message : String(err));
+		}
+		if (placement) wrangler.placement = placement;
 	}
 
 	writeFileSync('wrangler.jsonc', JSON.stringify(wrangler, null, '\t') + '\n');
