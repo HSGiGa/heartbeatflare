@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.2] - 2026-07-05
+
+### Security
+
+- **Heartbeat token no longer required in the URL.** `POST /beat/<monitor-id>` now accepts the token
+  via an `Authorization: Bearer <token>` or `X-Heartbeat-Token` header, so it doesn't land in Workers
+  Logs/observability via the invocation's logged URL. The legacy `POST /beat/<id>/<token>` form is
+  still accepted for back-compat; `secrets:sync` and the docs now print the header form as the
+  default.
+- **Public read endpoints hardened against cache-busting.** The edge-cache key for `/public`,
+  `/feed.xml`, `/badges`, `/badge.svg`, `/badge/*.svg`, `/api/status` and `/api/history` now only
+  retains each route's known query params, so an arbitrary/junk query string can no longer force a
+  fresh, D1-backed render on every request. `/api/history` pagination is clamped to the last real
+  page, and the badge `label` param is capped at 100 characters. A new per-IP rate limiter
+  (`READ_IP_RATE_LIMITER`, 120 req/min) backstops every cache miss — most relevant on `*.workers.dev`
+  deployments, where the Cache API is a no-op and every request would otherwise reach D1 directly. See
+  the new "Hardening the public read endpoints" section in `docs/DEPLOYMENT.md`.
+
 ## [1.3.1] - 2026-06-22
 
 ### Added
