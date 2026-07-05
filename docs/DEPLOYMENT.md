@@ -293,6 +293,25 @@ Then set `CLOUDFLARE_ACCESS_TEAM_NAME` and `CLOUDFLARE_ACCESS_AUD` as
 [runtime Worker secrets](#runtime-worker-secrets) (CI variables, `.env` + `secrets:sync`, or
 `wrangler secret put`).
 
+## Hardening the public read endpoints
+
+`/public`, `/feed.xml`, `/badges`, `/badge.svg`, `/badge/*.svg`, and the public scope of
+`/api/status` / `/api/history` are unauthenticated by design. The Worker edge-caches these
+responses (`Cache-Control: public, max-age=60`) so ordinary traffic never touches D1, and a
+per-IP rate limiter (`READ_IP_RATE_LIMITER`, 120 req/min) backstops any request that misses the
+cache — but the edge cache itself is a Worker-level `caches.default` call, and **the Cache API is a
+no-op on `*.workers.dev`**. If you deploy without `deploy.domain` (`workers_dev: true`), every
+request to these paths hits D1 directly; the rate limiter is then your only protection against
+someone driving up D1/Workers usage against the Free-plan daily caps.
+
+Recommended for any real deployment:
+
+- **Set `deploy.domain`** so the Worker runs on a custom domain/route — this is what makes the edge
+  cache actually work.
+- **Add a Cloudflare WAF rate-limiting rule on the zone** (Security → WAF → Rate limiting rules) for
+  extra protection in front of the Worker, independent of `READ_IP_RATE_LIMITER`. The zone-level rule
+  can also block by ASN/country if you're seeing abuse from a narrow source.
+
 ## Provisioned resources
 
 `npm run provision` creates the D1 database and notification queue if they don't exist

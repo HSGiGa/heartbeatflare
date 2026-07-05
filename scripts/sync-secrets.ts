@@ -132,7 +132,8 @@ async function main() {
 		for (const g of generated) {
 			console.log(`\n  Monitor:  ${g.name}`);
 			console.log(`  Secret:   ${g.secretName} = ${g.value}`);
-			console.log(`  Beat URL: curl -fsS -X POST "${base}/beat/${g.id}/${g.value}"`);
+			console.log(`  Beat:     curl -fsS -X POST -H "Authorization: Bearer ${g.value}" "${base}/beat/${g.id}"`);
+			console.log(`  (legacy, avoid — logs the token in the URL: curl -fsS -X POST "${base}/beat/${g.id}/${g.value}")`);
 		}
 		console.log('\nTo rotate a token, delete the secret in the Cloudflare dashboard and redeploy.\n');
 	}

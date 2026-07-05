@@ -20,7 +20,8 @@ Supported monitoring capabilities (implemented):
 - HTTP/HTTPS monitoring (status code, response time)
 - TCP port monitoring (reachability, connect latency)
 - DNS monitoring (resolution via DoH)
-- Heartbeat (push) monitoring — jobs POST to `/beat/<id>/<token>`; missed beats open incidents
+- Heartbeat (push) monitoring — jobs POST to `/beat/<id>` (token via header, preferred) or the
+  legacy `/beat/<id>/<token>`; missed beats open incidents
 - SSL/TLS certificate expiry (via external CT/cert APIs — see SSL section)
 - Alerting and incident management (connectivity + SSL, independent)
 - Maintenance windows (planned work; affected monitors not probed while active)
@@ -495,13 +496,21 @@ private data.
 
 ### Edge caching
 
-Unauthenticated responses (`/public`, and public-scoped `/api/status`,
-`/api/history`) are stored in the Cloudflare **Cache API** (`caches.default`) for
-60s under a public-namespaced key, and carry `Cache-Control: public, max-age=60`.
-Repeat public traffic — which spikes precisely during an incident — is served from
-the colo cache without re-invoking the Worker or touching D1. Authenticated views
-are always `no-store`. The public cache key is namespaced so an authenticated
-request can never match a cached public response.
+Unauthenticated responses (`/public`, `/feed.xml`, `/badges`, `/badge.svg`, `/badge/*.svg`, and
+public-scoped `/api/status`, `/api/history`) are stored in the Cloudflare **Cache API**
+(`caches.default`) for 60s under a public-namespaced key, and carry
+`Cache-Control: public, max-age=60`. Repeat public traffic — which spikes precisely during an
+incident — is served from the colo cache without re-invoking the Worker or touching D1.
+Authenticated views are always `no-store`. The public cache key is namespaced so an authenticated
+request can never match a cached public response, and only keeps each route's known query params
+(e.g. `label` for badges; `scope`/`month`/`page` for history) — any other query param is dropped
+before the key is built, so it can't be used to force a fresh, D1-backed render on every request.
+
+A per-IP rate limiter (`READ_IP_RATE_LIMITER`, 120/60s) backstops every cache miss, before the
+D1-backed handler runs — the same "before any D1 access" placement as the heartbeat limiters below.
+This matters most on `*.workers.dev` deployments, where the Cache API is a no-op and every request
+would otherwise reach D1 unconditionally; see
+[Hardening the public read endpoints](DEPLOYMENT.md#hardening-the-public-read-endpoints).
 
 ### Rendering
 
@@ -578,9 +587,11 @@ DoH query to `cloudflare-dns.com/dns-query`. Up = `Status 0` with a non-empty an
 
 ### Heartbeat (push)
 Inverted: the monitored job calls the Worker, not the other way round. A job `POST`s to
-`/beat/<monitor-id>/<token>` (handled in `src/heartbeat.ts`, routed ahead of auth/cache in
-`src/routes.ts`); the scheduler raises an incident when beats stop. The endpoint is fail-closed and
-write-minimised:
+`/beat/<monitor-id>` with the token in an `Authorization: Bearer` (or `X-Heartbeat-Token`) header —
+preferred, since a header isn't part of the URL that Workers observability logs. The legacy
+`/beat/<monitor-id>/<token>` form (token in the path) is still accepted for back-compat. Handled in
+`src/heartbeat.ts`, routed ahead of auth/cache in `src/routes.ts`; the scheduler raises an incident
+when beats stop. The endpoint is fail-closed and write-minimised:
 
 - **Token in a Worker Secret.** D1 stores only `secret:<NAME>` (NAME derived from the monitor id as
   `HEARTBEAT_<ID>_TOKEN`); the value lives in a Cloudflare Worker Secret and is resolved from `env`

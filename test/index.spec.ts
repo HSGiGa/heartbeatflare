@@ -2,6 +2,7 @@ import { env, createExecutionContext, waitOnExecutionContext, SELF } from 'cloud
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import worker from '../src/index';
 import { _invalidateAuthCache, resolveAuthConfig } from '../src/auth';
+import { publicCacheKey } from '../src/routes';
 import { CONNECTIVITY_CLASS, evaluateAlerts } from '../src/alerts';
 import { handleScheduled } from '../src/scheduler';
 import type { AlertRuleDbRow, MonitorRow } from '../src/types';
@@ -23,6 +24,14 @@ function escapeHtml(value: string): string {
 
 function escapeRegExp(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// The edge cache (see publicCacheKey/withPublicEdgeCache in src/routes.ts) normalizes away any query
+// param not in a route's allowlist, so a `?t=...` cache-busting param no longer produces a distinct
+// cache entry. Tests that change fixtures and then assert on a fresh render of a cached public route
+// must purge the exact same key first.
+async function purgePublicCache(url: string, allowedParams: string[] = []): Promise<void> {
+	await caches.default.delete(publicCacheKey(new Request(url), allowedParams));
 }
 
 async function applyMigration(sql: string) {
@@ -139,7 +148,8 @@ describe('history month list (skip months without incidents)', () => {
 	});
 
 	it('GET /api/history?month= returns only months that have incidents', async () => {
-		const response = await SELF.fetch('https://example.com/api/history?month=2026-03&t=monthlist');
+		await purgePublicCache('https://example.com/api/history?month=2026-03', ['scope', 'month', 'page']);
+		const response = await SELF.fetch('https://example.com/api/history?month=2026-03');
 		expect(response.status).toBe(200);
 		const body = (await response.json()) as { incidents: Array<{ id: string }>; month: string; months: string[] };
 		expect(body.month).toBe('2026-03');
@@ -246,9 +256,8 @@ describe('soft-deleted monitor incidents are hidden', () => {
 	});
 
 	it('excludes them from GET /api/history', async () => {
-		// Unique query so this fetch gets its own edge-cache entry (the public feed/api responses
-		// are edge-cached by URL; a shared key would let an earlier test's render leak in).
-		const response = await SELF.fetch('https://example.com/api/history?t=softdelete');
+		await purgePublicCache('https://example.com/api/history', ['scope', 'month', 'page']);
+		const response = await SELF.fetch('https://example.com/api/history');
 		expect(response.status).toBe(200);
 		const body = (await response.json()) as { incidents: Array<{ id: string; monitor_id: string }> };
 		const ids = body.incidents.map((i) => i.id);
@@ -259,9 +268,8 @@ describe('soft-deleted monitor incidents are hidden', () => {
 	});
 
 	it('excludes them from GET /feed.xml', async () => {
-		// Unique query (cache-bust) so this earlier feed fetch doesn't populate the shared
-		// /feed.xml edge-cache entry that a later test asserts against.
-		const response = await SELF.fetch('https://example.com/feed.xml?t=softdelete');
+		await purgePublicCache('https://example.com/feed.xml');
+		const response = await SELF.fetch('https://example.com/feed.xml');
 		expect(response.status).toBe(200);
 		const xml = await response.text();
 		expect(xml).toContain('Control Live');
@@ -487,7 +495,8 @@ describe('maintenance windows, feed and badges', () => {
 	});
 
 	it('serves a public badges page with snippets for public monitors', async () => {
-		const res = await SELF.fetch(`https://status.example.test/badges?t=${Date.now()}-list`);
+		await purgePublicCache('https://status.example.test/badges');
+		const res = await SELF.fetch('https://status.example.test/badges');
 		expect(res.status).toBe(200);
 		expect(res.headers.get('Content-Type')).toContain('text/html');
 		expect(res.headers.get('Cache-Control')).toBe('public, max-age=60');
@@ -505,7 +514,8 @@ describe('maintenance windows, feed and badges', () => {
 	});
 
 	it('escapes special-character monitor names on the badges page', async () => {
-		const res = await SELF.fetch(`https://status.example.test/badges?t=${Date.now()}-escape`);
+		await purgePublicCache('https://status.example.test/badges');
+		const res = await SELF.fetch('https://status.example.test/badges');
 		expect(res.status).toBe(200);
 		const html = await res.text();
 		expect(html).toContain('A &amp; &quot;B&quot; &lt;test&gt;');
@@ -522,7 +532,8 @@ describe('maintenance windows, feed and badges', () => {
 			for (const m of publicMonitors) {
 				await env.DB.prepare(`UPDATE monitors SET enabled = 0 WHERE id = ?`).bind(m.id).run();
 			}
-			const res = await SELF.fetch(`https://example.com/badges?t=${Date.now()}-empty`);
+			await purgePublicCache('https://example.com/badges');
+			const res = await SELF.fetch('https://example.com/badges');
 			expect(res.status).toBe(200);
 			const html = await res.text();
 			// The overall site badge always renders; only the per-monitor section is empty.
@@ -537,6 +548,7 @@ describe('maintenance windows, feed and badges', () => {
 	});
 
 	it('serves an Atom feed with public incidents but not private ones', async () => {
+		await purgePublicCache('https://example.com/feed.xml');
 		const res = await SELF.fetch('https://example.com/feed.xml');
 		expect(res.status).toBe(200);
 		expect(res.headers.get('Content-Type')).toContain('application/atom+xml');
@@ -549,8 +561,8 @@ describe('maintenance windows, feed and badges', () => {
 	});
 
 	it('shows a maintenance banner on the public status page', async () => {
-		// Cache-busting query so we never hit an earlier cached /public render without the window.
-		const res = await SELF.fetch(`https://example.com/public?t=${Date.now()}`);
+		await purgePublicCache('https://example.com/public');
+		const res = await SELF.fetch('https://example.com/public');
 		expect(res.status).toBe(200);
 		const html = await res.text();
 		expect(html).toContain('DB migration window');
@@ -558,7 +570,8 @@ describe('maintenance windows, feed and badges', () => {
 	});
 
 	it('renders active incidents in a card outside the header', async () => {
-		const res = await SELF.fetch(`https://example.com/public?t=${Date.now()}-incidents`);
+		await purgePublicCache('https://example.com/public');
+		const res = await SELF.fetch('https://example.com/public');
 		expect(res.status).toBe(200);
 		const html = await res.text();
 		const header = html.slice(html.indexOf('<header>'), html.indexOf('</header>'));
@@ -585,6 +598,10 @@ describe('heartbeat (push) monitoring', () => {
 	const beat = (id: string, token: string, ip: string, method = 'POST') =>
 		SELF.fetch(`https://example.com/beat/${id}/${token}`, { method, headers: { 'CF-Connecting-IP': ip } });
 
+	// Preferred transport: token via header, no token in the path (see src/heartbeat.ts).
+	const beatHeader = (id: string, headers: Record<string, string>, ip: string) =>
+		SELF.fetch(`https://example.com/beat/${id}`, { method: 'POST', headers: { 'CF-Connecting-IP': ip, ...headers } });
+
 	const mkHeartbeat = (id: string, name: string, intervalSeconds: number) =>
 		env.DB.prepare(
 			`INSERT OR IGNORE INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, ssl_check, heartbeat_token, enabled)
@@ -598,6 +615,8 @@ describe('heartbeat (push) monitoring', () => {
 		await mkHeartbeat('hb-throttle', 'HB Throttle', 600);
 		await mkHeartbeat('hb-rate', 'HB Rate', 600);
 		await mkHeartbeat('hb-recover', 'HB Recover', 600);
+		await mkHeartbeat('hb-header', 'HB Header', 600);
+		await mkHeartbeat('hb-header-alt', 'HB Header Alt', 600);
 	});
 
 	it('valid beat returns 204 and records up', async () => {
@@ -621,6 +640,28 @@ describe('heartbeat (push) monitoring', () => {
 		const res = await beat('hb-valid', TOKEN, '203.0.113.13', 'GET');
 		expect(res.status).toBe(405);
 		expect(res.headers.get('Allow')).toBe('POST');
+	});
+
+	it('header-form beat (Authorization: Bearer, no token in the path) returns 204', async () => {
+		const res = await beatHeader('hb-header', { Authorization: `Bearer ${TOKEN}` }, '203.0.113.14');
+		expect(res.status).toBe(204);
+		const st = await env.DB.prepare(`SELECT status FROM monitor_state WHERE monitor_id = 'hb-header'`).first<{ status: string }>();
+		expect(st?.status).toBe('up');
+	});
+
+	it('header-form beat (X-Heartbeat-Token) returns 204', async () => {
+		const res = await beatHeader('hb-header-alt', { 'X-Heartbeat-Token': TOKEN }, '203.0.113.15');
+		expect(res.status).toBe(204);
+	});
+
+	it('header-form beat with a bad token returns 404', async () => {
+		const res = await beatHeader('hb-header', { Authorization: 'Bearer wrong-token' }, '203.0.113.16');
+		expect(res.status).toBe(404);
+	});
+
+	it('path-only beat with no token anywhere returns 404', async () => {
+		const res = await SELF.fetch('https://example.com/beat/hb-valid', { method: 'POST', headers: { 'CF-Connecting-IP': '203.0.113.17' } });
+		expect(res.status).toBe(404);
 	});
 
 	it('spam within the throttle window returns 204 without an extra sample', async () => {
@@ -791,7 +832,8 @@ describe('status page internal badge', () => {
 	});
 
 	it('renders an "Internal" badge for mode: internal monitors', async () => {
-		const res = await SELF.fetch(`https://example.com/public?t=${Date.now()}-internal-badge`);
+		await purgePublicCache('https://example.com/public');
+		const res = await SELF.fetch('https://example.com/public');
 		expect(res.status).toBe(200);
 		const html = await res.text();
 		const row = html.slice(html.indexOf('Badge Internal'));

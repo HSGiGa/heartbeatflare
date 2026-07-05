@@ -117,11 +117,14 @@ Token values are shown **once** at creation and never again.
 
 ## Heartbeat endpoint returns 404
 
-`POST /beat/<monitor-id>/<token>` returns 404 deliberately for an unknown monitor, a wrong/missing
-token, **or a disabled monitor** — it never reveals which. Check:
+`POST /beat/<monitor-id>` (token via `Authorization: Bearer` / `X-Heartbeat-Token` header) or the
+legacy `POST /beat/<monitor-id>/<token>` returns 404 deliberately for an unknown monitor, a
+wrong/missing token, **or a disabled monitor** — it never reveals which. Check:
 
 - the monitor id slug (lowercase, hyphenated name) in the URL path;
-- the token matches the `HEARTBEAT_<ID>_TOKEN` secret;
+- the token matches the `HEARTBEAT_<ID>_TOKEN` secret, and is sent as `Authorization: Bearer <token>`
+  (or in the legacy path form, but prefer the header — the path form is logged by Workers
+  observability);
 - the monitor is `enabled` and was imported (it must exist in `config.yaml` and be deployed).
 
 A `405` means you used a method other than `POST`; a `429` means you're rate-limited.

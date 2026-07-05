@@ -341,9 +341,10 @@ trust decision lives on the VPC resource (which heartbeatflare only consumes). O
 ### Heartbeat (push) monitors
 
 `type: heartbeat`. A dead-man's switch: instead of the Worker probing a target, your job calls the
-Worker. `target` is omitted. Each successful run sends `POST /beat/<monitor-id>/<token>`; if no beat
-arrives within `interval`, the scheduler records a miss, and after `failures` consecutive misses it
-opens an incident. Use it for cron jobs, backups and queue workers.
+Worker. `target` is omitted. Each successful run sends `POST /beat/<monitor-id>` with the token in an
+`Authorization: Bearer <token>` header (preferred — see below); if no beat arrives within `interval`,
+the scheduler records a miss, and after `failures` consecutive misses it opens an incident. Use it for
+cron jobs, backups and queue workers.
 
 ```yaml
   - name: Backup job
@@ -374,7 +375,8 @@ and **prints it once** in the deploy output:
 === New heartbeat tokens generated — SAVE THESE NOW (not shown again) ===
   Monitor:  Backup job
   Secret:   HEARTBEAT_BACKUP_JOB_TOKEN = 9f3a…c21
-  Beat URL: curl -fsS -X POST "https://status.example.com/beat/backup-job/9f3a…c21"
+  Beat:     curl -fsS -X POST -H "Authorization: Bearer 9f3a…c21" "https://status.example.com/beat/backup-job"
+  (legacy, avoid — logs the token in the URL: curl -fsS -X POST "https://status.example.com/beat/backup-job/9f3a…c21")
 ```
 
 Cloudflare never shows a secret value again — save it then. Existing tokens are kept across deploys;
@@ -385,8 +387,13 @@ Variables and Secrets**) and redeploy. You can also pre-set your own value via C
 Have the job beat on each successful run:
 
 ```sh
-curl -fsS -X POST "https://status.example.com/beat/backup-job/$HEARTBEAT_BACKUP_JOB_TOKEN"
+curl -fsS -X POST -H "Authorization: Bearer $HEARTBEAT_BACKUP_JOB_TOKEN" "https://status.example.com/beat/backup-job"
 ```
+
+Prefer the header form: the Workers observability/logs record each invocation's request URL, so a
+token in the path (`POST /beat/<monitor-id>/<token>`, still accepted for back-compat) ends up in
+those logs. A header isn't part of the logged URL. `X-Heartbeat-Token: <token>` works too, if your
+job's HTTP client can't set `Authorization`.
 
 The endpoint is `POST`-only (`405` otherwise), never cached, and not behind Cloudflare Access. It
 returns `204` on a valid beat and `404` for an unknown monitor, wrong/missing token or disabled
@@ -695,9 +702,10 @@ are not secret and stay as literals in config — they are not `${VAR}`-substitu
   overrides it.
 - `/badge/<monitor>.svg`: SVG status badge for a public monitor. `?label=` overrides the left text.
   Private or unknown monitors return 404.
-- `POST /beat/<monitor-id>/<token>`: heartbeat ingest. Returns `204` on success and
-  `404`/`405`/`429` otherwise. It is not cached and is not behind Access. See
-  [Heartbeat monitors](#heartbeat-push-monitors).
+- `POST /beat/<monitor-id>` (token via `Authorization: Bearer` or `X-Heartbeat-Token` header,
+  preferred) or `POST /beat/<monitor-id>/<token>` (legacy, token in the path): heartbeat ingest.
+  Returns `204` on success and `404`/`405`/`429` otherwise. It is not cached and is not behind
+  Access. See [Heartbeat monitors](#heartbeat-push-monitors).
 
 `<monitor>` is the stored monitor id (derived from the monitor name at import time). Use `/badges`
 on your deployed Worker to copy ready-to-use embed snippets. A direct Markdown badge looks like:

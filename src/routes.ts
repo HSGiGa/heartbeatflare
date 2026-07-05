@@ -16,6 +16,10 @@ import { buildUsagePage } from './usage-page';
 const PUBLIC_MAXAGE = 60;
 const NO_STORE = 'no-store';
 
+// Cap on any single cache-key query param (e.g. badge `label`) — bounds both the SVG response size
+// and the cache-busting space an unbounded param would otherwise open up.
+const MAX_CACHE_PARAM_LEN = 100;
+
 function redirectNoStore(location: string): Response {
 	return new Response(null, {
 		status: 302,
@@ -35,19 +39,46 @@ function escapeMarkdownAlt(s: string): string {
 }
 
 // Cache API key namespaced to public responses, so an authenticated request to the same URL
-// (which we never cache) can never match a cached public response.
-function publicCacheKey(request: Request): Request {
+// (which we never cache) can never match a cached public response. Only params in `allowedParams`
+// survive into the key — every route's response is fully determined by that fixed set, so any other
+// query param (junk, cache-busting) collapses onto the same cache entry instead of forcing a fresh
+// D1-backed render on every distinct value.
+// Exported for tests: purging `caches.default` between fixture changes needs the exact same key.
+export function publicCacheKey(request: Request, allowedParams: readonly string[] = []): Request {
 	const url = new URL(request.url);
-	url.searchParams.set('__pub', '1');
+	const kept = new URLSearchParams();
+	for (const name of allowedParams) {
+		const value = url.searchParams.get(name);
+		if (value !== null) kept.set(name, value.slice(0, MAX_CACHE_PARAM_LEN));
+	}
+	kept.set('__pub', '1');
+	url.search = kept.toString();
 	return new Request(url.toString(), { method: 'GET' });
 }
 
-// Serve a public GET from the edge cache if present, otherwise run `produce`, cache it, and return it.
-async function withPublicEdgeCache(request: Request, ctx: ExecutionContext, produce: () => Promise<Response>): Promise<Response> {
+// Serve a public GET from the edge cache if present, otherwise rate-limit and run `produce`, cache
+// it, and return it. `allowedParams` must list every query param the route actually reads (see
+// publicCacheKey). Only called for unauthenticated traffic, so authenticated (Access) requests never
+// hit the rate limiter — they bypass this helper entirely.
+async function withPublicEdgeCache(
+	request: Request,
+	env: Env,
+	ctx: ExecutionContext,
+	produce: () => Promise<Response>,
+	allowedParams: readonly string[] = [],
+): Promise<Response> {
 	const cache = caches.default;
-	const key = publicCacheKey(request);
+	const key = publicCacheKey(request, allowedParams);
 	const hit = await cache.match(key);
 	if (hit) return hit;
+
+	// Cache miss — including every request on *.workers.dev, where the Cache API is a no-op. This is
+	// the point that would otherwise hit D1 unconditionally, so rate-limit per source IP here (mirrors
+	// BEAT_IP_RATE_LIMITER's "before any D1 access" placement) rather than on every request.
+	const ip = request.headers.get('cf-connecting-ip') ?? 'unknown';
+	const limit = await env.READ_IP_RATE_LIMITER.limit({ key: `read-ip:${ip}` });
+	if (!limit.success) return new Response(null, { status: 429, headers: { 'Retry-After': '60' } });
+
 	const res = await produce();
 	if (res.ok) ctx.waitUntil(cache.put(key, res.clone()));
 	return res;
@@ -185,27 +216,29 @@ async function handleHistoryApi(env: Env, searchParams: URLSearchParams, showAll
 		return Response.json({ incidents, month: validMonth, months }, { headers: { 'Cache-Control': showAll ? 'no-store' : `public, max-age=${PUBLIC_MAXAGE}` } });
 	}
 
-	const page = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10) || 1);
+	const requestedPage = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10) || 1);
 	const limit = 10;
-	const offset = (page - 1) * limit;
 
-	const [{ results: incidents }, countRow] = await Promise.all([
-		env.DB.prepare(
-			`SELECT i.id, i.monitor_id, i.severity, i.status, i.started_at, i.resolved_at, i.reason,
-			        m.name AS monitor_name, m.type AS monitor_type
-			 FROM incidents i JOIN monitors m ON m.id = i.monitor_id
-			 WHERE m.enabled = 1 ${visWhere}
-			 ORDER BY i.started_at DESC LIMIT ? OFFSET ?`,
-		).bind(limit, offset).all<IncidentRow>(),
-		env.DB.prepare(
-			showAll
-				? `SELECT COUNT(*) AS total FROM incidents i JOIN monitors m ON m.id = i.monitor_id WHERE m.enabled = 1`
-				: `SELECT COUNT(*) AS total FROM incidents i JOIN monitors m ON m.id = i.monitor_id WHERE m.enabled = 1 AND m.visibility = 'public'`,
-		).first<{ total: number }>(),
-	]);
+	// Count first so an out-of-range page (arbitrary cache-busting input) clamps to the last real
+	// page instead of driving an ever-larger OFFSET scan with its own cache entry.
+	const countRow = await env.DB.prepare(
+		showAll
+			? `SELECT COUNT(*) AS total FROM incidents i JOIN monitors m ON m.id = i.monitor_id WHERE m.enabled = 1`
+			: `SELECT COUNT(*) AS total FROM incidents i JOIN monitors m ON m.id = i.monitor_id WHERE m.enabled = 1 AND m.visibility = 'public'`,
+	).first<{ total: number }>();
 
 	const total = countRow?.total ?? 0;
 	const pages = Math.max(1, Math.ceil(total / limit));
+	const page = Math.min(requestedPage, pages);
+	const offset = (page - 1) * limit;
+
+	const { results: incidents } = await env.DB.prepare(
+		`SELECT i.id, i.monitor_id, i.severity, i.status, i.started_at, i.resolved_at, i.reason,
+		        m.name AS monitor_name, m.type AS monitor_type
+		 FROM incidents i JOIN monitors m ON m.id = i.monitor_id
+		 WHERE m.enabled = 1 ${visWhere}
+		 ORDER BY i.started_at DESC LIMIT ? OFFSET ?`,
+	).bind(limit, offset).all<IncidentRow>();
 
 	return Response.json({ incidents, total, page, pages }, { headers: { 'Cache-Control': showAll ? 'no-store' : `public, max-age=${PUBLIC_MAXAGE}` } });
 }
@@ -408,7 +441,7 @@ async function handleBadge(env: Env, pathname: string, searchParams: URLSearchPa
 		 WHERE m.id = ? AND m.enabled = 1 AND m.visibility = 'public'`,
 	).bind(id).first<{ name: string; paused: number; status: string | null }>();
 	if (!row) return new Response(null, { status: 404 });
-	const label = searchParams.get('label') ?? row.name;
+	const label = (searchParams.get('label') ?? row.name).slice(0, MAX_CACHE_PARAM_LEN);
 	const svg = buildBadgeSvg(label, row.status, row.paused === 1);
 	return new Response(svg, {
 		headers: { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': `public, max-age=${PUBLIC_MAXAGE}` },
@@ -429,7 +462,7 @@ async function handleOverallBadge(env: Env, runtimeEnv: RuntimeEnv, searchParams
 	const globalMaintenance = maintenanceWindows.some((w) => w.monitor_ids.length === 0 && w.starts_at <= nowIso && nowIso < w.ends_at);
 	// No public monitors at all → unknown; otherwise worst-of.
 	const status = monitors.length === 0 ? null : hasDown ? 'down' : globalMaintenance ? 'maintenance' : hasDegraded ? 'degraded' : 'up';
-	const label = searchParams.get('label') ?? runtimeEnv.SITE_TITLE?.trim() ?? '';
+	const label = (searchParams.get('label') ?? runtimeEnv.SITE_TITLE?.trim() ?? '').slice(0, MAX_CACHE_PARAM_LEN);
 	const svg = buildBadgeSvg(label || 'HeartbeatFlare', status, false);
 	return new Response(svg, {
 		headers: { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': `public, max-age=${PUBLIC_MAXAGE}` },
@@ -471,25 +504,25 @@ export async function handleFetch(request: Request, env: Env, ctx: ExecutionCont
 	}
 
 	if (request.method === 'GET' && pathname === '/public') {
-		return withPublicEdgeCache(request, ctx, () => handleStatusPage(env, runtimeEnv, false, null, true, new URL(request.url).host));
+		return withPublicEdgeCache(request, env, ctx, () => handleStatusPage(env, runtimeEnv, false, null, true, new URL(request.url).host));
 	}
 
 	if (request.method === 'GET' && pathname === '/feed.xml') {
-		return withPublicEdgeCache(request, ctx, () => handleFeed(env, origin));
+		return withPublicEdgeCache(request, env, ctx, () => handleFeed(env, origin));
 	}
 
 	if (request.method === 'GET' && pathname === '/badges') {
-		return withPublicEdgeCache(request, ctx, () => handleBadgesPage(env, origin, runtimeEnv.SITE_TITLE ?? ''));
+		return withPublicEdgeCache(request, env, ctx, () => handleBadgesPage(env, origin, runtimeEnv.SITE_TITLE ?? ''));
 	}
 
 	if (request.method === 'GET' && pathname === '/badge.svg') {
 		const searchParams = new URL(request.url).searchParams;
-		return withPublicEdgeCache(request, ctx, () => handleOverallBadge(env, runtimeEnv, searchParams));
+		return withPublicEdgeCache(request, env, ctx, () => handleOverallBadge(env, runtimeEnv, searchParams), ['label']);
 	}
 
 	if (request.method === 'GET' && pathname.startsWith('/badge/') && pathname.endsWith('.svg')) {
 		const searchParams = new URL(request.url).searchParams;
-		return withPublicEdgeCache(request, ctx, () => handleBadge(env, pathname, searchParams));
+		return withPublicEdgeCache(request, env, ctx, () => handleBadge(env, pathname, searchParams), ['label']);
 	}
 
 	let session: Session | null;
@@ -510,7 +543,7 @@ export async function handleFetch(request: Request, env: Env, ctx: ExecutionCont
 	if (request.method === 'GET' && pathname === '/api/status') {
 		return showAll
 			? handleStatusApi(env, true)
-			: withPublicEdgeCache(request, ctx, () => handleStatusApi(env, false));
+			: withPublicEdgeCache(request, env, ctx, () => handleStatusApi(env, false));
 	}
 
 	if (request.method === 'GET' && pathname === '/api/history') {
@@ -523,7 +556,7 @@ export async function handleFetch(request: Request, env: Env, ctx: ExecutionCont
 		const effectiveShowAll = wantsAll && showAll;
 		return effectiveShowAll
 			? handleHistoryApi(env, searchParams, true)
-			: withPublicEdgeCache(request, ctx, () => handleHistoryApi(env, searchParams, false));
+			: withPublicEdgeCache(request, env, ctx, () => handleHistoryApi(env, searchParams, false), ['scope', 'month', 'page']);
 	}
 
 	if (request.method === 'GET' && pathname === '/private') {

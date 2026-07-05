@@ -1,5 +1,11 @@
-// Push-heartbeat endpoint: POST /beat/<monitor-id>/<token>. A monitored job calls this on each
-// successful run; the scheduler opens an incident when beats stop arriving (see scheduler.ts).
+// Push-heartbeat endpoint: POST /beat/<monitor-id> with the token in an Authorization: Bearer (or
+// X-Heartbeat-Token) header — preferred, since a header isn't recorded in the Worker's logged
+// invocation URL. The legacy POST /beat/<monitor-id>/<token> form (token in the path) is still
+// accepted for back-compat, but exposes the token to Workers Logs / observability and any proxy
+// along the way; prefer the header form for anything crossing shared infrastructure.
+//
+// A monitored job calls this on each successful run; the scheduler opens an incident when beats
+// stop arriving (see scheduler.ts).
 //
 // The handler is fail-closed and write-minimised: it rate-limits before any D1 access, validates
 // the token against a Cloudflare Worker Secret (D1 stores only the `secret:<NAME>` reference, never
@@ -29,21 +35,42 @@ type HeartbeatMonitorRow = MonitorRow & { heartbeat_token: string | null };
 
 const notFound = () => new Response(null, { status: 404 });
 
+// Reads the token from Authorization: Bearer <token> or X-Heartbeat-Token. Preferred transport:
+// unlike a path segment, headers are not recorded in the Worker invocation's logged URL.
+function readHeaderToken(request: Request): string | null {
+	const authz = request.headers.get('Authorization');
+	if (authz?.startsWith('Bearer ')) return authz.slice('Bearer '.length);
+	return request.headers.get('X-Heartbeat-Token');
+}
+
 export async function handleBeat(request: Request, env: Env): Promise<Response> {
-	// Path: /beat/<id>/<token> — exactly two non-empty segments after /beat/.
+	// Path: /beat/<id>/<token> (legacy, token in URL) or /beat/<id> with the token supplied via
+	// header (preferred — the URL form is logged by the platform's invocation observability).
 	const { pathname } = new URL(request.url);
 	const rest = pathname.slice('/beat/'.length);
 	const slash = rest.indexOf('/');
-	if (slash <= 0 || slash === rest.length - 1) return notFound();
+	const headerToken = readHeaderToken(request);
+
 	let id: string;
-	let token: string;
-	try {
-		id = decodeURIComponent(rest.slice(0, slash));
-		token = decodeURIComponent(rest.slice(slash + 1));
-	} catch {
-		return notFound();
+	let pathToken: string | null = null;
+	if (slash === -1) {
+		try {
+			id = decodeURIComponent(rest);
+		} catch {
+			return notFound();
+		}
+	} else {
+		if (slash <= 0 || slash === rest.length - 1) return notFound();
+		try {
+			id = decodeURIComponent(rest.slice(0, slash));
+			pathToken = decodeURIComponent(rest.slice(slash + 1));
+		} catch {
+			return notFound();
+		}
 	}
-	if (!id || id.length > MAX_ID_LEN || id.includes('/') || token.length === 0 || token.length > MAX_TOKEN_LEN) return notFound();
+
+	const token = headerToken ?? pathToken;
+	if (!id || id.length > MAX_ID_LEN || id.includes('/') || !token || token.length === 0 || token.length > MAX_TOKEN_LEN) return notFound();
 
 	// Rate limit before touching D1: per source IP and per monitor id (best-effort, per-colo).
 	const ip = request.headers.get('cf-connecting-ip') ?? 'unknown';
