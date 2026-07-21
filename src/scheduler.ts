@@ -130,7 +130,7 @@ async function runExternalCheck(
 		[result, sslInfo] = await Promise.all([
 			monitor.type === 'tcp' ? tcpCheck(monitor.scrape_url!, connector) :
 			monitor.type === 'dns' ? dnsCheck(monitor.scrape_url!) :
-			httpCheck(monitor.scrape_url!, monitor.ssl_check === 1, resolvedHeaders, fetcher),
+			httpCheck(monitor.scrape_url!, monitor.ssl_check === 1, resolvedHeaders, fetcher, monitor.expected_status, monitor.body_match),
 			doSslProbe ? sslProbe(sslHostname!) : Promise.resolve(null),
 		]);
 	}
@@ -159,6 +159,7 @@ export async function handleScheduled(env: Env): Promise<void> {
 	const [{ results: allMonitors }, { results: allRules }, { results: openIncidents }, { results: activeMaintenance }] = await Promise.all([
 		env.DB.prepare(
 			`SELECT m.id, m.name, m.type, m.mode, m.scrape_url, m.interval_seconds, m.created_at,
+			        m.expected_status, m.body_match,
 			        COALESCE(m.ssl_check, 1) AS ssl_check, m.vpc_binding,
 			        ms.status AS current_status, ms.last_check_at, ms.last_success_at,
 			        COALESCE(ms.consecutive_failures, 0) AS consecutive_failures,

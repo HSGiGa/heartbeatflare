@@ -3,7 +3,7 @@
 // the generate-time non-http / User-Agent rejection, and real header delivery on the wire.
 import { env } from 'cloudflare:test';
 import { describe, it, expect, vi } from 'vitest';
-import { buildProbeHeaders, httpCheck, PROBE_USER_AGENT, tcpCheck } from '../src/probes';
+import { buildProbeHeaders, httpCheck, PROBE_USER_AGENT, statusMatches, tcpCheck } from '../src/probes';
 import { resolveProbeHeaders } from '../src/scheduler';
 import { buildProbeHeadersMap } from '../scripts/lib/probe-headers';
 
@@ -84,6 +84,96 @@ describe('probe transport injection (Workers VPC, Issue #18)', () => {
 		expect(connector).toHaveBeenCalledTimes(1);
 		expect(connector.mock.calls[0][0]).toEqual({ hostname: '10.0.1.50', port: 6379 });
 		expect(close).toHaveBeenCalled();
+	});
+});
+
+describe('statusMatches', () => {
+	it('defaults to 200-399 (2xx and 3xx healthy) when spec is null/empty', () => {
+		for (const code of [200, 204, 299, 301, 399]) expect(statusMatches(code, null)).toBe(true);
+		for (const code of [199, 400, 404, 500]) expect(statusMatches(code, null)).toBe(false);
+		expect(statusMatches(301, '')).toBe(true);
+	});
+
+	it('matches an exact code', () => {
+		expect(statusMatches(200, '200')).toBe(true);
+		expect(statusMatches(201, '200')).toBe(false);
+	});
+
+	it('matches an inclusive range', () => {
+		expect(statusMatches(204, '200-204')).toBe(true);
+		expect(statusMatches(205, '200-204')).toBe(false);
+		expect(statusMatches(200, '200-204')).toBe(true);
+	});
+
+	it('matches an Nxx class', () => {
+		expect(statusMatches(299, '2xx')).toBe(true);
+		expect(statusMatches(300, '2xx')).toBe(false);
+		expect(statusMatches(503, '5xx')).toBe(true);
+	});
+
+	it('matches a JSON list of exact codes', () => {
+		expect(statusMatches(200, '[200,301]')).toBe(true);
+		expect(statusMatches(301, '[200,301]')).toBe(true);
+		expect(statusMatches(302, '[200,301]')).toBe(false);
+	});
+
+	it('never matches a malformed spec', () => {
+		expect(statusMatches(200, 'nonsense')).toBe(false);
+		expect(statusMatches(200, '[oops')).toBe(false);
+	});
+});
+
+describe('httpCheck status policy + body match', () => {
+	it('treats a 3xx as up by default', async () => {
+		const fetcher = vi.fn(async () => new Response(null, { status: 301 }));
+		const res = await httpCheck('https://x.example/', false, undefined, fetcher);
+		expect(res.status).toBe('up');
+	});
+
+	it('marks a 3xx down when expected_status pins 2xx', async () => {
+		const fetcher = vi.fn(async () => new Response(null, { status: 301 }));
+		const res = await httpCheck('https://x.example/', false, undefined, fetcher, '2xx');
+		expect(res.status).toBe('down');
+		expect(res.error).toBe('HTTP 301');
+	});
+
+	it('honors a list expected_status', async () => {
+		const fetcher = vi.fn(async () => new Response(null, { status: 301 }));
+		const res = await httpCheck('https://x.example/', false, undefined, fetcher, '[200,301]');
+		expect(res.status).toBe('up');
+	});
+
+	it('is up when the body contains the match string', async () => {
+		const fetcher = vi.fn(async () => new Response('service: ok', { status: 200 }));
+		const res = await httpCheck('https://x.example/', false, undefined, fetcher, null, 'ok');
+		expect(res.status).toBe('up');
+	});
+
+	it('is down when the body is missing the match string', async () => {
+		const fetcher = vi.fn(async () => new Response('degraded', { status: 200 }));
+		const res = await httpCheck('https://x.example/', false, undefined, fetcher, null, 'ok');
+		expect(res.status).toBe('down');
+		expect(res.error).toBe('body match failed');
+	});
+
+	it('does not read the body when no match string is configured', async () => {
+		let pulled = false;
+		// highWaterMark 0 so the stream does not eagerly pull a chunk to fill its buffer on construction —
+		// then `pulled` flips only if httpCheck actually reads the body.
+		const stream = new ReadableStream(
+			{
+				pull(c) {
+					pulled = true;
+					c.enqueue(new TextEncoder().encode('ok'));
+					c.close();
+				},
+			},
+			{ highWaterMark: 0 },
+		);
+		const fetcher = vi.fn(async () => new Response(stream, { status: 200 }));
+		const res = await httpCheck('https://x.example/', false, undefined, fetcher);
+		expect(res.status).toBe('up');
+		expect(pulled).toBe(false);
 	});
 });
 

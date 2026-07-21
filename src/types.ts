@@ -7,6 +7,8 @@ export type MonitorDbRow = {
 	mode: string;
 	visibility: string;
 	scrape_url: string | null;
+	expected_status: string | null;
+	body_match: string | null;
 	interval_seconds: number;
 	enabled: number;
 	paused: number;
@@ -41,6 +43,10 @@ export type MonitorRow = {
 	name: string;
 	type: 'http' | 'tcp' | 'dns' | 'heartbeat';
 	scrape_url: string | null;
+	// HTTP-only probe assertions. expected_status: null = default 200-399;
+	// body_match: null = no body substring assertion.
+	expected_status: string | null;
+	body_match: string | null;
 	interval_seconds: number;
 	ssl_check: number;
 	// Workers VPC binding name for mode: internal monitors (Issue #18); null for external.

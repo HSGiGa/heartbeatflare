@@ -18,6 +18,68 @@ export function buildProbeHeaders(custom?: Record<string, string>): Headers {
 	return headers;
 }
 
+// Cap on how much of the response body we read for body_match: an 8 KB search window. Health
+// endpoints are tiny; this bounds cost/memory on a misconfigured or hostile target.
+const BODY_MATCH_MAX_BYTES = 8192;
+
+// Decides whether an HTTP status code counts as healthy for a monitor. `spec` is the stored
+// expected_status (already normalized at import); null → default 200-399 (2xx and 3xx healthy).
+// Supported forms: "NNN", "NNN-MMM", "Nxx", or a JSON list "[200,301]".
+export function statusMatches(code: number, spec: string | null | undefined): boolean {
+	if (spec == null || spec === '') return code >= 200 && code <= 399;
+	const trimmed = spec.trim();
+	// JSON list of exact codes, e.g. "[200,301]"
+	if (trimmed.startsWith('[')) {
+		try {
+			const list = JSON.parse(trimmed) as unknown;
+			if (Array.isArray(list)) return list.some((c) => Number(c) === code);
+		} catch {
+			return false;
+		}
+		return false;
+	}
+	// "Nxx" class, e.g. "2xx" → 200-299
+	const classMatch = trimmed.match(/^([1-5])xx$/i);
+	if (classMatch) {
+		const base = Number(classMatch[1]) * 100;
+		return code >= base && code <= base + 99;
+	}
+	// "NNN-MMM" inclusive range
+	const rangeMatch = trimmed.match(/^(\d{3})-(\d{3})$/);
+	if (rangeMatch) {
+		return code >= Number(rangeMatch[1]) && code <= Number(rangeMatch[2]);
+	}
+	// "NNN" exact
+	if (/^\d{3}$/.test(trimmed)) return code === Number(trimmed);
+	return false;
+}
+
+// Reads up to BODY_MATCH_MAX_BYTES of the response body as UTF-8 and reports whether `needle` is
+// present. Bounded via the stream reader so a huge/streaming body can't blow the memory/CPU budget.
+async function bodyContains(res: Response, needle: string): Promise<boolean> {
+	if (!res.body) {
+		const text = (await res.text()).slice(0, BODY_MATCH_MAX_BYTES);
+		return text.includes(needle);
+	}
+	const reader = res.body.getReader();
+	const decoder = new TextDecoder();
+	let buffer = '';
+	let bytes = 0;
+	try {
+		while (bytes < BODY_MATCH_MAX_BYTES) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			bytes += value.byteLength;
+			buffer += decoder.decode(value, { stream: true });
+			if (buffer.includes(needle)) return true;
+		}
+		buffer += decoder.decode();
+		return buffer.includes(needle);
+	} finally {
+		await reader.cancel().catch(() => {});
+	}
+}
+
 // `fetcher` defaults to global fetch (public networking). mode: internal monitors pass a Workers VPC
 // binding's fetch (env.BINDING.fetch) to reach a private target — same signature, same probe logic.
 export async function httpCheck(
@@ -25,13 +87,22 @@ export async function httpCheck(
 	sslCheck: boolean,
 	custom?: Record<string, string>,
 	fetcher: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> = fetch,
+	expectedStatus?: string | null,
+	bodyMatch?: string | null,
 ): Promise<ProbeResult> {
 	const start = Date.now();
 	try {
 		const res = await fetcher(url, { headers: buildProbeHeaders(custom), signal: AbortSignal.timeout(10_000) });
 		const latency_ms = Date.now() - start;
-		if (res.ok) return { status: 'up', latency_ms };
-		return { status: 'down', latency_ms, error: `HTTP ${res.status}` };
+		if (!statusMatches(res.status, expectedStatus)) {
+			return { status: 'down', latency_ms, error: `HTTP ${res.status}` };
+		}
+		// Body assertion: only read the body when a match string is configured.
+		if (bodyMatch) {
+			const matched = await bodyContains(res, bodyMatch);
+			if (!matched) return { status: 'down', latency_ms, error: 'body match failed' };
+		}
+		return { status: 'up', latency_ms };
 	} catch (err) {
 		const latency_ms = Date.now() - start;
 		const msg = err instanceof Error ? err.message : String(err);

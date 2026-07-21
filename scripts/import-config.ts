@@ -34,6 +34,11 @@ interface MonitorConfig {
 	enabled?: boolean;
 	target?: string; // required for all types except heartbeat (push)
 	interval?: string;
+	// HTTP-only. expected_status: healthy status spec — "200", "200-204", "2xx",
+	// or a list [200, 301]; omit for the default 200-399. body_match: substring required in the
+	// first ~8 KB of the response body; omit for no body assertion. Both stored in D1.
+	expected_status?: string | number[];
+	body_match?: string;
 	// Required for mode: internal: the deploy.vpc binding name to probe through. Stored in D1.
 	vpc_binding?: string;
 	alerts?: AlertConfig[];
@@ -113,11 +118,35 @@ function parseCondition(condition: string): { dbCondition: string; threshold: nu
 	const latMatch = condition.match(/latency\s*(>=|<=|>|<)\s*(\d+)/);
 	if (latMatch) {
 		const opMap: Record<string, string> = { '>': 'gt', '<': 'lt', '>=': 'gte', '<=': 'lte' };
-		return { dbCondition: opMap[latMatch[1]], threshold: parseFloat(latMatch[2]) };
+		// metricName 'latency' routes this to the independent latency incident class in evaluateAlerts;
+		// without it the rule would be stored as metric_name NULL and silently treated as connectivity.
+		return { dbCondition: opMap[latMatch[1]], threshold: parseFloat(latMatch[2]), metricName: 'latency' };
 	}
 	const sslMatch = condition.match(/ssl_expiry(?:_days)?\s*<\s*(\d+)/i);
 	if (sslMatch) return { dbCondition: 'lt', threshold: parseInt(sslMatch[1]), metricName: 'ssl_expiry' };
 	throw new Error(`Cannot parse condition: ${condition}`);
+}
+
+// Normalizes a monitor's expected_status config into the canonical string stored in D1 (parsed at
+// probe time by statusMatches). Accepts "200", "200-204", "2xx", or a number[] list; validates the
+// shape here so a bad spec fails the import rather than silently never matching at runtime.
+function normalizeExpectedStatus(name: string, value: string | number[] | undefined): string | null {
+	if (value === undefined) return null;
+	if (Array.isArray(value)) {
+		if (value.length === 0) throw new Error(`Monitor "${name}": expected_status list must not be empty`);
+		for (const c of value) {
+			if (!Number.isInteger(c) || c < 100 || c > 599) throw new Error(`Monitor "${name}": invalid status code ${c} in expected_status`);
+		}
+		return JSON.stringify(value);
+	}
+	const spec = value.trim();
+	if (/^\d{3}$/.test(spec) || /^[1-5]xx$/i.test(spec)) return spec.toLowerCase();
+	const range = spec.match(/^(\d{3})-(\d{3})$/);
+	if (range) {
+		if (Number(range[1]) > Number(range[2])) throw new Error(`Monitor "${name}": expected_status range ${spec} is inverted`);
+		return spec;
+	}
+	throw new Error(`Monitor "${name}": expected_status "${spec}" is not "NNN", "NNN-MMM", "Nxx", or a list`);
 }
 
 function parseDuration(value?: string): number {
@@ -238,6 +267,12 @@ async function main() {
 		const sslCheck = isHeartbeat || isInternal ? 0 : (monitor.ssl ?? true) ? 1 : 0;
 		const vpcBinding = isInternal ? monitor.vpc_binding! : null;
 		const heartbeatToken = isHeartbeat ? `secret:${heartbeatSecretName(id)}` : null;
+		// HTTP-only probe assertions; reject on other types so a silently-ignored setting can't hide.
+		if (monitor.type !== 'http' && (monitor.expected_status !== undefined || monitor.body_match !== undefined)) {
+			throw new Error(`Monitor "${monitor.name}": expected_status/body_match are only supported on type: http`);
+		}
+		const expectedStatus = monitor.type === 'http' ? normalizeExpectedStatus(monitor.name, monitor.expected_status) : null;
+		const bodyMatch = monitor.type === 'http' ? (monitor.body_match ?? null) : null;
 
 		console.log(`Importing monitor: ${monitor.name} (${id})${isHeartbeat ? ` [heartbeat secret: ${heartbeatSecretName(id)}]` : ''}`);
 
@@ -245,14 +280,16 @@ async function main() {
 		// through ON DELETE CASCADE and wipe monitor_state, incidents, executions and metric_series
 		// on every import. ON CONFLICT updates in place and preserves runtime data + created_at.
 		await d1Query(
-			`INSERT INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, ssl_check, vpc_binding, heartbeat_token, paused, enabled, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))
+			`INSERT INTO monitors (id, name, type, mode, visibility, scrape_url, expected_status, body_match, interval_seconds, ssl_check, vpc_binding, heartbeat_token, paused, enabled, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))
        ON CONFLICT(id) DO UPDATE SET
          name = excluded.name,
          type = excluded.type,
          mode = excluded.mode,
          visibility = excluded.visibility,
          scrape_url = excluded.scrape_url,
+         expected_status = excluded.expected_status,
+         body_match = excluded.body_match,
          interval_seconds = excluded.interval_seconds,
          ssl_check = excluded.ssl_check,
          vpc_binding = excluded.vpc_binding,
@@ -267,6 +304,8 @@ async function main() {
 				monitor.mode,
 				monitor.visibility ?? 'private',
 				scrapeUrl,
+				expectedStatus,
+				bodyMatch,
 				intervalSeconds,
 				sslCheck,
 				vpcBinding,

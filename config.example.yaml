@@ -81,11 +81,25 @@ monitors:
   #   headers:
   #     X-Healthcheck-Token: ${HEALTHCHECK_TOKEN}
   #     X-Environment: production
+  #   # Healthy status codes (type: http only). Omit for the default 200-399 (2xx and 3xx healthy).
+  #   # Forms: "200", a range "200-204", a class "2xx", or a list [200, 301].
+  #   expected_status: [200, 301]
+  #   # Body assertion (type: http only): the check is marked down unless this substring appears in
+  #   # the first ~8 KB of the response body. Omit for no body assertion.
+  #   body_match: '"status":"ok"'
   #   alerts:
   #     - condition: "status != 200"
   #       severity: critical
   #       failures: 2
   #       recovery: 2
+  #     # Latency alert: opens a latency incident on the first sample over the threshold (ms). It is a
+  #     # single-sample trigger — `failures`/`recovery` are ignored for latency; use `cooldown` to damp
+  #     # flapping. Independent of the connectivity (status) incident above.
+  #     - condition: "latency >= 1000"
+  #       severity: warning
+  #       failures: 1
+  #       recovery: 1
+  #       cooldown: 600s
   - name: Cloudflare DNS
     type: dns
     mode: external

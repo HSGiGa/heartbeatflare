@@ -410,6 +410,14 @@
 					"then": {
 						"properties": { "type": { "const": "http" } }
 					}
+				},
+				{
+					"if": {
+						"anyOf": [{ "required": ["expected_status"] }, { "required": ["body_match"] }]
+					},
+					"then": {
+						"properties": { "type": { "const": "http" } }
+					}
 				}
 			],
 			"properties": {
@@ -436,6 +444,17 @@
 				"target": {
 					"type": "string",
 					"description": "URL, host:port, or domain to monitor."
+				},
+				"expected_status": {
+					"description": "type: http only. HTTP status codes considered healthy. Omit for the default 200-399 (2xx and 3xx). Forms: an exact code \"200\", an inclusive range \"200-204\", a class \"2xx\", or a list of exact codes [200, 301].",
+					"oneOf": [
+						{ "type": "string", "pattern": "^([1-5]xx|\\d{3}(-\\d{3})?)$" },
+						{ "type": "array", "items": { "type": "integer", "minimum": 100, "maximum": 599 }, "minItems": 1 }
+					]
+				},
+				"body_match": {
+					"type": "string",
+					"description": "type: http only. Substring that must appear in the first ~8 KB of the response body; if absent the check is marked down. Omit for no body assertion."
 				},
 				"interval": {
 					"type": "string",
