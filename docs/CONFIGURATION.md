@@ -185,6 +185,15 @@ Monitor-level fields:
   plaintext TCP or when certificate checks do not apply.
 - `headers` (HTTP only): extra HTTP probe headers. Values can use `${VAR}` Worker secrets.
   `User-Agent` cannot be set here.
+- `expected_status` (HTTP only): HTTP status codes considered healthy. Omit for the default
+  `200-399` (2xx **and** 3xx healthy). Forms: an exact code `"200"`, an inclusive range `"200-204"`,
+  a class `"2xx"`, or a list of exact codes `[200, 301]`.
+- `body_match` (HTTP only): a substring that must appear in the first ~8 KB of the response body;
+  if it is absent the check is marked down. Omit for no body assertion. Only the status check runs
+  when this is unset — the body is not downloaded. Note: probes do **not** follow redirects (see
+  below). On a redirecting endpoint the substring is matched against the redirect response's own
+  body — typically the short "moved" representation a 3xx carries (RFC 9110 §15.4), not the target
+  page — so it will usually fail. Point `body_match` monitors at the final URL, or drop the assertion.
 - `notification_channels`: list of channel names for this monitor. If omitted or empty, the monitor
   uses channels with `is_default: true`.
 - `vpc_binding` (internal only): name of a `deploy.vpc.networks[].binding` or
@@ -220,8 +229,15 @@ monitors:
 
 ### HTTP / HTTPS monitors
 
-`type: http`. Probes `target` (a URL) and checks the response. Condition: `status != 200`
-(any non-2xx is treated as down). Supports `latency` and `ssl_expiry` conditions.
+`type: http`. Probes `target` (a URL) and checks the response. By default a `2xx` or `3xx` status is
+healthy; narrow or widen this with `expected_status`, and optionally require a response-body
+substring with `body_match` (see the monitor fields above). Supports `latency` and `ssl_expiry`
+conditions.
+
+Redirects are **not** followed: the probe evaluates the first response directly (a 3xx is healthy by
+default). This mirrors AWS Route 53 health-check semantics — point the monitor at the final URL if
+you want to assert its status or body. To treat redirects as unhealthy, set `expected_status` to a
+2xx-only spec (e.g. `"2xx"` or `"200-204"`).
 
 #### Custom request headers
 
@@ -418,8 +434,11 @@ Fields:
 - `condition` (required): what triggers the alert. See
   [Supported conditions](#supported-conditions).
 - `severity` (required): `critical` or `warning`.
-- `failures` (required): consecutive failing checks before an incident opens.
-- `recovery` (required): consecutive successful checks before the incident resolves.
+- `failures` (required): consecutive failing checks before an incident opens. **Not enforced for
+  `latency` conditions** — a latency incident opens on the first over-threshold sample (use
+  `cooldown` to damp flapping).
+- `recovery` (required): consecutive successful checks before the incident resolves. Likewise not
+  enforced for `latency` — the incident resolves on the first sample back under the threshold.
 - `cooldown`: minimum pause between two incidents on the same monitor, measured from when the
   previous incident **closed**. Examples: `300s`, `5m`. Default `0`.
 - `escalation`: re-send a "STILL DOWN" notification if the incident stays open longer than this
@@ -427,12 +446,14 @@ Fields:
 
 ### Supported conditions
 
-- `status != 200` (`http`): HTTP response code is not 200. Any non-2xx is treated as down.
+- `status != 200` (`http`): the response status is outside the monitor's healthy set. That set is
+  `expected_status` when configured, otherwise the default `200-399`.
 - `connect != true` (`tcp`): TCP connection could not be established.
 - `status != up` (`dns`, `heartbeat`): DNS returned no records or timed out; for heartbeat, an
   expected beat was missed.
 - `latency >= 500` (`http`, `tcp`): round-trip latency exceeded the threshold in ms. Operators
-  `>`, `<`, `>=` and `<=` are supported.
+  `>`, `<`, `>=` and `<=` are supported. Opens an independent latency incident on the first
+  breaching sample (`failures`/`recovery` are ignored; use `cooldown` to damp flapping).
 - `ssl_expiry < 14` (`http`, `tcp` with `ssl`): days until certificate expiry below the threshold.
 
 ## `notification_channels`

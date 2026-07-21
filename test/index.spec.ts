@@ -14,6 +14,8 @@ import m01 from '../migrations/0001_initial_schema.sql?raw';
 import m02 from '../migrations/0002_monitor_vpc_binding.sql?raw';
 // @ts-expect-error vite ?raw import
 import m03 from '../migrations/0003_check_lease.sql?raw';
+// @ts-expect-error vite ?raw import
+import m04 from '../migrations/0004_http_check_fields.sql?raw';
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 const expectedSiteTitle = env.SITE_TITLE?.trim() || 'HeartbeatFlare';
@@ -52,7 +54,7 @@ async function applyMigration(sql: string) {
 }
 
 beforeAll(async () => {
-	for (const sql of [m01, m02, m03]) {
+	for (const sql of [m01, m02, m03, m04]) {
 		await applyMigration(sql as string);
 	}
 	await env.DB.prepare(
@@ -227,6 +229,107 @@ describe('incident independence', () => {
 		// The pre-existing SSL incident must remain open and untouched
 		const ssl = await env.DB.prepare(`SELECT status FROM incidents WHERE id = 'indep-ssl-inc'`).first<{ status: string }>();
 		expect(ssl?.status).toBe('open');
+	});
+});
+
+describe('latency alert incidents', () => {
+	// Test storage persists across `it`s in this file, so each test uses its own monitor + rule id
+	// (seeded once here, since incidents have a FK to alert_rules) to stay order-independent.
+	const monitorIds = ['lat-open', 'lat-second', 'lat-resolve', 'lat-down', 'lat-priority', 'lat-promote'] as const;
+
+	function monitorFor(id: string): MonitorRow {
+		return {
+			id, name: id, type: 'http', scrape_url: 'https://lat.example.com',
+			expected_status: null, body_match: null, interval_seconds: 60, ssl_check: 0, vpc_binding: null,
+			current_status: 'up', last_check_at: null, consecutive_failures: 0, consecutive_successes: 5,
+			active_incident_id: null, ssl_not_after: null, ssl_issuer: null,
+		};
+	}
+	function ruleFor(monitorId: string): AlertRuleDbRow {
+		return {
+			id: `${monitorId}-rule`, monitor_id: monitorId, metric_name: 'latency', condition: 'gte', threshold: 500,
+			severity: 'warning', failure_count: 1, recovery_count: 1, cooldown_seconds: 0, escalation_seconds: null, enabled: 1,
+		};
+	}
+
+	beforeAll(async () => {
+		for (const id of monitorIds) {
+			await env.DB.prepare(
+				`INSERT OR IGNORE INTO monitors (id, name, type, mode, visibility, scrape_url, interval_seconds, enabled)
+				 VALUES (?, ?, 'http', 'external', 'private', 'https://lat.example.com', 60, 1)`,
+			).bind(id, id).run();
+			await env.DB.prepare(
+				`INSERT OR IGNORE INTO alert_rules (id, monitor_id, metric_name, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled)
+				 VALUES (?, ?, 'latency', 'gte', 500, 'warning', 1, 1, 0, 1)`,
+			).bind(`${id}-rule`, id).run();
+		}
+	});
+
+	it('opens a latency incident on a slow up-sample', async () => {
+		await evaluateAlerts(env, monitorFor('lat-open'), { status: 'up', latency_ms: 900 }, 0, 5, '2026-06-11T00:00:00Z', [ruleFor('lat-open')], new Map());
+		const inc = await env.DB.prepare(
+			`SELECT status, reason FROM incidents WHERE monitor_id = 'lat-open' AND status = 'open'`,
+		).first<{ status: string; reason: string }>();
+		expect(inc).not.toBeNull();
+		expect(inc?.reason).toContain('900ms');
+	});
+
+	it('does not open a second incident while one is already open', async () => {
+		const active = new Map([['latency', { id: 'existing-lat', severity: 'warning' }]]);
+		await evaluateAlerts(env, monitorFor('lat-second'), { status: 'up', latency_ms: 1200 }, 0, 6, '2026-06-11T00:01:00Z', [ruleFor('lat-second')], active);
+		const count = await env.DB.prepare(`SELECT COUNT(*) AS n FROM incidents WHERE monitor_id = 'lat-second'`).first<{ n: number }>();
+		expect(count?.n).toBe(0);
+	});
+
+	it('resolves the latency incident on a fast up-sample', async () => {
+		await env.DB.prepare(
+			`INSERT INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, reason)
+			 VALUES ('lat-resolve-inc', 'lat-resolve', 'lat-resolve-rule', 'open', 'warning', '2026-06-11T00:00:00Z', 'Latency 900ms exceeds 500ms')`,
+		).run();
+		const active = new Map([['latency', { id: 'lat-resolve-inc', severity: 'warning' }]]);
+		await evaluateAlerts(env, monitorFor('lat-resolve'), { status: 'up', latency_ms: 120 }, 0, 7, '2026-06-11T00:02:00Z', [ruleFor('lat-resolve')], active);
+		const resolved = await env.DB.prepare(`SELECT status FROM incidents WHERE id = 'lat-resolve-inc'`).first<{ status: string }>();
+		expect(resolved?.status).toBe('resolved');
+	});
+
+	it('does not evaluate latency on a down sample', async () => {
+		await evaluateAlerts(env, monitorFor('lat-down'), { status: 'down', latency_ms: 5000, error: 'HTTP 500' }, 1, 0, '2026-06-11T00:03:00Z', [ruleFor('lat-down')], new Map());
+		const inc = await env.DB.prepare(`SELECT COUNT(*) AS n FROM incidents WHERE monitor_id = 'lat-down'`).first<{ n: number }>();
+		expect(inc?.n).toBe(0);
+	});
+
+	it('opens against the highest-severity rule when multiple thresholds breach', async () => {
+		const warning = ruleFor('lat-priority');
+		const critical: AlertRuleDbRow = { ...warning, id: 'lat-priority-critical', threshold: 1000, severity: 'critical' };
+		await env.DB.prepare(
+			`INSERT INTO alert_rules (id, monitor_id, metric_name, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled)
+			 VALUES (?, 'lat-priority', 'latency', 'gte', 1000, 'critical', 1, 1, 0, 1)`,
+		).bind(critical.id).run();
+
+		await evaluateAlerts(env, monitorFor('lat-priority'), { status: 'up', latency_ms: 1200 }, 0, 1, '2026-06-11T00:04:00Z', [warning, critical], new Map());
+		const inc = await env.DB.prepare(
+			`SELECT alert_rule_id, severity FROM incidents WHERE monitor_id = 'lat-priority' AND status = 'open'`,
+		).first<{ alert_rule_id: string; severity: string }>();
+		expect(inc).toEqual({ alert_rule_id: critical.id, severity: 'critical' });
+	});
+
+	it('promotes an open warning incident when a critical threshold starts breaching', async () => {
+		const warning = ruleFor('lat-promote');
+		const critical: AlertRuleDbRow = { ...warning, id: 'lat-promote-critical', threshold: 1000, severity: 'critical' };
+		await env.DB.prepare(
+			`INSERT INTO alert_rules (id, monitor_id, metric_name, condition, threshold, severity, failure_count, recovery_count, cooldown_seconds, enabled)
+			 VALUES (?, 'lat-promote', 'latency', 'gte', 1000, 'critical', 1, 1, 0, 1)`,
+		).bind(critical.id).run();
+		await env.DB.prepare(
+			`INSERT INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, reason)
+			 VALUES ('lat-promote-inc', 'lat-promote', 'lat-promote-rule', 'open', 'warning', '2026-06-11T00:00:00Z', 'Latency 700ms >= 500ms')`,
+		).run();
+
+		const active = new Map([['latency', { id: 'lat-promote-inc', severity: 'warning' }]]);
+		await evaluateAlerts(env, monitorFor('lat-promote'), { status: 'up', latency_ms: 1200 }, 0, 2, '2026-06-11T00:05:00Z', [warning, critical], active);
+		const inc = await env.DB.prepare(`SELECT alert_rule_id, severity, reason FROM incidents WHERE id = 'lat-promote-inc'`)
+			.first<{ alert_rule_id: string; severity: string; reason: string }>();
+		expect(inc).toEqual({ alert_rule_id: critical.id, severity: 'critical', reason: 'Latency 1200ms >= 1000ms' });
 	});
 });
 
