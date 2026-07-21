@@ -57,10 +57,9 @@ export function statusMatches(code: number, spec: string | null | undefined): bo
 // Reads up to BODY_MATCH_MAX_BYTES of the response body as UTF-8 and reports whether `needle` is
 // present. Bounded via the stream reader so a huge/streaming body can't blow the memory/CPU budget.
 async function bodyContains(res: Response, needle: string): Promise<boolean> {
-	if (!res.body) {
-		const text = (await res.text()).slice(0, BODY_MATCH_MAX_BYTES);
-		return text.includes(needle);
-	}
+	// A null body is an empty response (no stream to read) — nothing can match. Never fall back to
+	// res.text(), which would read the whole body into memory and defeat the BODY_MATCH_MAX_BYTES cap.
+	if (!res.body) return false;
 	const reader = res.body.getReader();
 	const decoder = new TextDecoder();
 	let buffer = '';

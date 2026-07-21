@@ -140,13 +140,16 @@ function normalizeExpectedStatus(name: string, value: string | number[] | undefi
 		return JSON.stringify(value);
 	}
 	const spec = value.trim();
-	if (/^\d{3}$/.test(spec) || /^[1-5]xx$/i.test(spec)) return spec.toLowerCase();
-	const range = spec.match(/^(\d{3})-(\d{3})$/);
+	// Codes are bounded to 100-599 for every form (single, range, list) to match the JSON schema and
+	// list validation above — a 3-digit code outside that band could never match a real HTTP status.
+	if (/^[1-5]xx$/i.test(spec)) return spec.toLowerCase();
+	if (/^[1-5]\d{2}$/.test(spec)) return spec;
+	const range = spec.match(/^([1-5]\d{2})-([1-5]\d{2})$/);
 	if (range) {
 		if (Number(range[1]) > Number(range[2])) throw new Error(`Monitor "${name}": expected_status range ${spec} is inverted`);
 		return spec;
 	}
-	throw new Error(`Monitor "${name}": expected_status "${spec}" is not "NNN", "NNN-MMM", "Nxx", or a list`);
+	throw new Error(`Monitor "${name}": expected_status "${spec}" is not "NNN", "NNN-MMM", "Nxx" (codes 100-599), or a list`);
 }
 
 function parseDuration(value?: string): number {

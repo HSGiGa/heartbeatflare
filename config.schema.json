@@ -448,7 +448,7 @@
 				"expected_status": {
 					"description": "type: http only. HTTP status codes considered healthy. Omit for the default 200-399 (2xx and 3xx). Forms: an exact code \"200\", an inclusive range \"200-204\", a class \"2xx\", or a list of exact codes [200, 301].",
 					"oneOf": [
-						{ "type": "string", "pattern": "^([1-5]xx|\\d{3}(-\\d{3})?)$" },
+						{ "type": "string", "pattern": "^([1-5][xX][xX]|[1-5]\\d{2}(-[1-5]\\d{2})?)$" },
 						{ "type": "array", "items": { "type": "integer", "minimum": 100, "maximum": 599 }, "minItems": 1 }
 					]
 				},

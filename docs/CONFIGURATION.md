@@ -190,7 +190,10 @@ Monitor-level fields:
   a class `"2xx"`, or a list of exact codes `[200, 301]`.
 - `body_match` (HTTP only): a substring that must appear in the first ~8 KB of the response body;
   if it is absent the check is marked down. Omit for no body assertion. Only the status check runs
-  when this is unset — the body is not downloaded.
+  when this is unset — the body is not downloaded. Note: probes do **not** follow redirects (see
+  below). On a redirecting endpoint the substring is matched against the redirect response's own
+  body — typically the short "moved" representation a 3xx carries (RFC 9110 §15.4), not the target
+  page — so it will usually fail. Point `body_match` monitors at the final URL, or drop the assertion.
 - `notification_channels`: list of channel names for this monitor. If omitted or empty, the monitor
   uses channels with `is_default: true`.
 - `vpc_binding` (internal only): name of a `deploy.vpc.networks[].binding` or
@@ -230,6 +233,11 @@ monitors:
 healthy; narrow or widen this with `expected_status`, and optionally require a response-body
 substring with `body_match` (see the monitor fields above). Supports `latency` and `ssl_expiry`
 conditions.
+
+Redirects are **not** followed: the probe evaluates the first response directly (a 3xx is healthy by
+default). This mirrors AWS Route 53 health-check semantics — point the monitor at the final URL if
+you want to assert its status or body. To treat redirects as unhealthy, set `expected_status` to a
+2xx-only spec (e.g. `"2xx"` or `"200-204"`).
 
 #### Custom request headers
 
