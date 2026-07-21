@@ -125,7 +125,10 @@ describe('statusMatches', () => {
 
 describe('httpCheck status policy + body match', () => {
 	it('treats a 3xx as up by default', async () => {
-		const fetcher = vi.fn(async () => new Response(null, { status: 301 }));
+		const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+			expect(init?.redirect).toBe('manual');
+			return new Response(null, { status: 301 });
+		});
 		const res = await httpCheck('https://x.example/', false, undefined, fetcher);
 		expect(res.status).toBe('up');
 	});
@@ -152,6 +155,20 @@ describe('httpCheck status policy + body match', () => {
 	it('is down when the body is missing the match string', async () => {
 		const fetcher = vi.fn(async () => new Response('degraded', { status: 200 }));
 		const res = await httpCheck('https://x.example/', false, undefined, fetcher, null, 'ok');
+		expect(res.status).toBe('down');
+		expect(res.error).toBe('body match failed');
+	});
+
+	it('does not match content beyond the first 8 KB even when delivered in one chunk', async () => {
+		const bytes = new TextEncoder().encode(`${'a'.repeat(8192)}needle`);
+		const stream = new ReadableStream({
+			start(controller) {
+				controller.enqueue(bytes);
+				controller.close();
+			},
+		});
+		const fetcher = vi.fn(async () => new Response(stream, { status: 200 }));
+		const res = await httpCheck('https://x.example/', false, undefined, fetcher, null, 'needle');
 		expect(res.status).toBe('down');
 		expect(res.error).toBe('body match failed');
 	});

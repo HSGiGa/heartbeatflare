@@ -261,10 +261,13 @@ export async function evaluateAlerts(
 		const latRules = rules.filter((r) => r.metric_name === 'latency');
 		if (latRules.length > 0) {
 			const breached = (rule: AlertRuleDbRow) => latencyBreaches(result.latency_ms, rule.condition, rule.threshold);
+			const triggeredRule = latRules
+				.filter(breached)
+				.sort((a, b) => severityRank(b.severity) - severityRank(a.severity))[0];
 
 			if (latInc) {
 				// Recovery: close once the sample no longer breaches any latency rule.
-				if (!latRules.some(breached)) {
+				if (!triggeredRule) {
 					await env.DB.prepare(`UPDATE incidents SET status = 'resolved', resolved_at = ? WHERE id = ?`).bind(now, latInc.id).run();
 					log('info', 'incident.resolved', { monitorId: monitor.id, incidentId: latInc.id, class: 'latency' });
 					await (env.NOTIFICATION_QUEUE as Queue<NotificationMessage>).send({
@@ -274,43 +277,69 @@ export async function evaluateAlerts(
 						eventType: 'recovered',
 						count: newSuccesses,
 					});
-				}
-			} else {
-				// Creation: open at the first (highest-severity) breaching rule.
-				for (const rule of latRules) {
-					if (!breached(rule)) continue;
-					if (rule.cooldown_seconds > 0) {
-						const last = await env.DB.prepare(
-							`SELECT i.resolved_at FROM incidents i
-							 JOIN alert_rules ar ON ar.id = i.alert_rule_id
-							 WHERE i.monitor_id = ? AND i.status = 'resolved' AND ar.metric_name = 'latency'
-							 ORDER BY i.resolved_at DESC LIMIT 1`,
-						).bind(monitor.id).first<{ resolved_at: string }>();
-						if (last?.resolved_at) {
-							const elapsed = (new Date(now).getTime() - new Date(last.resolved_at).getTime()) / 1000;
-							if (elapsed < rule.cooldown_seconds) break;
-						}
-					}
-					const reason = `Latency ${result.latency_ms}ms exceeds ${rule.threshold}ms`;
-					const incidentId = crypto.randomUUID();
+				} else if (severityRank(triggeredRule.severity) > severityRank(latInc.severity)) {
+					// Keep one incident for the latency class, but promote it when a more severe threshold
+					// starts breaching so a warning cannot suppress a later critical notification.
+					const reason = latencyReason(result.latency_ms, triggeredRule);
 					await env.DB.prepare(
-						`INSERT INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, last_notified_at, reason)
-						 VALUES (?, ?, ?, 'open', ?, ?, ?, ?)`,
-					).bind(incidentId, monitor.id, rule.id, rule.severity, now, now, reason).run();
-					log('info', 'incident.open', { monitorId: monitor.id, incidentId, severity: rule.severity, class: 'latency' });
+						`UPDATE incidents
+						 SET alert_rule_id = ?, severity = ?, reason = ?, last_notified_at = ?
+						 WHERE id = ?`,
+					).bind(triggeredRule.id, triggeredRule.severity, reason, now, latInc.id).run();
+					log('info', 'incident.promoted', { monitorId: monitor.id, incidentId: latInc.id, severity: triggeredRule.severity, class: 'latency' });
 					await (env.NOTIFICATION_QUEUE as Queue<NotificationMessage>).send({
-						incidentId,
+						incidentId: latInc.id,
 						monitorId: monitor.id,
 						monitorName: monitor.name,
 						eventType: 'down',
 						count: 1,
 						error: reason,
 					});
-					break;
 				}
+			} else if (triggeredRule) {
+				// Creation: open against the highest-severity breaching rule.
+				const rule = triggeredRule;
+				if (rule.cooldown_seconds > 0) {
+					const last = await env.DB.prepare(
+						`SELECT i.resolved_at FROM incidents i
+						 JOIN alert_rules ar ON ar.id = i.alert_rule_id
+						 WHERE i.monitor_id = ? AND i.status = 'resolved' AND ar.metric_name = 'latency'
+						 ORDER BY i.resolved_at DESC LIMIT 1`,
+					).bind(monitor.id).first<{ resolved_at: string }>();
+					if (last?.resolved_at) {
+						const elapsed = (new Date(now).getTime() - new Date(last.resolved_at).getTime()) / 1000;
+						if (elapsed < rule.cooldown_seconds) return;
+					}
+				}
+				const reason = latencyReason(result.latency_ms, rule);
+				const incidentId = crypto.randomUUID();
+				await env.DB.prepare(
+					`INSERT INTO incidents (id, monitor_id, alert_rule_id, status, severity, started_at, last_notified_at, reason)
+					 VALUES (?, ?, ?, 'open', ?, ?, ?, ?)`,
+				).bind(incidentId, monitor.id, rule.id, rule.severity, now, now, reason).run();
+				log('info', 'incident.open', { monitorId: monitor.id, incidentId, severity: rule.severity, class: 'latency' });
+				await (env.NOTIFICATION_QUEUE as Queue<NotificationMessage>).send({
+					incidentId,
+					monitorId: monitor.id,
+					monitorName: monitor.name,
+					eventType: 'down',
+					count: 1,
+					error: reason,
+				});
 			}
 		}
 	}
+}
+
+function severityRank(severity: string): number {
+	if (severity === 'critical') return 2;
+	if (severity === 'warning') return 1;
+	return 0;
+}
+
+function latencyReason(latencyMs: number, rule: AlertRuleDbRow): string {
+	const operator: Record<string, string> = { gt: '>', gte: '>=', lt: '<', lte: '<=' };
+	return `Latency ${latencyMs}ms ${operator[rule.condition] ?? rule.condition} ${rule.threshold}ms`;
 }
 
 // Applies a latency alert rule's comparison operator to a measured latency. Rules use the same

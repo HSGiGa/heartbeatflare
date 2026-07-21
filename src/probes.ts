@@ -69,8 +69,10 @@ async function bodyContains(res: Response, needle: string): Promise<boolean> {
 		while (bytes < BODY_MATCH_MAX_BYTES) {
 			const { done, value } = await reader.read();
 			if (done) break;
-			bytes += value.byteLength;
-			buffer += decoder.decode(value, { stream: true });
+			const remaining = BODY_MATCH_MAX_BYTES - bytes;
+			const chunk = value.byteLength > remaining ? value.subarray(0, remaining) : value;
+			bytes += chunk.byteLength;
+			buffer += decoder.decode(chunk, { stream: true });
 			if (buffer.includes(needle)) return true;
 		}
 		buffer += decoder.decode();
@@ -92,7 +94,11 @@ export async function httpCheck(
 ): Promise<ProbeResult> {
 	const start = Date.now();
 	try {
-		const res = await fetcher(url, { headers: buildProbeHeaders(custom), signal: AbortSignal.timeout(10_000) });
+		const res = await fetcher(url, {
+			headers: buildProbeHeaders(custom),
+			redirect: 'manual',
+			signal: AbortSignal.timeout(10_000),
+		});
 		const latency_ms = Date.now() - start;
 		if (!statusMatches(res.status, expectedStatus)) {
 			return { status: 'down', latency_ms, error: `HTTP ${res.status}` };
