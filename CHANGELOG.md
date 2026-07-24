@@ -5,6 +5,27 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.3] - 2026-07-21
+
+### Added
+
+- **Configurable HTTP status policy** ([#59](https://github.com/HSGiGa/heartbeatflare/pull/59)): the
+  default healthy range is now `200-399` (2xx and 3xx), and a new per-monitor `expected_status`
+  overrides it (`"200"`, `"200-204"`, `"2xx"`, or a list `[200, 301]`), replacing the old 2xx-only
+  check.
+- **HTTP body/string match** ([#59](https://github.com/HSGiGa/heartbeatflare/pull/59)): a new
+  http-only `body_match` asserts a substring in the first ~8 KB of the response body, read only when a
+  match string is configured. Probes do not follow redirects, so point `body_match` monitors at the
+  final URL.
+
+### Fixed
+
+- **Latency alerts now fire** ([#59](https://github.com/HSGiGa/heartbeatflare/pull/59)): `latency >= N`
+  conditions were parsed without a metric name, stored as connectivity rules and never evaluated
+  against the threshold. They are now routed to an independent `latency` incident class — an
+  over-threshold sample opens an incident, a sample back under threshold resolves it, and `cooldown`
+  damps flapping.
+
 ## [1.3.2] - 2026-07-05
 
 ### Security
