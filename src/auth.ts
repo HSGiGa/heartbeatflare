@@ -105,7 +105,7 @@ async function getVerifiedPayload(jwt: string, authConfig: ResolvedAuthConfig): 
 // CF_Authorization cookie set at login and sends it same-origin. Fall back to that cookie
 // so authenticated API calls (e.g. the History tab) see the private scope too. The token is
 // fully verified by getVerifiedPayload regardless of where it came from.
-function readAccessJwt(request: Request): string | null {
+export function readAccessJwt(request: Request): string | null {
 	const header = request.headers.get('Cf-Access-Jwt-Assertion');
 	if (header) return header;
 	const cookie = request.headers.get('Cookie');

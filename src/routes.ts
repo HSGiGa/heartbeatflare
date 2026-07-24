@@ -2,7 +2,7 @@
 // auth redirects. Visibility is fail-closed — private data requires a verified Access session,
 // enforced here in SQL WHERE clauses independently of the Cloudflare Access gate on /private.
 // Unauthenticated responses are edge-cached to absorb traffic spikes without touching D1.
-import { getAuth, handleLogout, resolveAuthConfig } from './auth';
+import { getAuth, handleLogout, readAccessJwt, resolveAuthConfig } from './auth';
 import { handleBeat } from './heartbeat';
 import { log } from './log';
 import { buildBadgeSvg } from './badge';
@@ -508,17 +508,20 @@ export async function handleFetch(request: Request, env: Env, ctx: ExecutionCont
 	}
 
 	if (request.method === 'GET' && pathname === '/public') {
-		// Send an authenticated visitor to the private view instead of the anonymous page. getAuth
-		// short-circuits for anonymous traffic (no cookie → no JWKS fetch / crypto / D1), so the edge
-		// cache below still absorbs spikes; only signed-in requests pay a verify and are then redirected
-		// (and never cached). Pairs with PUBLIC_HTML_CACHE so the browser revalidates and actually
-		// reaches this check right after login instead of serving a stale anonymous /public.
-		try {
-			const { session } = await getAuth(request, env);
-			if (session) return redirectNoStore(origin + '/private');
-		} catch (err) {
-			// Fail open to the public view: an auth outage must not take down the public status page.
-			log('error', 'auth.error', { error: err instanceof Error ? err.message : String(err) });
+		// Send an authenticated visitor to the private view instead of the anonymous page. Gate on a
+		// cheap header/cookie presence check first so anonymous traffic never calls getAuth (and its
+		// auth_config D1 lookup) — the edge cache below keeps fully protecting the public page from
+		// spikes. Only token-bearing requests pay a verify and are then redirected (and never cached).
+		// Pairs with PUBLIC_HTML_CACHE so the browser revalidates and actually reaches this check right
+		// after login instead of serving a stale anonymous /public.
+		if (readAccessJwt(request)) {
+			try {
+				const { session } = await getAuth(request, env);
+				if (session) return redirectNoStore(origin + '/private');
+			} catch (err) {
+				// Fail open to the public view: an auth outage must not take down the public status page.
+				log('error', 'auth.error', { error: err instanceof Error ? err.message : String(err) });
+			}
 		}
 		return withPublicEdgeCache(request, env, ctx, () => handleStatusPage(env, runtimeEnv, false, null, true, new URL(request.url).host));
 	}
