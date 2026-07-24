@@ -28,6 +28,48 @@ function escapeRegExp(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// Mint a valid Cloudflare Access JWT for tests: generate an RSA keypair, publish its public key as the
+// JWKS that getVerifiedPayload fetches (seeded into caches.default so verification is fully offline),
+// and sign a token whose aud/exp match the seeded auth_config (team_name 'test-team', aud 'test-aud-123').
+async function makeAccessJwt(overrides: { aud?: string; exp?: number; email?: string } = {}): Promise<string> {
+	const b64url = (input: Uint8Array | ArrayBuffer): string => {
+		const arr = input instanceof Uint8Array ? input : new Uint8Array(input);
+		let s = '';
+		for (const b of arr) s += String.fromCharCode(b);
+		return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+	};
+	const b64urlJson = (obj: unknown): string => b64url(new TextEncoder().encode(JSON.stringify(obj)));
+
+	const { publicKey, privateKey } = await crypto.subtle.generateKey(
+		{ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+		true,
+		['sign', 'verify'],
+	);
+	const kid = 'test-key-1';
+	const jwk = (await crypto.subtle.exportKey('jwk', publicKey)) as JsonWebKey;
+	jwk.kid = kid;
+	jwk.alg = 'RS256';
+
+	// Seed the JWKS endpoint getVerifiedPayload reads for team_name 'test-team' so no network is hit.
+	const certsUrl = 'https://test-team.cloudflareaccess.com/cdn-cgi/access/certs';
+	await caches.default.put(
+		certsUrl,
+		new Response(JSON.stringify({ keys: [jwk] }), { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=3600' } }),
+	);
+
+	const header = b64urlJson({ alg: 'RS256', kid });
+	const payload = b64urlJson({
+		aud: overrides.aud ?? 'test-aud-123',
+		exp: overrides.exp ?? Math.floor(Date.now() / 1000) + 3600,
+		email: overrides.email ?? 'tester@example.com',
+		name: 'Tester',
+		sub: 'tester@example.com',
+	});
+	const signingInput = new TextEncoder().encode(`${header}.${payload}`);
+	const sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', privateKey, signingInput);
+	return `${header}.${payload}.${b64url(sig)}`;
+}
+
 // The edge cache (see publicCacheKey/withPublicEdgeCache in src/routes.ts) normalizes away any query
 // param not in a route's allowlist, so a `?t=...` cache-busting param no longer produces a distinct
 // cache entry. Tests that change fixtures and then assert on a fresh render of a cached public route
@@ -493,13 +535,26 @@ describe('auth visibility filtering', () => {
 		expect(res.headers.get('Cache-Control')).toBe('no-store');
 	});
 
-	it('keeps /public cacheable', async () => {
+	it('edge-caches /public but forces browser revalidation (no stale anonymous page after login)', async () => {
 		const req = new IncomingRequest('http://example.com/public?t=auth-cache-control');
 		const ctx = createExecutionContext();
 		const res = await worker.fetch(req, env, ctx);
 		await waitOnExecutionContext(ctx);
 		expect(res.status).toBe(200);
-		expect(res.headers.get('Cache-Control')).toBe('public, max-age=60');
+		// s-maxage keeps the 60s edge/CDN cache (spike protection); max-age=0, must-revalidate makes the
+		// browser revalidate every navigation so a fresh login is reflected without a hard refresh.
+		expect(res.headers.get('Cache-Control')).toBe('public, s-maxage=60, max-age=0, must-revalidate');
+	});
+
+	it('redirects an authenticated visitor from /public to /private', async () => {
+		const jwt = await makeAccessJwt();
+		const req = new IncomingRequest('http://example.com/public', { headers: { 'Cf-Access-Jwt-Assertion': jwt } });
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(req, env, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(res.status).toBe(302);
+		expect(res.headers.get('Location')).toBe('http://example.com/private');
+		expect(res.headers.get('Cache-Control')).toBe('no-store');
 	});
 });
 
@@ -602,7 +657,7 @@ describe('maintenance windows, feed and badges', () => {
 		const res = await SELF.fetch('https://status.example.test/badges');
 		expect(res.status).toBe(200);
 		expect(res.headers.get('Content-Type')).toContain('text/html');
-		expect(res.headers.get('Cache-Control')).toBe('public, max-age=60');
+		expect(res.headers.get('Cache-Control')).toBe('public, s-maxage=60, max-age=0, must-revalidate');
 		const html = await res.text();
 		expect(html).toContain('Status badges');
 		expect(html).toContain('Badge Public');
