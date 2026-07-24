@@ -15,6 +15,10 @@ import { buildUsagePage } from './usage-page';
 // Edge-cache TTL for unauthenticated responses (status page + public API).
 const PUBLIC_MAXAGE = 60;
 const NO_STORE = 'no-store';
+// Cache directive for personalized-by-navigation HTML surfaces (/public, /badges): the edge/CDN
+// still absorbs spikes for PUBLIC_MAXAGE, but browsers always revalidate so a fresh login is
+// reflected immediately instead of serving a stale anonymous copy from the local browser cache.
+const PUBLIC_HTML_CACHE = `public, s-maxage=${PUBLIC_MAXAGE}, max-age=0, must-revalidate`;
 
 // Cap on any single cache-key query param (e.g. badge `label`) — bounds both the SVG response size
 // and the cache-busting space an unbounded param would otherwise open up.
@@ -295,7 +299,7 @@ async function handleStatusPage(
 	const html = buildStatusPage({ nowMs, monitors, uptimeDays, latencyPoints, activeIncidents, allIncidents, maintenanceWindows, d1Usage: null, session, authEnabled, scope: showAll ? 'all' : 'public', workerName: runtimeEnv.WORKER_NAME ?? '', version: runtimeEnv.APP_VERSION ?? '', siteTitle: runtimeEnv.SITE_TITLE ?? '', host });
 
 	// Unauthenticated (public) renders are cacheable at the edge; authenticated views are always fresh.
-	const resolvedCacheControl = cacheControl ?? (session ? NO_STORE : `public, max-age=${PUBLIC_MAXAGE}`);
+	const resolvedCacheControl = cacheControl ?? (session ? NO_STORE : PUBLIC_HTML_CACHE);
 	return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': resolvedCacheControl } });
 }
 
@@ -407,7 +411,7 @@ async function handleBadgesPage(env: Env, origin: string, siteTitle: string): Pr
 </body>
 </html>`;
 	return new Response(html, {
-		headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': `public, max-age=${PUBLIC_MAXAGE}` },
+		headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': PUBLIC_HTML_CACHE },
 	});
 }
 
@@ -504,6 +508,18 @@ export async function handleFetch(request: Request, env: Env, ctx: ExecutionCont
 	}
 
 	if (request.method === 'GET' && pathname === '/public') {
+		// Send an authenticated visitor to the private view instead of the anonymous page. getAuth
+		// short-circuits for anonymous traffic (no cookie → no JWKS fetch / crypto / D1), so the edge
+		// cache below still absorbs spikes; only signed-in requests pay a verify and are then redirected
+		// (and never cached). Pairs with PUBLIC_HTML_CACHE so the browser revalidates and actually
+		// reaches this check right after login instead of serving a stale anonymous /public.
+		try {
+			const { session } = await getAuth(request, env);
+			if (session) return redirectNoStore(origin + '/private');
+		} catch (err) {
+			// Fail open to the public view: an auth outage must not take down the public status page.
+			log('error', 'auth.error', { error: err instanceof Error ? err.message : String(err) });
+		}
 		return withPublicEdgeCache(request, env, ctx, () => handleStatusPage(env, runtimeEnv, false, null, true, new URL(request.url).host));
 	}
 
