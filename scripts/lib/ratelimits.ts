@@ -18,8 +18,9 @@ export interface RateLimitBinding {
 	simple: { limit: number; period: number };
 }
 
-// FNV-1a 32-bit hash of a UTF-8 string. Deterministic and dependency-free, so the same
-// deploy.name + binding pair yields the same namespace_id on every machine and every run.
+// FNV-1a 32-bit hash over the string's UTF-16 code units (a variant of the canonical byte-wise FNV-1a;
+// charCodeAt, not the UTF-8 bytes). Deterministic and dependency-free, so the same deploy.name + binding
+// pair yields the same namespace_id on every machine and every run.
 function fnv1a32(input: string): number {
 	let hash = 0x811c9dc5;
 	for (let i = 0; i < input.length; i++) {
