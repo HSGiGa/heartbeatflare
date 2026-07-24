@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.4] - 2026-07-24
+
+### Fixed
+
+- **Stale anonymous status page after login** ([#60](https://github.com/HSGiGa/heartbeatflare/issues/60)):
+  after signing in via Cloudflare Access, navigating back to `/public` no longer shows the cached
+  anonymous view until a hard refresh. The cacheable HTML surfaces (`/public`, `/badges`) now send
+  `public, s-maxage=60, max-age=0, must-revalidate` — the edge/CDN still absorbs spikes while
+  browsers revalidate every navigation. `/public` also redirects authenticated visitors to
+  `/private`, gated on a cheap token-presence check so anonymous traffic stays D1-free and
+  edge-cache-protected.
+
 ## [1.3.3] - 2026-07-21
 
 ### Added
