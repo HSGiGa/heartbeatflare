@@ -15,6 +15,7 @@ import { buildEmailBinding, collectEmailChannels, type EmailBindingConfig, type 
 import { buildProbeHeadersMap, type MonitorHeaders } from './lib/probe-headers';
 import { buildVpcBindings, type VpcNetworkBinding, type VpcServiceBinding } from './lib/vpc';
 import { buildPlacement, type PlacementBinding } from './lib/placement';
+import { buildRateLimits, type RateLimitBinding } from './lib/ratelimits';
 
 const isDeployMode = process.argv.includes('--mode=deploy');
 
@@ -49,8 +50,9 @@ interface WranglerTemplate {
 	vpc_networks?: VpcNetworkBinding[];
 	vpc_services?: VpcServiceBinding[];
 	placement?: PlacementBinding;
-	// Preserved as-is from the template (heartbeat endpoint rate limiters); not generated.
-	ratelimits?: { name: string; namespace_id: string; simple: { limit: number; period: number } }[];
+	// Public-endpoint rate limiters. name/limit/period come from the template; namespace_id is
+	// generated per deployment (see buildRateLimits) so deployments don't share counters (Issue #63).
+	ratelimits?: RateLimitBinding[];
 }
 
 async function main() {
@@ -160,6 +162,13 @@ async function main() {
 			fail(err instanceof Error ? err.message : String(err));
 		}
 		if (placement) wrangler.placement = placement;
+	}
+
+	// Rate-limit namespace_id is account-global (shared counters across Workers with the same id), so
+	// derive it per deployment from deploy.name + binding name (Issue #63). The template's numeric
+	// placeholders are overwritten here.
+	if (wrangler.ratelimits) {
+		wrangler.ratelimits = buildRateLimits(name, wrangler.ratelimits);
 	}
 
 	writeFileSync('wrangler.jsonc', JSON.stringify(wrangler, null, '\t') + '\n');

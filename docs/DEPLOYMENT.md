@@ -320,6 +320,13 @@ Recommended for any real deployment:
 `config.yaml`, resolving the D1 id by name — so no resource IDs are stored in the repo. Don't edit
 `wrangler.jsonc` directly; it is recreated by any npm script (dev, test, deploy).
 
+The public-endpoint rate limiters (`BEAT_IP_RATE_LIMITER`, `BEAT_MONITOR_RATE_LIMITER`,
+`READ_IP_RATE_LIMITER`) are generated the same way: their `namespace_id` is derived from `deploy.name`
+plus the binding name, not provisioned Cloudflare resources. A rate-limit `namespace_id` is
+account-global — bindings that share one, even on other Workers, share counters — so deriving it per
+deployment keeps two heartbeatflare instances in the same account from sharing rate-limit budgets.
+Changing `deploy.name` therefore moves a deployment onto fresh limiter counters.
+
 Names default to `${deploy.name}-prod-db` and `${deploy.name}-notifications`, overridable via
 `deploy.database_name` / `deploy.queue_name`. Preview names without credentials or API calls:
 
