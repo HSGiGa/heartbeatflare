@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.5] - 2026-07-24
+
+### Fixed
+
+- **Rate limiters shared across deployments** ([#63](https://github.com/HSGiGa/heartbeatflare/issues/63)):
+  a Workers Rate Limiting binding's `namespace_id` is account-global — bindings sharing an id, even on
+  other Workers in the same account, share the same counters — but `wrangler.template.jsonc` shipped
+  fixed literals (`1001`/`1002`/`1003`). Two heartbeatflare deployments in one Cloudflare account
+  therefore silently shared their `/beat` and public-read rate-limit budgets. `namespace_id` is now
+  generated per deployment from `deploy.name` plus the binding name (FNV-1a, masked to a positive
+  31-bit integer), matching how D1/queue names already derive from `deploy.name`. No Cloudflare
+  resources are provisioned and no manual migration is needed; the first deploy moves onto fresh
+  counters and the old ones age out.
+
 ## [1.3.4] - 2026-07-24
 
 ### Fixed
